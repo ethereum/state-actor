@@ -7,6 +7,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"log"
+	"time"
 	"math/bits"
 	"runtime"
 	"sort"
@@ -698,8 +699,16 @@ func computeBinaryRootStreaming(iter ethdb.Iterator, db ethdb.KeyValueStore, gro
 	var currentStem [stemSize]byte
 	var currentEntries []trieEntry
 	hasCurrent := false
+	var entriesRead uint64
+	var stemCount uint64
+	lastLog := time.Now()
 
 	for iter.Next() {
+		entriesRead++
+		if time.Since(lastLog) >= 30*time.Second {
+			log.Printf("[Phase 2] Read %d entries (%d stems dispatched)", entriesRead, stemCount)
+			lastLog = time.Now()
+		}
 		var e trieEntry
 		copy(e.Key[:], iter.Key())
 		copy(e.Value[:], iter.Value())
@@ -708,6 +717,7 @@ func computeBinaryRootStreaming(iter ethdb.Iterator, db ethdb.KeyValueStore, gro
 			// Stem boundary — flush the completed group
 			hash := computeStemNodeHash(currentStem[:], currentEntries)
 			sb.feedStem(currentStem[:], hash, currentEntries)
+			stemCount++
 			currentEntries = currentEntries[:0]
 		}
 
