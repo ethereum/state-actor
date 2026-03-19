@@ -30,7 +30,8 @@ const (
 // bitmapSizeForDepth returns the number of bytes needed for a bitmap of
 // 2^groupDepth bits (one bit per bottom-layer child slot in a grouped node).
 func bitmapSizeForDepth(groupDepth int) int {
-	return (1 << groupDepth) / 8
+	bits := 1 << groupDepth
+	return (bits + 7) / 8
 }
 
 // verkleTrieNodeKeyPrefix is the database key prefix for binary trie nodes.
