@@ -623,7 +623,7 @@ func TestParallelStreamingEquivalence(t *testing.T) {
 			// --- Parallel computation ---
 			// Write entries to a temp Pebble DB for the iterator
 			tempDir := t.TempDir()
-			tempDB, err := pebble.New(tempDir, 16, 8, "test/", false, 4096)
+			tempDB, err := pebble.New(tempDir, 16, 8, "test/", false)
 			if err != nil {
 				t.Fatalf("failed to create temp DB: %v", err)
 			}
