@@ -136,33 +136,104 @@ func main() {
 		defer statsServer.Stop()
 	}
 
-	// When --target-size is set, auto-scale parameters so the user's
-	// --contracts value fills the target. The contract cap is raised to
-	// MaxInt32 as a safety net (dirSize() is the real stopping condition).
+	// When --target-size is set, auto-scale ALL parameters holistically
+	// using a 70/20/10 entry ratio (storage / accounts / code).
+	// Two independent inputs:
+	//   - 70/20/10 ratio: macro-level split of entry types
+	//   - min/max-slots + distribution: micro-level per-contract shape
+	// Contracts is the derived "solver" variable that reconciles both.
+	// Explicit flags always override auto-computed values.
 	if parsedTargetSize > 0 {
-		userContracts := *contracts
-		*contracts = math.MaxInt32
+		const bytesPerEntry uint64 = 80 // empirical after Pebble compression
+		totalEntries := parsedTargetSize / bytesPerEntry
+		chunksPerContract := uint64(((*codeSize) + 30) / 31)
 
-		// Auto-scale min-slots so that userContracts contracts produce
-		// enough trie entries to fill the target. Each contract has
-		// ~overhead fixed entries (header + code chunks) plus storage
-		// slots. Power-law average slots ≈ 3 × min_slots.
-		if !isFlagSet("min-slots") {
-			const bytesPerEntry uint64 = 80 // empirical after Pebble compression
-			numC := uint64(userContracts)
-			overhead := uint64(5 + (*codeSize+30)/31) // header fields + code chunks
-			targetEntries := parsedTargetSize / bytesPerEntry
-			entriesPerContract := targetEntries / numC
-			if entriesPerContract > overhead {
-				autoMin := int((entriesPerContract - overhead) / 3)
-				if autoMin > *minSlots {
-					*minSlots = autoMin
+		// --- Auto-scale accounts (20% of entries) ---
+		if !isFlagSet("accounts") {
+			autoAccounts := int(totalEntries * 20 / 100)
+			if autoAccounts > *accounts {
+				*accounts = autoAccounts
+			}
+		}
+
+		// --- Compute contracts as solver variable ---
+		// Contracts must satisfy two constraints:
+		//   1. Code budget:    contracts × chunksPerContract ≈ 10% of entries
+		//   2. Storage budget: contracts × avgSlots ≈ 70% of entries
+		// Take the larger to satisfy both; then adjust minSlots if needed.
+		storageEntries := totalEntries * 70 / 100
+
+		// Compute avgSlots from current min/max-slots and distribution.
+		// Power-law (alpha=1.5) mean ≈ 3×min; uniform mean = (min+max)/2.
+		avgSlots := uint64(*minSlots) * 3 // power-law default
+		if isFlagSet("distribution") {
+			switch *distribution {
+			case "uniform":
+				avgSlots = uint64(*minSlots+*maxSlots) / 2
+			case "exponential":
+				avgSlots = uint64(*maxSlots) / 4
+			}
+		}
+		if avgSlots == 0 {
+			avgSlots = 1
+		}
+
+		contractsFromCode := totalEntries * 10 / 100 / max(chunksPerContract, 1)
+		contractsFromStorage := storageEntries / avgSlots
+
+		userContracts := int(max(contractsFromCode, contractsFromStorage))
+		if userContracts < 100 {
+			userContracts = 100
+		}
+
+		// If user explicitly set --contracts, respect it but warn if dangerous.
+		if isFlagSet("contracts") {
+			userContracts = *contracts
+			if !isFlagSet("min-slots") {
+				autoMin := int(storageEntries / uint64(userContracts) / 3)
+				if autoMin > 500_000 {
+					log.Printf("WARNING: %d contracts with %s target → ~%dM min-slots/contract (~%.1fGB RAM each).",
+						userContracts, *targetSize, autoMin/1_000_000,
+						float64(autoMin)*64/1e9)
+					log.Printf("  Consider: --contracts %d or let auto-scaling choose.",
+						max(int(storageEntries/500_000/3), 1000))
 				}
 			}
 		}
+
+		// --- Auto-scale min-slots from storage budget ---
+		if !isFlagSet("min-slots") {
+			actualAvgSlots := storageEntries / uint64(userContracts)
+			autoMin := int(actualAvgSlots / 3) // power-law mean ≈ 3×min
+			if isFlagSet("distribution") {
+				switch *distribution {
+				case "uniform":
+					autoMin = int(actualAvgSlots)
+				case "exponential":
+					autoMin = int(actualAvgSlots / 4)
+				}
+			}
+			if autoMin > *minSlots {
+				*minSlots = autoMin
+			}
+		}
+
+		// --- Auto-scale max-slots ---
 		if !isFlagSet("max-slots") && *maxSlots < *minSlots*10 {
 			*maxSlots = *minSlots * 10
 		}
+
+		// Log computed parameters.
+		log.Printf("Auto-scaled for %s target (70/20/10 ratio):", *targetSize)
+		log.Printf("  accounts:     %d", *accounts)
+		log.Printf("  contracts:    %d (unlimited, stops at target)", userContracts)
+		log.Printf("  min-slots:    %d", *minSlots)
+		log.Printf("  max-slots:    %d", *maxSlots)
+		log.Printf("  code-size:    %d", *codeSize)
+		log.Printf("  distribution: %s", *distribution)
+
+		// Set contracts to MaxInt32 — dirSize() is the real stopping condition.
+		*contracts = math.MaxInt32
 	}
 
 	// Validate deep-branch flags
