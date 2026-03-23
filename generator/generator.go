@@ -347,7 +347,18 @@ func (g *Generator) generateAccountMetas(stats *Stats) ([]*accountMeta, error) {
 // For each account: generate storage → compute storage root → write to DB → discard.
 // This keeps memory bounded by the largest single contract's storage.
 func (g *Generator) streamWriteStateMPT(metas []*accountMeta, stats *Stats) error {
-	accountTrie := trie.NewStackTrie(nil)
+	// Set up trie node writer for persisting MPT nodes via PathScheme.
+	var nodeWriter *mptTrieNodeWriter
+	if g.config.WriteTrieNodes && g.db != nil {
+		nodeWriter = newMPTTrieNodeWriter(g.db)
+		defer nodeWriter.flush()
+	}
+
+	var acctCallback trie.OnTrieNode
+	if nodeWriter != nil {
+		acctCallback = nodeWriter.accountCallback()
+	}
+	accountTrie := trie.NewStackTrie(acctCallback)
 
 	processedCount := 0
 	totalCount := len(metas)
@@ -381,7 +392,11 @@ func (g *Generator) streamWriteStateMPT(metas []*accountMeta, stats *Stats) erro
 			)
 
 			// Write storage and build trie directly from deep-branch entries
-			storageTrie := trie.NewStackTrie(nil)
+			var deepStorageCb trie.OnTrieNode
+			if nodeWriter != nil {
+				deepStorageCb = nodeWriter.storageCallback(meta.addrHash)
+			}
+			storageTrie := trie.NewStackTrie(deepStorageCb)
 			for _, entry := range entries {
 				if entry.isPhantom {
 					if err := g.writer.WriteRawStorage(meta.address, 0, entry.trieKey, entry.value); err != nil {
@@ -447,7 +462,11 @@ func (g *Generator) streamWriteStateMPT(metas []*accountMeta, stats *Stats) erro
 
 		// Compute storage root and write storage via StateWriter
 		if len(storageSlots) > 0 {
-			storageTrie := trie.NewStackTrie(nil)
+			var storageCb trie.OnTrieNode
+			if nodeWriter != nil {
+				storageCb = nodeWriter.storageCallback(meta.addrHash)
+			}
+			storageTrie := trie.NewStackTrie(storageCb)
 
 			// MPT requires keys sorted by Keccak256(key)
 			type keyWithHash struct {
@@ -543,6 +562,15 @@ func (g *Generator) streamWriteStateMPT(metas []*accountMeta, stats *Stats) erro
 	stats.AccountBytes = writerStats.AccountBytes
 	stats.StorageBytes = writerStats.StorageBytes
 	stats.CodeBytes = writerStats.CodeBytes
+
+	if nodeWriter != nil {
+		nodes, nbytes := nodeWriter.stats()
+		stats.TrieNodeBytes = uint64(nbytes)
+		stats.TotalBytes = stats.AccountBytes + stats.StorageBytes + stats.CodeBytes + stats.TrieNodeBytes
+		if g.config.Verbose {
+			log.Printf("MPT trie nodes written: %d nodes, %s", nodes, formatBytesInternal(uint64(nbytes)))
+		}
+	}
 
 	return nil
 }

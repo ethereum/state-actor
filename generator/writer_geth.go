@@ -7,6 +7,7 @@ import (
 	"sync/atomic"
 
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/core/rawdb"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/ethdb"
@@ -104,7 +105,17 @@ func (w *GethWriter) WriteCode(codeHash common.Hash, code []byte) error {
 
 // SetStateRoot writes the snapshot root marker.
 func (w *GethWriter) SetStateRoot(root common.Hash) error {
-	return w.db.Put([]byte("SnapshotRoot"), root[:])
+	if err := w.db.Put([]byte("SnapshotRoot"), root[:]); err != nil {
+		return err
+	}
+	// Write PathDB metadata so geth's pathdb.loadLayers() can find the state.
+	// When --genesis is provided, WriteGenesisBlock also writes this metadata
+	// (with proper prefix for binary trie mode). Writing it here too is
+	// idempotent and ensures non-genesis DBs have the metadata.
+	rawdb.WriteStateID(w.db, root, 0)
+	rawdb.WritePersistentStateID(w.db, 0)
+	rawdb.WriteSnapshotRoot(w.db, root)
+	return nil
 }
 
 // WriteGenesisBlock writes the genesis block using the genesis package.

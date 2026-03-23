@@ -192,7 +192,7 @@ func main() {
 		Verbose:         *verbose,
 		TrieMode:        trieMode,
 		CommitInterval:  *commitInterval,
-		WriteTrieNodes:  *genesisPath != "",
+		WriteTrieNodes:  true, // Always write trie nodes — DB is unusable without them
 		InjectAddresses: injectAddrs,
 		TargetSize:      parsedTargetSize,
 		OutputFormat:    generator.ParseOutputFormat(*outputFormat),
