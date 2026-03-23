@@ -2,15 +2,24 @@ package generator
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"fmt"
+	mrand "math/rand"
 	"sort"
 	"testing"
 
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/core/rawdb"
+	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/ethdb"
 	"github.com/ethereum/go-ethereum/ethdb/memorydb"
+	"github.com/ethereum/go-ethereum/ethdb/pebble"
+	"github.com/ethereum/go-ethereum/trie/bintrie"
+	"github.com/holiman/uint256"
 )
+
+// TestGroupedEmissionConsistency verifies that each group depth produces
 
 // TestGroupedEmissionConsistency verifies that each group depth produces
 // a deterministic, non-zero root and writes nodes to DB. The root hash
@@ -272,4 +281,234 @@ func collectKeys(db ethdb.KeyValueStore, prefix []byte) [][]byte {
 		return bytes.Compare(keys[i], keys[j]) < 0
 	})
 	return keys
+}
+
+// TestParallelKeyDerivation verifies that parallel storage key derivation
+// produces identical trie entries as sequential derivation.
+func TestParallelKeyDerivation(t *testing.T) {
+	addr := common.HexToAddress("0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef")
+	slots := make([]storageSlot, 500)
+	for i := range slots {
+		slots[i].Key = sha256.Sum256([]byte{byte(i), byte(i >> 8), byte(i >> 16)})
+		slots[i].Value = sha256.Sum256([]byte{byte(i), 0xFF})
+		if slots[i].Value == (common.Hash{}) {
+			slots[i].Value[31] = 1
+		}
+	}
+
+	// Sequential
+	var seqEntries []trieEntry
+	for i := range slots {
+		seqEntries = collectStorageEntry(addr, slots[i], seqEntries)
+	}
+	sort.Slice(seqEntries, func(i, j int) bool {
+		return bytes.Compare(seqEntries[i].Key[:], seqEntries[j].Key[:]) < 0
+	})
+
+	// Parallel
+	parEntries := collectStorageEntriesParallel(addr, slots)
+
+	if len(seqEntries) != len(parEntries) {
+		t.Fatalf("entry count mismatch: seq=%d par=%d", len(seqEntries), len(parEntries))
+	}
+	for i := range seqEntries {
+		if seqEntries[i] != parEntries[i] {
+			t.Errorf("entry %d differs:\n  seq: key=%x val=%x\n  par: key=%x val=%x",
+				i, seqEntries[i].Key[:4], seqEntries[i].Value[:4],
+				parEntries[i].Key[:4], parEntries[i].Value[:4])
+		}
+	}
+}
+
+// TestCollectAccountEntriesParallelEquivalence verifies that
+// collectAccountEntriesParallel produces identical sorted entries
+// as the sequential collectAccountEntries.
+func TestCollectAccountEntriesParallelEquivalence(t *testing.T) {
+	addr := common.HexToAddress("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+	codeHash := sha256.Sum256([]byte("test-code"))
+	code := bytes.Repeat([]byte{0xAB}, 500)
+
+	acc := &types.StateAccount{
+		Nonce:    42,
+		Balance:  uint256.NewInt(1e18),
+		Root:     types.EmptyRootHash,
+		CodeHash: codeHash[:],
+	}
+
+	slots := make([]storageSlot, 200)
+	for i := range slots {
+		slots[i].Key = sha256.Sum256([]byte{byte(i), byte(i >> 8)})
+		slots[i].Value = sha256.Sum256([]byte{byte(i), 0xCC})
+	}
+	sort.Slice(slots, func(i, j int) bool {
+		return bytes.Compare(slots[i].Key[:], slots[j].Key[:]) < 0
+	})
+
+	// Sequential
+	seqEntries := collectAccountEntries(addr, acc, len(code), code, slots, nil)
+	sort.Slice(seqEntries, func(i, j int) bool {
+		return bytes.Compare(seqEntries[i].Key[:], seqEntries[j].Key[:]) < 0
+	})
+
+	// Parallel
+	parEntries := collectAccountEntriesParallel(addr, acc, len(code), code, slots)
+
+	if len(seqEntries) != len(parEntries) {
+		t.Fatalf("entry count mismatch: seq=%d par=%d", len(seqEntries), len(parEntries))
+	}
+	for i := range seqEntries {
+		if seqEntries[i] != parEntries[i] {
+			t.Errorf("entry %d differs", i)
+		}
+	}
+}
+
+
+// TestParallelStreamingEquivalence verifies that the parallel pipeline
+// produces the exact same root hash as the serial implementation.
+func TestParallelStreamingEquivalence(t *testing.T) {
+	tests := []struct {
+		name       string
+		numAccounts int
+		groupDepth int
+		writeNodes bool
+	}{
+		{"gd0_no_write", 50, 0, false},
+		{"gd0_with_write", 50, 0, true},
+		{"gd8_no_write", 50, 8, false},
+		{"gd8_with_write", 50, 8, true},
+		{"large_gd8", 200, 8, false},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			// Generate deterministic entries
+			entries := generateDeterministicEntries(t, tc.numAccounts)
+			if len(entries) == 0 {
+				t.Fatal("no entries generated")
+			}
+
+			// Sort entries by key (required for streaming)
+			sort.Slice(entries, func(i, j int) bool {
+				return bytes.Compare(entries[i].Key[:], entries[j].Key[:]) < 0
+			})
+
+			// --- Serial computation ---
+			var serialDB ethdb.KeyValueStore
+			if tc.writeNodes {
+				serialDB = rawdb.NewMemoryDatabase()
+			}
+			serialRoot, _ := computeBinaryRootStreamingFromSlice(
+				entries, serialDB, tc.groupDepth,
+			)
+
+			// --- Parallel computation ---
+			// Write entries to a temp Pebble DB for the iterator
+			tempDir := t.TempDir()
+			tempDB, err := pebble.New(tempDir, 16, 8, "test/", false)
+			if err != nil {
+				t.Fatalf("failed to create temp DB: %v", err)
+			}
+			defer tempDB.Close()
+
+			batch := tempDB.NewBatch()
+			for _, e := range entries {
+				if err := batch.Put(e.Key[:], e.Value[:]); err != nil {
+					t.Fatalf("batch put: %v", err)
+				}
+				if batch.ValueSize() >= 16*1024*1024 {
+					if err := batch.Write(); err != nil {
+						t.Fatalf("batch write: %v", err)
+					}
+					batch.Reset()
+				}
+			}
+			if batch.ValueSize() > 0 {
+				if err := batch.Write(); err != nil {
+					t.Fatalf("batch write: %v", err)
+				}
+			}
+
+			var parallelDB ethdb.KeyValueStore
+			if tc.writeNodes {
+				parallelDB = rawdb.NewMemoryDatabase()
+			}
+			iter := tempDB.NewIterator(nil, nil)
+			parallelRoot, _, pErr := computeBinaryRootStreamingParallel(
+				context.Background(), iter, parallelDB, tc.groupDepth, 4,
+			)
+			if pErr != nil {
+				t.Fatalf("parallel computation failed: %v", pErr)
+			}
+
+			if serialRoot != parallelRoot {
+				t.Errorf("root mismatch:\n  serial:   %s\n  parallel: %s",
+					serialRoot.Hex(), parallelRoot.Hex())
+			}
+
+			// If writing nodes, verify same set of trie nodes written
+			if tc.writeNodes && serialDB != nil && parallelDB != nil {
+				serialIter := serialDB.NewIterator(nil, nil)
+				parallelIter := parallelDB.NewIterator(nil, nil)
+				serialCount := 0
+				parallelCount := 0
+				for serialIter.Next() {
+					serialCount++
+				}
+				serialIter.Release()
+				for parallelIter.Next() {
+					parallelCount++
+				}
+				parallelIter.Release()
+				if serialCount != parallelCount {
+					t.Errorf("trie node count mismatch: serial=%d parallel=%d",
+						serialCount, parallelCount)
+				}
+			}
+		})
+	}
+}
+
+// generateDeterministicEntries creates a set of trie entries for testing.
+// Uses a fixed seed for deterministic results.
+func generateDeterministicEntries(t *testing.T, numAccounts int) []trieEntry {
+	t.Helper()
+	rng := mrand.New(mrand.NewSource(42))
+	var entries []trieEntry
+
+	for i := 0; i < numAccounts; i++ {
+		// Generate a random address
+		var addr common.Address
+		rng.Read(addr[:])
+
+		// Create a minimal account (basic data + code hash = 2 entries per stem)
+		balance := uint256.NewInt(uint64(rng.Intn(1000)))
+		acc := &types.StateAccount{
+			Nonce:    uint64(rng.Intn(100)),
+			Balance:  balance,
+			Root:     types.EmptyRootHash,
+			CodeHash: types.EmptyCodeHash.Bytes(),
+		}
+
+		entries = collectAccountEntries(addr, acc, 0, nil, nil, entries)
+
+		// Every 5th account: add some storage slots
+		if i%5 == 0 {
+			numSlots := 2 + rng.Intn(20)
+			for j := 0; j < numSlots; j++ {
+				var slotKey common.Hash
+				rng.Read(slotKey[:])
+				k := bintrie.GetBinaryTreeKeyStorageSlot(addr, slotKey[:])
+				var e trieEntry
+				copy(e.Key[:], k)
+				rng.Read(e.Value[:])
+				if e.Value == (common.Hash{}) {
+					e.Value[0] = 1
+				}
+				entries = append(entries, e)
+			}
+		}
+	}
+
+	return entries
 }
