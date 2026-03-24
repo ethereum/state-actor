@@ -3,7 +3,6 @@ package generator
 import (
 	"bytes"
 	"context"
-	"encoding/binary"
 	"fmt"
 	"log"
 	"math"
@@ -130,223 +129,24 @@ func (g *Generator) Generate() (*Stats, error) {
 	return g.generateStreamingMPT()
 }
 
-// generateStreamingMPT generates state for MPT mode using a streaming approach.
-// Instead of generating all accounts/contracts in memory, it:
-// 1. Generates lightweight metadata (addresses, slot counts)
-// 2. Processes each account one at a time: generate storage → compute storage root → write → discard
-// This reduces peak memory from O(total_storage_slots) to O(max_slots_per_contract).
+// generateStreamingMPT generates state for MPT mode using a fully streaming
+// two-phase approach with bounded memory:
+//
+// Phase 1: Generate entities one at a time (no pre-allocation of all metadata).
+//   - For each account/contract: generate data, write snapshots, compute storage
+//     root + write storage trie nodes, write (addrHash → slimAccountRLP) to a
+//     temp Pebble DB (auto-sorted by addrHash via LSM).
+//   - Supports --target-size via periodic dirSize() checks.
+//
+// Phase 2: Build the account trie from the temp DB.
+//   - Iterate temp DB in addrHash order → feed account StackTrie → state root.
+//   - O(1) memory — just the StackTrie stack.
+//
+// Memory: O(max_slots_per_contract) — same as binary trie path.
 func (g *Generator) generateStreamingMPT() (*Stats, error) {
 	stats := &Stats{}
 	start := time.Now()
 
-	// Phase 1: Generate account metadata (no storage data yet)
-	metas, err := g.generateAccountMetas(stats)
-	if err != nil {
-		return nil, fmt.Errorf("failed to generate account metadata: %w", err)
-	}
-
-	stats.GenerationTime = time.Since(start)
-	writeStart := time.Now()
-
-	// Phase 2: Stream-write state in sorted order
-	if err := g.streamWriteStateMPT(metas, stats); err != nil {
-		return nil, fmt.Errorf("failed to write state: %w", err)
-	}
-
-	stats.DBWriteTime = time.Since(writeStart)
-	stats.TotalBytes = stats.AccountBytes + stats.StorageBytes + stats.CodeBytes
-
-	return stats, nil
-}
-
-// accountMeta holds lightweight account metadata without storage data.
-// This allows us to generate addresses and slot counts without holding
-// all storage in memory.
-type accountMeta struct {
-	address  common.Address
-	addrHash common.Hash
-	nonce    uint64
-	balance  *uint256.Int
-	// Contract fields
-	isContract bool
-	numSlots   int   // Number of storage slots to generate
-	codeSize   int   // Code size to generate
-	codeSeed   int64 // Seed for reproducible code/storage generation
-	// Genesis account fields (pre-defined data)
-	genesisAccount *types.StateAccount
-	genesisStorage map[common.Hash]common.Hash
-	genesisCode    []byte
-	genesisCH      common.Hash // pre-computed code hash for genesis
-	// Deep-branch fields
-	isDeepBranch bool // true if this is a deep-branch contract
-}
-
-// generateAccountMetas creates lightweight metadata for all accounts.
-// Storage is NOT generated here — only slot counts are recorded.
-func (g *Generator) generateAccountMetas(stats *Stats) ([]*accountMeta, error) {
-	totalAccounts := g.config.NumAccounts + g.config.NumContracts + len(g.config.GenesisAccounts)
-	metas := make([]*accountMeta, 0, totalAccounts)
-
-	usedAddresses := make(map[common.Address]bool)
-	genesisEOAs, genesisContracts := 0, 0
-
-	// Genesis accounts
-	for addr, acc := range g.config.GenesisAccounts {
-		usedAddresses[addr] = true
-
-		meta := &accountMeta{
-			address:        addr,
-			addrHash:       crypto.Keccak256Hash(addr[:]),
-			genesisAccount: acc,
-		}
-
-		if storage, ok := g.config.GenesisStorage[addr]; ok {
-			meta.genesisStorage = storage
-			meta.isContract = true
-			stats.StorageSlotsCreated += len(storage)
-		}
-
-		if code, ok := g.config.GenesisCode[addr]; ok {
-			meta.genesisCode = code
-			meta.genesisCH = crypto.Keccak256Hash(code)
-			meta.isContract = true
-		}
-
-		if meta.isContract {
-			genesisContracts++
-		} else {
-			genesisEOAs++
-		}
-
-		metas = append(metas, meta)
-	}
-
-	if g.config.Verbose && len(g.config.GenesisAccounts) > 0 {
-		log.Printf("Included %d genesis alloc accounts (%d EOAs, %d contracts)",
-			len(g.config.GenesisAccounts), genesisEOAs, genesisContracts)
-	}
-
-	// Update live stats
-	if g.config.LiveStats != nil {
-		g.config.LiveStats.SetPhase("accounts")
-	}
-
-	// Generate EOA metadata
-	for i := 0; i < g.config.NumAccounts; i++ {
-		var addr common.Address
-		g.rng.Read(addr[:])
-		for usedAddresses[addr] {
-			g.rng.Read(addr[:])
-		}
-		usedAddresses[addr] = true
-
-		metas = append(metas, &accountMeta{
-			address:    addr,
-			addrHash:   crypto.Keccak256Hash(addr[:]),
-			nonce:      uint64(g.rng.Intn(1000)),
-			balance:    new(uint256.Int).Mul(uint256.NewInt(uint64(g.rng.Intn(1000))), uint256.NewInt(1e18)),
-			isContract: false,
-		})
-
-		if g.config.LiveStats != nil {
-			g.config.LiveStats.AddAccount()
-		}
-	}
-	stats.AccountsCreated = genesisEOAs + g.config.NumAccounts
-
-	// Update live stats
-	if g.config.LiveStats != nil {
-		g.config.LiveStats.SetPhase("contracts")
-	}
-
-	// Generate contract metadata (slot counts only)
-	slotDistribution := g.generateSlotDistribution()
-
-	for i := 0; i < g.config.NumContracts; i++ {
-		var addr common.Address
-		g.rng.Read(addr[:])
-		for usedAddresses[addr] {
-			g.rng.Read(addr[:])
-		}
-		usedAddresses[addr] = true
-
-		numSlots := slotDistribution[i]
-		stats.StorageSlotsCreated += numSlots
-
-		metas = append(metas, &accountMeta{
-			address:    addr,
-			addrHash:   crypto.Keccak256Hash(addr[:]),
-			nonce:      uint64(g.rng.Intn(1000)),
-			balance:    new(uint256.Int).Mul(uint256.NewInt(uint64(g.rng.Intn(100))), uint256.NewInt(1e18)),
-			isContract: true,
-			numSlots:   numSlots,
-			codeSize:   g.config.CodeSize + g.rng.Intn(g.config.CodeSize),
-			codeSeed:   g.rng.Int63(),
-		})
-
-		if g.config.LiveStats != nil {
-			g.config.LiveStats.AddContract(numSlots)
-		}
-	}
-	stats.ContractsCreated = genesisContracts + g.config.NumContracts
-
-	// Generate deep-branch contract accounts (additional, on top of random state)
-	if g.config.DeepBranch.Enabled() {
-		deepSlots := g.config.DeepBranch.KnownSlots * (1 + g.config.DeepBranch.Depth)
-		for i := 0; i < g.config.DeepBranch.NumAccounts; i++ {
-			var addr common.Address
-			g.rng.Read(addr[:])
-			for usedAddresses[addr] {
-				g.rng.Read(addr[:])
-			}
-			usedAddresses[addr] = true
-
-			metas = append(metas, &accountMeta{
-				address:      addr,
-				addrHash:     crypto.Keccak256Hash(addr[:]),
-				nonce:        1,
-				balance:      new(uint256.Int).Mul(uint256.NewInt(uint64(g.rng.Intn(100)+1)), uint256.NewInt(1e18)),
-				isContract:   true,
-				isDeepBranch: true,
-				numSlots:     deepSlots,
-				codeSize:     g.config.CodeSize + g.rng.Intn(g.config.CodeSize),
-				codeSeed:     g.rng.Int63(),
-			})
-
-			stats.StorageSlotsCreated += deepSlots
-			stats.ContractsCreated++
-
-			if g.config.LiveStats != nil {
-				g.config.LiveStats.AddContract(deepSlots)
-			}
-		}
-		stats.DeepBranchAccounts = g.config.DeepBranch.NumAccounts
-		stats.DeepBranchDepth = g.config.DeepBranch.Depth
-
-		if g.config.Verbose {
-			log.Printf("Added %d deep-branch contracts (depth=%d, known_slots=%d, %d entries each)",
-				g.config.DeepBranch.NumAccounts, g.config.DeepBranch.Depth,
-				g.config.DeepBranch.KnownSlots, deepSlots)
-		}
-	}
-
-	if g.config.Verbose {
-		log.Printf("Generated metadata for %d accounts, %d contracts with %d total storage slots",
-			stats.AccountsCreated, stats.ContractsCreated, stats.StorageSlotsCreated)
-	}
-
-	// Sort by address hash for deterministic StackTrie construction
-	sort.Slice(metas, func(i, j int) bool {
-		return bytes.Compare(metas[i].addrHash[:], metas[j].addrHash[:]) < 0
-	})
-
-	return metas, nil
-}
-
-// streamWriteStateMPT processes accounts one at a time in streaming fashion.
-// For each account: generate storage → compute storage root → write to DB → discard.
-// This keeps memory bounded by the largest single contract's storage.
-func (g *Generator) streamWriteStateMPT(metas []*accountMeta, stats *Stats) error {
 	// Set up trie node writer for persisting MPT nodes via PathScheme.
 	var nodeWriter *mptTrieNodeWriter
 	if g.config.WriteTrieNodes && g.db != nil {
@@ -354,150 +154,43 @@ func (g *Generator) streamWriteStateMPT(metas []*accountMeta, stats *Stats) erro
 		defer nodeWriter.flush()
 	}
 
-	var acctCallback trie.OnTrieNode
-	if nodeWriter != nil {
-		acctCallback = nodeWriter.accountCallback()
+	// Temp DB for account trie entries: key=addrHash, value=slimAccountRLP.
+	// Pebble sorts by key automatically, so Phase 2 iterates in addrHash order.
+	tempDir, err := os.MkdirTemp("", "mpt-acct-trie-*")
+	if err != nil {
+		return nil, fmt.Errorf("create temp dir: %w", err)
 	}
-	accountTrie := trie.NewStackTrie(acctCallback)
+	defer os.RemoveAll(tempDir)
 
-	processedCount := 0
-	totalCount := len(metas)
-	var lastLogTime = time.Now()
+	acctTrieDB, err := pebble.New(tempDir, 128, 64, "mpt-acct/", false)
+	if err != nil {
+		return nil, fmt.Errorf("create temp account trie DB: %w", err)
+	}
+	defer acctTrieDB.Close()
+	acctTrieBatch := acctTrieDB.NewBatch()
 
-	for _, meta := range metas {
-		var stateAccount types.StateAccount
-		var code []byte
-		var codeHash common.Hash
-		var storageSlots []storageSlot
-
-		if meta.genesisAccount != nil {
-			// Genesis account
-			stateAccount = *meta.genesisAccount
-			code = meta.genesisCode
-			codeHash = meta.genesisCH
-			if meta.genesisStorage != nil {
-				storageSlots = mapToSortedSlots(meta.genesisStorage)
-			}
-		} else if meta.isDeepBranch {
-			// Deep-branch contract: generate code + phantom-injected storage
-			rng := mrand.New(mrand.NewSource(meta.codeSeed))
-			code = make([]byte, meta.codeSize)
-			rng.Read(code)
-			codeHash = crypto.Keccak256Hash(code)
-
-			entries := generateDeepBranchStorage(
-				g.config.DeepBranch.KnownSlots,
-				g.config.DeepBranch.Depth,
-				rng,
-			)
-
-			// Write storage and build trie directly from deep-branch entries
-			var deepStorageCb trie.OnTrieNode
-			if nodeWriter != nil {
-				deepStorageCb = nodeWriter.storageCallback(meta.addrHash)
-			}
-			storageTrie := trie.NewStackTrie(deepStorageCb)
-			for _, entry := range entries {
-				if entry.isPhantom {
-					if err := g.writer.WriteRawStorage(meta.address, 0, entry.trieKey, entry.value); err != nil {
-						return fmt.Errorf("write raw storage: %w", err)
-					}
-				} else {
-					if err := g.writer.WriteStorage(meta.address, 0, entry.rawSlotKey, entry.value); err != nil {
-						return fmt.Errorf("write storage: %w", err)
-					}
-				}
-
-				valueRLP, err := encodeStorageValue(entry.value)
-				if err != nil {
-					return err
-				}
-				storageTrie.Update(entry.trieKey[:], valueRLP)
-			}
-
-			stateAccount = types.StateAccount{
-				Nonce:    meta.nonce,
-				Balance:  meta.balance,
-				Root:     storageTrie.Hash(),
-				CodeHash: codeHash.Bytes(),
-			}
-			// storageSlots stays nil, so the normal storage block below is skipped
-		} else if meta.isContract {
-			// Generated contract: create code and storage from seed
-			rng := mrand.New(mrand.NewSource(meta.codeSeed))
-			code = make([]byte, meta.codeSize)
-			rng.Read(code)
-			codeHash = crypto.Keccak256Hash(code)
-
-			// Generate storage slots
-			storageSlots = make([]storageSlot, 0, meta.numSlots)
-			for j := 0; j < meta.numSlots; j++ {
-				var key, value common.Hash
-				rng.Read(key[:])
-				rng.Read(value[:])
-				if value == (common.Hash{}) {
-					value[31] = 1
-				}
-				storageSlots = append(storageSlots, storageSlot{Key: key, Value: value})
-			}
-			sort.Slice(storageSlots, func(i, j int) bool {
-				return bytes.Compare(storageSlots[i].Key[:], storageSlots[j].Key[:]) < 0
-			})
-
-			stateAccount = types.StateAccount{
-				Nonce:    meta.nonce,
-				Balance:  meta.balance,
-				Root:     types.EmptyRootHash,
-				CodeHash: codeHash.Bytes(),
-			}
-		} else {
-			// EOA
-			stateAccount = types.StateAccount{
-				Nonce:    meta.nonce,
-				Balance:  meta.balance,
-				Root:     types.EmptyRootHash,
-				CodeHash: types.EmptyCodeHash.Bytes(),
-			}
+	// writeAcctTrieEntry stores an account's trie entry for Phase 2.
+	writeAcctTrieEntry := func(addrHash common.Hash, slimData []byte) error {
+		if err := acctTrieBatch.Put(addrHash[:], slimData); err != nil {
+			return err
 		}
-
-		// Compute storage root and write storage via StateWriter
-		if len(storageSlots) > 0 {
-			var storageCb trie.OnTrieNode
-			if nodeWriter != nil {
-				storageCb = nodeWriter.storageCallback(meta.addrHash)
+		if acctTrieBatch.ValueSize() >= 64*1024*1024 {
+			if err := acctTrieBatch.Write(); err != nil {
+				return err
 			}
-			storageTrie := trie.NewStackTrie(storageCb)
-
-			// MPT requires keys sorted by Keccak256(key)
-			type keyWithHash struct {
-				slot    storageSlot
-				keyHash common.Hash
-			}
-			withHashes := make([]keyWithHash, len(storageSlots))
-			for i, slot := range storageSlots {
-				withHashes[i] = keyWithHash{
-					slot:    slot,
-					keyHash: crypto.Keccak256Hash(slot.Key[:]),
-				}
-			}
-			sort.Slice(withHashes, func(i, j int) bool {
-				return bytes.Compare(withHashes[i].keyHash[:], withHashes[j].keyHash[:]) < 0
-			})
-
-			for _, kh := range withHashes {
-				if err := g.writer.WriteStorage(meta.address, 0, kh.slot.Key, kh.slot.Value); err != nil {
-					return fmt.Errorf("write storage: %w", err)
-				}
-
-				valueRLP, err := encodeStorageValue(kh.slot.Value)
-				if err != nil {
-					return err
-				}
-				storageTrie.Update(kh.keyHash[:], valueRLP)
-			}
-
-			stateAccount.Root = storageTrie.Hash()
+			acctTrieBatch.Reset()
 		}
+		return nil
+	}
+
+	// Genesis addresses set — only for collision avoidance with genesis accounts.
+	// Random-random collisions are astronomically unlikely (~2^-80) and not checked.
+	genesisAddrs := make(map[common.Address]bool, len(g.config.GenesisAccounts))
+
+	// processAccount handles writing snapshots + trie entry for one account.
+	// storageRoot must be pre-computed for contracts; EmptyRootHash for EOAs.
+	processAccount := func(addr common.Address, acc *types.StateAccount, code []byte, codeHash common.Hash) error {
+		addrHash := crypto.Keccak256Hash(addr[:])
 
 		// Write code
 		if len(code) > 0 {
@@ -506,57 +199,393 @@ func (g *Generator) streamWriteStateMPT(metas []*accountMeta, stats *Stats) erro
 			}
 		}
 
-		// Write account
-		if err := g.writer.WriteAccount(meta.address, &stateAccount, 0); err != nil {
+		// Write account snapshot
+		if err := g.writer.WriteAccount(addr, acc, 0); err != nil {
 			return fmt.Errorf("write account: %w", err)
 		}
 
-		// Add to account trie
-		slimData := types.SlimAccountRLP(stateAccount)
-		accountTrie.Update(meta.addrHash[:], slimData)
+		// Store trie entry for Phase 2
+		slimData := types.SlimAccountRLP(*acc)
+		return writeAcctTrieEntry(addrHash, slimData)
+	}
 
-		// Collect sample addresses
-		if meta.isContract {
-			if len(stats.SampleContracts) < 3 {
-				stats.SampleContracts = append(stats.SampleContracts, meta.address)
-			}
-		} else {
-			if len(stats.SampleEOAs) < 3 {
-				stats.SampleEOAs = append(stats.SampleEOAs, meta.address)
-			}
+	// computeStorageRootMPT generates storage slots and computes the storage
+	// trie root for a regular contract. Writes storage snapshots and trie nodes.
+	computeStorageRootMPT := func(addr common.Address, addrHash common.Hash, numSlots int, rng *mrand.Rand) (common.Hash, error) {
+		if numSlots == 0 {
+			return types.EmptyRootHash, nil
 		}
 
-		processedCount++
+		var storageCb trie.OnTrieNode
+		if nodeWriter != nil {
+			storageCb = nodeWriter.storageCallback(addrHash)
+		}
+		storageTrie := trie.NewStackTrie(storageCb)
 
-		// Progress logging
+		// Generate slots and sort by keccak256(key) for MPT StackTrie.
+		type keyWithHash struct {
+			slot    storageSlot
+			keyHash common.Hash
+		}
+		withHashes := make([]keyWithHash, 0, numSlots)
+		for j := 0; j < numSlots; j++ {
+			var key, value common.Hash
+			rng.Read(key[:])
+			rng.Read(value[:])
+			if value == (common.Hash{}) {
+				value[31] = 1
+			}
+			withHashes = append(withHashes, keyWithHash{
+				slot:    storageSlot{Key: key, Value: value},
+				keyHash: crypto.Keccak256Hash(key[:]),
+			})
+		}
+		sort.Slice(withHashes, func(i, j int) bool {
+			return bytes.Compare(withHashes[i].keyHash[:], withHashes[j].keyHash[:]) < 0
+		})
+
+		for _, kh := range withHashes {
+			if err := g.writer.WriteStorage(addr, 0, kh.slot.Key, kh.slot.Value); err != nil {
+				return common.Hash{}, fmt.Errorf("write storage: %w", err)
+			}
+			valueRLP, err := encodeStorageValue(kh.slot.Value)
+			if err != nil {
+				return common.Hash{}, err
+			}
+			storageTrie.Update(kh.keyHash[:], valueRLP)
+		}
+
+		return storageTrie.Hash(), nil
+	}
+
+	var lastLogTime = time.Now()
+	logProgress := func(phase string, count int) {
 		if g.config.Verbose && time.Since(lastLogTime) > 20*time.Second {
 			lastLogTime = time.Now()
-			pct := float64(processedCount) / float64(totalCount) * 100
-			log.Printf("[MPT] %d/%d accounts (%.1f%%)", processedCount, totalCount, pct)
-		}
-
-		// Sync live stats
-		if g.config.LiveStats != nil && processedCount%1000 == 0 {
-			g.config.LiveStats.SyncBytes(g.writer.Stats())
+			log.Printf("[MPT Phase 1] %s: %d processed", phase, count)
 		}
 	}
 
-	// Flush all pending writes
+	// ============================================================
+	// Phase 1a: Genesis accounts
+	// ============================================================
+	genesisEOAs, genesisContracts := 0, 0
+	for addr, acc := range g.config.GenesisAccounts {
+		genesisAddrs[addr] = true
+		addrHash := crypto.Keccak256Hash(addr[:])
+
+		stateAccount := *acc
+		var code []byte
+		var codeHash common.Hash
+
+		if gCode, ok := g.config.GenesisCode[addr]; ok {
+			code = gCode
+			codeHash = crypto.Keccak256Hash(code)
+			genesisContracts++
+		}
+
+		// Genesis storage
+		if gStorage, ok := g.config.GenesisStorage[addr]; ok {
+			if !ok {
+				genesisEOAs++ // counted below if no code either
+			}
+			// Compute storage root
+			var storageCb trie.OnTrieNode
+			if nodeWriter != nil {
+				storageCb = nodeWriter.storageCallback(addrHash)
+			}
+			storageTrie := trie.NewStackTrie(storageCb)
+
+			slots := mapToSortedSlots(gStorage)
+			// Re-sort by keccak for MPT
+			type keyWithHash struct {
+				slot    storageSlot
+				keyHash common.Hash
+			}
+			withHashes := make([]keyWithHash, len(slots))
+			for i, slot := range slots {
+				withHashes[i] = keyWithHash{slot: slot, keyHash: crypto.Keccak256Hash(slot.Key[:])}
+			}
+			sort.Slice(withHashes, func(i, j int) bool {
+				return bytes.Compare(withHashes[i].keyHash[:], withHashes[j].keyHash[:]) < 0
+			})
+			for _, kh := range withHashes {
+				if err := g.writer.WriteStorage(addr, 0, kh.slot.Key, kh.slot.Value); err != nil {
+					return nil, fmt.Errorf("write genesis storage: %w", err)
+				}
+				valueRLP, err := encodeStorageValue(kh.slot.Value)
+				if err != nil {
+					return nil, err
+				}
+				storageTrie.Update(kh.keyHash[:], valueRLP)
+			}
+			stateAccount.Root = storageTrie.Hash()
+			stats.StorageSlotsCreated += len(gStorage)
+			if code == nil {
+				genesisContracts++ // has storage but no code — still a contract
+			}
+		} else {
+			if code == nil {
+				genesisEOAs++
+			}
+		}
+
+		if err := processAccount(addr, &stateAccount, code, codeHash); err != nil {
+			return nil, fmt.Errorf("process genesis account: %w", err)
+		}
+	}
+	stats.AccountsCreated = genesisEOAs
+	stats.ContractsCreated = genesisContracts
+
+	if g.config.Verbose && len(g.config.GenesisAccounts) > 0 {
+		log.Printf("Included %d genesis alloc accounts (%d EOAs, %d contracts)",
+			len(g.config.GenesisAccounts), genesisEOAs, genesisContracts)
+	}
+
+	// ============================================================
+	// Phase 1b: EOAs (streaming, one at a time)
+	// ============================================================
+	if g.config.LiveStats != nil {
+		g.config.LiveStats.SetPhase("accounts")
+	}
+
+	for i := 0; i < g.config.NumAccounts; i++ {
+		var addr common.Address
+		g.rng.Read(addr[:])
+		for genesisAddrs[addr] {
+			g.rng.Read(addr[:])
+		}
+
+		nonce := uint64(g.rng.Intn(1000))
+		balance := new(uint256.Int).Mul(uint256.NewInt(uint64(g.rng.Intn(1000))), uint256.NewInt(1e18))
+
+		acc := &types.StateAccount{
+			Nonce:    nonce,
+			Balance:  balance,
+			Root:     types.EmptyRootHash,
+			CodeHash: types.EmptyCodeHash.Bytes(),
+		}
+
+		if err := processAccount(addr, acc, nil, common.Hash{}); err != nil {
+			return nil, fmt.Errorf("process EOA %d: %w", i, err)
+		}
+
+		stats.AccountsCreated++
+		if len(stats.SampleEOAs) < 3 {
+			stats.SampleEOAs = append(stats.SampleEOAs, addr)
+		}
+
+		if g.config.LiveStats != nil {
+			g.config.LiveStats.AddAccount()
+		}
+		logProgress("EOAs", stats.AccountsCreated)
+	}
+
+	// ============================================================
+	// Phase 1c: Contracts (streaming, one at a time)
+	// ============================================================
+	if g.config.LiveStats != nil {
+		g.config.LiveStats.SetPhase("contracts")
+	}
+
+	targetCheckInterval := 500
+	targetReached := false
+	contractIdx := 0
+
+	for contractIdx < g.config.NumContracts {
+		var addr common.Address
+		g.rng.Read(addr[:])
+		for genesisAddrs[addr] {
+			g.rng.Read(addr[:])
+		}
+
+		// RNG sequence must match old generateAccountMetas:
+		// Intn(1000) for nonce, Intn(100) for balance, Intn(CodeSize) for codeSize, Int63() for codeSeed
+		nonce := uint64(g.rng.Intn(1000))
+		balance := new(uint256.Int).Mul(uint256.NewInt(uint64(g.rng.Intn(100))), uint256.NewInt(1e18))
+		codeSize := g.config.CodeSize + g.rng.Intn(g.config.CodeSize)
+		codeSeed := g.rng.Int63()
+		numSlots := g.generateSlotCount()
+
+		// Generate code from seed
+		rng := mrand.New(mrand.NewSource(codeSeed))
+		code := make([]byte, codeSize)
+		rng.Read(code)
+		codeHash := crypto.Keccak256Hash(code)
+
+		// Compute storage root + write storage snapshots and trie nodes
+		addrHash := crypto.Keccak256Hash(addr[:])
+		storageRoot, err := computeStorageRootMPT(addr, addrHash, numSlots, rng)
+		if err != nil {
+			return nil, fmt.Errorf("compute storage root for contract %d: %w", contractIdx, err)
+		}
+
+		acc := &types.StateAccount{
+			Nonce:    nonce,
+			Balance:  balance,
+			Root:     storageRoot,
+			CodeHash: codeHash.Bytes(),
+		}
+
+		if err := processAccount(addr, acc, code, codeHash); err != nil {
+			return nil, fmt.Errorf("process contract %d: %w", contractIdx, err)
+		}
+
+		stats.ContractsCreated++
+		stats.StorageSlotsCreated += numSlots
+		if len(stats.SampleContracts) < 3 {
+			stats.SampleContracts = append(stats.SampleContracts, addr)
+		}
+
+		if g.config.LiveStats != nil {
+			g.config.LiveStats.AddContract(numSlots)
+			if stats.ContractsCreated%100 == 0 {
+				g.config.LiveStats.SyncBytes(g.writer.Stats())
+			}
+		}
+
+		contractIdx++
+		logProgress("contracts", contractIdx)
+
+		// Check target size periodically.
+		if g.config.TargetSize > 0 && contractIdx%targetCheckInterval == 0 {
+			mainDBSize, err := dirSize(g.config.DBPath)
+			if err == nil && mainDBSize >= g.config.TargetSize {
+				if g.config.Verbose {
+					log.Printf("Target size reached: DB %s (target: %s)",
+						formatBytesInternal(mainDBSize),
+						formatBytesInternal(g.config.TargetSize))
+				}
+				targetReached = true
+				break
+			}
+		}
+	}
+
+	// Deep-branch contracts
+	if g.config.DeepBranch.Enabled() {
+		deepSlots := g.config.DeepBranch.KnownSlots * (1 + g.config.DeepBranch.Depth)
+		for i := 0; i < g.config.DeepBranch.NumAccounts; i++ {
+			var addr common.Address
+			g.rng.Read(addr[:])
+			for genesisAddrs[addr] {
+				g.rng.Read(addr[:])
+			}
+
+			balance := new(uint256.Int).Mul(uint256.NewInt(uint64(g.rng.Intn(100)+1)), uint256.NewInt(1e18))
+			codeSize := g.config.CodeSize + g.rng.Intn(g.config.CodeSize)
+			codeSeed := g.rng.Int63()
+
+			rng := mrand.New(mrand.NewSource(codeSeed))
+			code := make([]byte, codeSize)
+			rng.Read(code)
+			codeHash := crypto.Keccak256Hash(code)
+			addrHash := crypto.Keccak256Hash(addr[:])
+
+			entries := generateDeepBranchStorage(
+				g.config.DeepBranch.KnownSlots,
+				g.config.DeepBranch.Depth,
+				rng,
+			)
+
+			var deepStorageCb trie.OnTrieNode
+			if nodeWriter != nil {
+				deepStorageCb = nodeWriter.storageCallback(addrHash)
+			}
+			storageTrie := trie.NewStackTrie(deepStorageCb)
+			for _, entry := range entries {
+				if entry.isPhantom {
+					if err := g.writer.WriteRawStorage(addr, 0, entry.trieKey, entry.value); err != nil {
+						return nil, fmt.Errorf("write raw storage: %w", err)
+					}
+				} else {
+					if err := g.writer.WriteStorage(addr, 0, entry.rawSlotKey, entry.value); err != nil {
+						return nil, fmt.Errorf("write storage: %w", err)
+					}
+				}
+				valueRLP, err := encodeStorageValue(entry.value)
+				if err != nil {
+					return nil, err
+				}
+				storageTrie.Update(entry.trieKey[:], valueRLP)
+			}
+
+			acc := &types.StateAccount{
+				Nonce:    1,
+				Balance:  balance,
+				Root:     storageTrie.Hash(),
+				CodeHash: codeHash.Bytes(),
+			}
+			if err := processAccount(addr, acc, code, codeHash); err != nil {
+				return nil, fmt.Errorf("process deep-branch contract: %w", err)
+			}
+
+			stats.StorageSlotsCreated += deepSlots
+			stats.ContractsCreated++
+		}
+		stats.DeepBranchAccounts = g.config.DeepBranch.NumAccounts
+		stats.DeepBranchDepth = g.config.DeepBranch.Depth
+
+		if g.config.Verbose {
+			log.Printf("Added %d deep-branch contracts (depth=%d, known_slots=%d)",
+				g.config.DeepBranch.NumAccounts, g.config.DeepBranch.Depth,
+				g.config.DeepBranch.KnownSlots)
+		}
+	}
+
+	stats.GenerationTime = time.Since(start)
+
+	if g.config.Verbose {
+		log.Printf("[MPT Phase 1] complete: %d accounts, %d contracts, %d slots",
+			stats.AccountsCreated, stats.ContractsCreated, stats.StorageSlotsCreated)
+		if targetReached {
+			log.Printf("[MPT Phase 1] stopped early — target size reached")
+		}
+	}
+
+	// Flush Phase 1 writes.
+	if acctTrieBatch.ValueSize() > 0 {
+		if err := acctTrieBatch.Write(); err != nil {
+			return nil, fmt.Errorf("flush account trie batch: %w", err)
+		}
+	}
 	if err := g.writer.Flush(); err != nil {
-		return fmt.Errorf("flush writes: %w", err)
+		return nil, fmt.Errorf("flush snapshot writes: %w", err)
 	}
 
-	// Compute and store state root
+	// ============================================================
+	// Phase 2: Build account trie from temp DB (sorted by addrHash)
+	// ============================================================
+	phase2Start := time.Now()
+
+	var acctCallback trie.OnTrieNode
+	if nodeWriter != nil {
+		acctCallback = nodeWriter.accountCallback()
+	}
+	accountTrie := trie.NewStackTrie(acctCallback)
+
+	iter := acctTrieDB.NewIterator(nil, nil)
+	acctTrieCount := 0
+	for iter.Next() {
+		accountTrie.Update(iter.Key(), iter.Value())
+		acctTrieCount++
+	}
+	iter.Release()
+
 	stateRoot := accountTrie.Hash()
 	stats.StateRoot = stateRoot
 
 	if err := g.writer.SetStateRoot(stateRoot); err != nil {
-		return fmt.Errorf("failed to write state root: %w", err)
+		return nil, fmt.Errorf("failed to write state root: %w", err)
 	}
 
 	if g.config.Verbose {
+		log.Printf("[MPT Phase 2] account trie built from %d entries in %v",
+			acctTrieCount, time.Since(phase2Start))
 		log.Printf("State root: %s", stateRoot.Hex())
 	}
+
+	stats.DBWriteTime = time.Since(start) - stats.GenerationTime
 
 	writerStats := g.writer.Stats()
 	stats.AccountBytes = writerStats.AccountBytes
@@ -566,13 +595,13 @@ func (g *Generator) streamWriteStateMPT(metas []*accountMeta, stats *Stats) erro
 	if nodeWriter != nil {
 		nodes, nbytes := nodeWriter.stats()
 		stats.TrieNodeBytes = uint64(nbytes)
-		stats.TotalBytes = stats.AccountBytes + stats.StorageBytes + stats.CodeBytes + stats.TrieNodeBytes
 		if g.config.Verbose {
 			log.Printf("MPT trie nodes written: %d nodes, %s", nodes, formatBytesInternal(uint64(nbytes)))
 		}
 	}
+	stats.TotalBytes = stats.AccountBytes + stats.StorageBytes + stats.CodeBytes + stats.TrieNodeBytes
 
-	return nil
+	return stats, nil
 }
 
 // generateStreamingBinary generates state for binary trie mode using a
@@ -806,8 +835,11 @@ func (g *Generator) generateStreamingBinary() (retStats *Stats, retErr error) {
 	// (one RNG call per contract, same sequence as generateSlotDistribution).
 	// When --contracts governs, we pre-compute the distribution for the
 	// known count.
+	// Pre-compute slot distribution only for moderate contract counts.
+	// Above 10M, the []int array alone costs 80MB+, so use on-demand generation.
+	const maxPrecomputeContracts = 10_000_000
 	var slotDistribution []int
-	if g.config.NumContracts < math.MaxInt32 {
+	if g.config.NumContracts <= maxPrecomputeContracts {
 		slotDistribution = g.generateSlotDistribution()
 	}
 
@@ -1018,43 +1050,6 @@ func (g *Generator) writeAccountSnapshot(acc *accountData) error {
 	return nil
 }
 
-// writeAccountSnapshotLegacy writes snapshot entries for an account to the batch writer.
-// Used only for binary trie temp DB operations where we need direct Pebble access.
-func writeAccountSnapshotLegacy(bw *batchWriter, acc *accountData) error {
-	// Storage snapshots: each slot keyed by Keccak256(slotKey), RLP-encoded value.
-	for _, slot := range acc.storage {
-		keyHash := crypto.Keccak256Hash(slot.Key[:])
-		valueRLP, err := encodeStorageValue(slot.Value)
-		if err != nil {
-			return fmt.Errorf("encode storage value: %w", err)
-		}
-		storageKey := storageSnapshotKey(acc.addrHash, keyHash)
-		if err := bw.put(storageKey, valueRLP, &bw.storageBytes); err != nil {
-			return fmt.Errorf("snapshot storage write: %w", err)
-		}
-	}
-
-	// Account snapshot: Root is always EmptyRootHash in binary trie mode
-	// (binary trie doesn't use per-account storage roots like MPT).
-	snapshotAcc := *acc.account
-	snapshotAcc.Root = types.EmptyRootHash
-	slimData := types.SlimAccountRLP(snapshotAcc)
-	key := accountSnapshotKey(acc.addrHash)
-	if err := bw.put(key, slimData, &bw.accountBytes); err != nil {
-		return fmt.Errorf("snapshot account write: %w", err)
-	}
-
-	// Code snapshot (same format as MPT).
-	if len(acc.code) > 0 {
-		cKey := codeKey(acc.codeHash)
-		if err := bw.put(cKey, acc.code, &bw.codeBytes); err != nil {
-			return fmt.Errorf("snapshot code write: %w", err)
-		}
-	}
-
-	return nil
-}
-
 // storageSlot is a key-value pair for deterministic storage iteration.
 type storageSlot struct {
 	Key   common.Hash
@@ -1081,111 +1076,6 @@ func mapToSortedSlots(m map[common.Hash]common.Hash) []storageSlot {
 		return bytes.Compare(slots[i].Key[:], slots[j].Key[:]) < 0
 	})
 	return slots
-}
-
-// generateAccounts generates account and contract data.
-func (g *Generator) generateAccounts(stats *Stats) ([]*accountData, []*accountData, error) {
-	accounts := make([]*accountData, 0, g.config.NumAccounts+len(g.config.GenesisAccounts))
-	contracts := make([]*accountData, 0, g.config.NumContracts)
-
-	// Track addresses used by genesis alloc to avoid collisions
-	usedAddresses := make(map[common.Address]bool)
-
-	// First, include genesis alloc accounts
-	for addr, acc := range g.config.GenesisAccounts {
-		usedAddresses[addr] = true
-
-		addrHash := crypto.Keccak256Hash(addr[:])
-		codeHash := common.BytesToHash(acc.CodeHash)
-
-		ad := &accountData{
-			address:  addr,
-			addrHash: addrHash,
-			account:  acc,
-		}
-
-		// Include genesis storage if present
-		if storageMap, ok := g.config.GenesisStorage[addr]; ok {
-			ad.storage = mapToSortedSlots(storageMap)
-			stats.StorageSlotsCreated += len(ad.storage)
-		}
-
-		// Include genesis code if present
-		if code, ok := g.config.GenesisCode[addr]; ok {
-			ad.code = code
-			ad.codeHash = codeHash
-		}
-
-		// Classify as account or contract based on code
-		if len(ad.code) > 0 || len(ad.storage) > 0 {
-			contracts = append(contracts, ad)
-		} else {
-			accounts = append(accounts, ad)
-		}
-	}
-
-	genesisAccountCount := len(accounts)
-	genesisContractCount := len(contracts)
-
-	if g.config.Verbose && len(g.config.GenesisAccounts) > 0 {
-		log.Printf("Included %d genesis alloc accounts (%d EOAs, %d contracts)",
-			len(g.config.GenesisAccounts), genesisAccountCount, genesisContractCount)
-	}
-
-	// Update live stats phase
-	if g.config.LiveStats != nil {
-		g.config.LiveStats.SetPhase("accounts")
-	}
-
-	// Generate additional EOA accounts
-	for i := 0; i < g.config.NumAccounts; i++ {
-		acc := g.generateEOA()
-		// Ensure no collision with genesis addresses (extremely unlikely but be safe)
-		for usedAddresses[acc.address] {
-			acc = g.generateEOA()
-		}
-		usedAddresses[acc.address] = true
-		accounts = append(accounts, acc)
-
-		// Update live stats
-		if g.config.LiveStats != nil {
-			g.config.LiveStats.AddAccount()
-		}
-	}
-	stats.AccountsCreated = len(accounts)
-
-	// Update live stats phase
-	if g.config.LiveStats != nil {
-		g.config.LiveStats.SetPhase("contracts")
-	}
-
-	// Generate contract accounts with storage
-	slotDistribution := g.generateSlotDistribution()
-
-	for i := 0; i < g.config.NumContracts; i++ {
-		numSlots := slotDistribution[i]
-		contract := g.generateContract(numSlots)
-		// Ensure no collision with genesis addresses
-		for usedAddresses[contract.address] {
-			contract = g.generateContract(numSlots)
-		}
-		usedAddresses[contract.address] = true
-		contracts = append(contracts, contract)
-		stats.StorageSlotsCreated += len(contract.storage)
-
-		// Update live stats
-		if g.config.LiveStats != nil {
-			g.config.LiveStats.AddContract(len(contract.storage))
-		}
-	}
-	stats.ContractsCreated = len(contracts)
-
-	if g.config.Verbose {
-		log.Printf("Generated %d accounts, %d contracts with %d total storage slots",
-			len(accounts), len(contracts), stats.StorageSlotsCreated)
-	}
-
-	return accounts, contracts, nil
 }
 
 // generateEOA generates an Externally Owned Account.
@@ -1341,240 +1231,6 @@ func dirSize(path string) (uint64, error) {
 	return total, err
 }
 
-// writeState dispatches to the appropriate trie-mode-specific writer.
-// Binary trie mode is handled by generateStreamingBinary and never reaches here.
-func (g *Generator) writeState(accounts, contracts []*accountData, stats *Stats) error {
-	switch g.config.TrieMode {
-	case TrieModeMPT, "":
-		return g.writeStateMPT(accounts, contracts, stats)
-	default:
-		return fmt.Errorf("unsupported trie mode: %q", g.config.TrieMode)
-	}
-}
-
-// batchWriter encapsulates the parallel batch writing infrastructure
-// shared by both MPT and binary trie state writers.
-type batchWriter struct {
-	db        ethdb.KeyValueStore
-	batchSize int
-	batchChan chan *batchWork
-	errChan   chan error
-	wg        sync.WaitGroup
-	closeOnce sync.Once
-	batch     ethdb.Batch
-	count     int
-
-	accountBytes atomic.Uint64
-	storageBytes atomic.Uint64
-	codeBytes    atomic.Uint64
-}
-
-type batchWork struct {
-	batch ethdb.Batch
-}
-
-func newBatchWriter(db ethdb.KeyValueStore, batchSize, workers int) *batchWriter {
-	bw := &batchWriter{
-		db:        db,
-		batchSize: batchSize,
-		batchChan: make(chan *batchWork, workers*2),
-		errChan:   make(chan error, 1),
-		batch:     db.NewBatch(),
-	}
-
-	for i := 0; i < workers; i++ {
-		bw.wg.Add(1)
-		go func() {
-			defer bw.wg.Done()
-			for work := range bw.batchChan {
-				if err := work.batch.Write(); err != nil {
-					select {
-					case bw.errChan <- err:
-					default:
-						log.Printf("ERROR: additional batch write failure (dropped): %v", err)
-					}
-					return
-				}
-			}
-		}()
-	}
-
-	return bw
-}
-
-// put writes a key-value pair and tracks bytes under the given counter.
-// Automatically flushes when batch size is reached.
-func (bw *batchWriter) put(key, value []byte, counter *atomic.Uint64) error {
-	if err := bw.batch.Put(key, value); err != nil {
-		return err
-	}
-	counter.Add(uint64(len(key) + len(value)))
-	bw.count++
-	if bw.count >= bw.batchSize {
-		return bw.flush()
-	}
-	return nil
-}
-
-// flush sends the current batch to workers. Uses select to detect worker
-// errors early and avoid deadlocking if all workers have exited.
-func (bw *batchWriter) flush() error {
-	if bw.count == 0 {
-		return nil
-	}
-	select {
-	case bw.batchChan <- &batchWork{batch: bw.batch}:
-	case err := <-bw.errChan:
-		return fmt.Errorf("batch worker failed: %w", err)
-	}
-	bw.batch = bw.db.NewBatch()
-	bw.count = 0
-	return nil
-}
-
-// finish flushes remaining data, waits for workers, and checks for errors.
-func (bw *batchWriter) finish() error {
-	if err := bw.flush(); err != nil {
-		return err
-	}
-	bw.closeOnce.Do(func() { close(bw.batchChan) })
-	bw.wg.Wait()
-
-	select {
-	case err := <-bw.errChan:
-		return err
-	default:
-	}
-	return nil
-}
-
-// close releases worker goroutines without flushing. Idempotent; safe to
-// call after finish() or on error paths.
-func (bw *batchWriter) close() {
-	bw.closeOnce.Do(func() { close(bw.batchChan) })
-	bw.wg.Wait()
-}
-
-// writeStateMPT writes all state to the database using a Merkle Patricia Trie.
-// Uses the StateWriter abstraction for format-agnostic output.
-func (g *Generator) writeStateMPT(accounts, contracts []*accountData, stats *Stats) error {
-	accountTrie := trie.NewStackTrie(nil)
-
-	// Merge and sort all accounts by address hash for deterministic trie construction
-	allAccounts := make([]*accountData, 0, len(accounts)+len(contracts))
-	allAccounts = append(allAccounts, accounts...)
-	allAccounts = append(allAccounts, contracts...)
-	sort.Slice(allAccounts, func(i, j int) bool {
-		return bytes.Compare(allAccounts[i].addrHash[:], allAccounts[j].addrHash[:]) < 0
-	})
-
-	// Process all accounts (EOAs and contracts) in sorted order
-	for _, acc := range allAccounts {
-		// Process storage for contracts.
-		// MPT requires keys sorted by Keccak256(key), not raw key.
-		if len(acc.storage) > 0 {
-			storageTrie := trie.NewStackTrie(nil)
-
-			type keyWithHash struct {
-				slot    storageSlot
-				keyHash common.Hash
-			}
-			withHashes := make([]keyWithHash, len(acc.storage))
-			for i, slot := range acc.storage {
-				withHashes[i] = keyWithHash{
-					slot:    slot,
-					keyHash: crypto.Keccak256Hash(slot.Key[:]),
-				}
-			}
-			sort.Slice(withHashes, func(i, j int) bool {
-				return bytes.Compare(withHashes[i].keyHash[:], withHashes[j].keyHash[:]) < 0
-			})
-
-			for _, kh := range withHashes {
-				// Write storage via StateWriter (format-agnostic)
-				if err := g.writer.WriteStorage(acc.address, 0, kh.slot.Key, kh.slot.Value); err != nil {
-					return fmt.Errorf("write storage: %w", err)
-				}
-
-				// Update storage trie for root computation
-				valueRLP, err := encodeStorageValue(kh.slot.Value)
-				if err != nil {
-					return err
-				}
-				storageTrie.Update(kh.keyHash[:], valueRLP)
-			}
-
-			acc.account.Root = storageTrie.Hash()
-		}
-
-		// Write contract code if present
-		if len(acc.code) > 0 {
-			if err := g.writer.WriteCode(acc.codeHash, acc.code); err != nil {
-				return fmt.Errorf("write code: %w", err)
-			}
-		}
-
-		// Write account via StateWriter (format-agnostic)
-		if err := g.writer.WriteAccount(acc.address, acc.account, 0); err != nil {
-			return fmt.Errorf("write account: %w", err)
-		}
-
-		// Add to account trie for root computation
-		slimData := types.SlimAccountRLP(*acc.account)
-		accountTrie.Update(acc.addrHash[:], slimData)
-	}
-
-	// Flush all pending writes
-	if err := g.writer.Flush(); err != nil {
-		return fmt.Errorf("flush writes: %w", err)
-	}
-
-	// Compute and store state root
-	stateRoot := accountTrie.Hash()
-	stats.StateRoot = stateRoot
-
-	// Write state root marker via StateWriter
-	if err := g.writer.SetStateRoot(stateRoot); err != nil {
-		return fmt.Errorf("failed to write state root: %w", err)
-	}
-
-	if g.config.Verbose {
-		log.Printf("State root: %s", stateRoot.Hex())
-	}
-
-	// Get stats from writer
-	writerStats := g.writer.Stats()
-	stats.AccountBytes = writerStats.AccountBytes
-	stats.StorageBytes = writerStats.StorageBytes
-	stats.CodeBytes = writerStats.CodeBytes
-
-	return nil
-}
-
-// Key encoding functions matching geth's rawdb schema
-
-var (
-	snapshotAccountPrefix = []byte("a")
-	snapshotStoragePrefix = []byte("o")
-	codePrefix            = []byte("c")
-)
-
-func accountSnapshotKey(hash common.Hash) []byte {
-	return append(snapshotAccountPrefix, hash.Bytes()...)
-}
-
-func storageSnapshotKey(accountHash, storageHash common.Hash) []byte {
-	buf := make([]byte, len(snapshotStoragePrefix)+common.HashLength+common.HashLength)
-	n := copy(buf, snapshotStoragePrefix)
-	n += copy(buf[n:], accountHash.Bytes())
-	copy(buf[n:], storageHash.Bytes())
-	return buf
-}
-
-func codeKey(hash common.Hash) []byte {
-	return append(codePrefix, hash.Bytes()...)
-}
-
 // encodeStorageValue encodes a storage value using RLP with leading zeros trimmed.
 func encodeStorageValue(value common.Hash) ([]byte, error) {
 	trimmed := trimLeftZeroes(value[:])
@@ -1597,12 +1253,6 @@ func trimLeftZeroes(s []byte) []byte {
 	return nil
 }
 
-// Helper for encoding block numbers
-func encodeBlockNumber(number uint64) []byte {
-	enc := make([]byte, 8)
-	binary.BigEndian.PutUint64(enc, number)
-	return enc
-}
 
 func formatBytesInternal(b uint64) string {
 	const unit = 1024

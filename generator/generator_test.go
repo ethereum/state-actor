@@ -236,7 +236,7 @@ func TestKeyEncoding(t *testing.T) {
 	addrHash := crypto.Keccak256Hash(addr[:])
 
 	// Test account snapshot key
-	accKey := accountSnapshotKey(addrHash)
+	accKey := gethAccountSnapshotKey(addrHash)
 	if len(accKey) != 1+common.HashLength {
 		t.Errorf("Account key wrong length: got %d, want %d", len(accKey), 1+common.HashLength)
 	}
@@ -247,7 +247,7 @@ func TestKeyEncoding(t *testing.T) {
 	// Test storage snapshot key
 	storageKey := common.HexToHash("0xabcdef")
 	storageKeyHash := crypto.Keccak256Hash(storageKey[:])
-	stoKey := storageSnapshotKey(addrHash, storageKeyHash)
+	stoKey := gethStorageSnapshotKey(addrHash, storageKeyHash)
 	if len(stoKey) != 1+common.HashLength*2 {
 		t.Errorf("Storage key wrong length: got %d, want %d", len(stoKey), 1+common.HashLength*2)
 	}
@@ -257,7 +257,7 @@ func TestKeyEncoding(t *testing.T) {
 
 	// Test code key
 	codeHash := crypto.Keccak256Hash([]byte("test code"))
-	cKey := codeKey(codeHash)
+	cKey := gethCodeKey(codeHash)
 	if len(cKey) != 1+common.HashLength {
 		t.Errorf("Code key wrong length: got %d, want %d", len(cKey), 1+common.HashLength)
 	}
