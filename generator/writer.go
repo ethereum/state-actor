@@ -30,11 +30,17 @@ func ParseOutputFormat(s string) OutputFormat {
 // StateWriter abstracts database writes for different client formats.
 type StateWriter interface {
 	// WriteAccount writes an account to the database.
-	// For contracts, codeHash should match the hash of the code written via WriteCode.
-	WriteAccount(addr common.Address, acc *types.StateAccount, incarnation uint64) error
+	// addrHash is the pre-computed keccak256(addr) to avoid redundant hashing.
+	WriteAccount(addr common.Address, addrHash common.Hash, acc *types.StateAccount, incarnation uint64) error
 
 	// WriteStorage writes a storage slot for an account.
-	WriteStorage(addr common.Address, incarnation uint64, slot, value common.Hash) error
+	// addr and slot are raw keys; addrHash and slotHash are pre-computed keccak256
+	// hashes to avoid redundant hashing in geth format. Erigon uses raw keys.
+	WriteStorage(addr common.Address, addrHash common.Hash, slot common.Hash, slotHash common.Hash, value common.Hash) error
+
+	// WriteStorageRLP writes a storage slot with pre-encoded RLP value.
+	// Used when the caller already has the RLP encoding (avoids double-encode).
+	WriteStorageRLP(addrHash common.Hash, slotHash common.Hash, valueRLP []byte) error
 
 	// WriteRawStorage writes a storage slot using a pre-hashed trie key.
 	// The hashedSlot is used directly as the snapshot/trie key without

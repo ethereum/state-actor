@@ -64,14 +64,19 @@ type groupChild struct {
 // Each node is written at key "vA" + path, where path is one byte per
 // tree level (0x00=left, 0x01=right). Flushes when batch exceeds 256MB.
 type trieNodeWriter struct {
-	batch ethdb.Batch
-	db    ethdb.KeyValueStore
-	nodes int
-	bytes int64
+	batch  ethdb.Batch
+	db     ethdb.KeyValueStore
+	nodes  int
+	bytes  int64
+	keyBuf []byte // reusable key buffer, grown as needed
 }
 
 func (w *trieNodeWriter) writeNode(path []byte, blob []byte) {
-	key := make([]byte, len(verkleTrieNodeKeyPrefix)+len(path))
+	needed := len(verkleTrieNodeKeyPrefix) + len(path)
+	if cap(w.keyBuf) < needed {
+		w.keyBuf = make([]byte, needed*2) // grow with headroom
+	}
+	key := w.keyBuf[:needed]
 	copy(key, verkleTrieNodeKeyPrefix)
 	copy(key[len(verkleTrieNodeKeyPrefix):], path)
 	if err := w.batch.Put(key, blob); err != nil {

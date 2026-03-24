@@ -200,7 +200,7 @@ func (g *Generator) generateStreamingMPT() (*Stats, error) {
 		}
 
 		// Write account snapshot
-		if err := g.writer.WriteAccount(addr, acc, 0); err != nil {
+		if err := g.writer.WriteAccount(addr, addrHash, acc, 0); err != nil {
 			return fmt.Errorf("write account: %w", err)
 		}
 
@@ -245,12 +245,13 @@ func (g *Generator) generateStreamingMPT() (*Stats, error) {
 		})
 
 		for _, kh := range withHashes {
-			if err := g.writer.WriteStorage(addr, 0, kh.slot.Key, kh.slot.Value); err != nil {
-				return common.Hash{}, fmt.Errorf("write storage: %w", err)
-			}
+			// Encode RLP once, use for both snapshot and trie (avoids double-encode).
 			valueRLP, err := encodeStorageValue(kh.slot.Value)
 			if err != nil {
 				return common.Hash{}, err
+			}
+			if err := g.writer.WriteStorageRLP(addrHash, kh.keyHash, valueRLP); err != nil {
+				return common.Hash{}, fmt.Errorf("write storage: %w", err)
 			}
 			storageTrie.Update(kh.keyHash[:], valueRLP)
 		}
@@ -310,12 +311,12 @@ func (g *Generator) generateStreamingMPT() (*Stats, error) {
 				return bytes.Compare(withHashes[i].keyHash[:], withHashes[j].keyHash[:]) < 0
 			})
 			for _, kh := range withHashes {
-				if err := g.writer.WriteStorage(addr, 0, kh.slot.Key, kh.slot.Value); err != nil {
-					return nil, fmt.Errorf("write genesis storage: %w", err)
-				}
 				valueRLP, err := encodeStorageValue(kh.slot.Value)
 				if err != nil {
 					return nil, err
+				}
+				if err := g.writer.WriteStorageRLP(addrHash, kh.keyHash, valueRLP); err != nil {
+					return nil, fmt.Errorf("write genesis storage: %w", err)
 				}
 				storageTrie.Update(kh.keyHash[:], valueRLP)
 			}
@@ -499,7 +500,8 @@ func (g *Generator) generateStreamingMPT() (*Stats, error) {
 						return nil, fmt.Errorf("write raw storage: %w", err)
 					}
 				} else {
-					if err := g.writer.WriteStorage(addr, 0, entry.rawSlotKey, entry.value); err != nil {
+					slotHash := crypto.Keccak256Hash(entry.rawSlotKey[:])
+					if err := g.writer.WriteStorage(addr, addrHash, entry.rawSlotKey, slotHash, entry.value); err != nil {
 						return nil, fmt.Errorf("write storage: %w", err)
 					}
 				}
@@ -556,6 +558,13 @@ func (g *Generator) generateStreamingMPT() (*Stats, error) {
 	// ============================================================
 	// Phase 2: Build account trie from temp DB (sorted by addrHash)
 	// ============================================================
+
+	// Compact temp DB to flatten LSM levels for single-pass sequential iteration.
+	// Same optimization the binary trie path uses before Phase 2.
+	if err := acctTrieDB.Compact(nil, nil); err != nil {
+		return nil, fmt.Errorf("compact account trie temp DB: %w", err)
+	}
+
 	phase2Start := time.Now()
 
 	var acctCallback trie.OnTrieNode
@@ -1025,9 +1034,10 @@ func (g *Generator) generateStreamingBinary() (retStats *Stats, retErr error) {
 // Handles storage, account, and code writes. This is the snapshot layer —
 // separate from trie root computation.
 func (g *Generator) writeAccountSnapshot(acc *accountData) error {
-	// Storage: write each slot via StateWriter
+	// Storage: write each slot via StateWriter (pre-compute hashes to avoid redundant work)
 	for _, slot := range acc.storage {
-		if err := g.writer.WriteStorage(acc.address, 0, slot.Key, slot.Value); err != nil {
+		slotHash := crypto.Keccak256Hash(slot.Key[:])
+		if err := g.writer.WriteStorage(acc.address, acc.addrHash, slot.Key, slotHash, slot.Value); err != nil {
 			return fmt.Errorf("write storage: %w", err)
 		}
 	}
@@ -1036,7 +1046,7 @@ func (g *Generator) writeAccountSnapshot(acc *accountData) error {
 	// (binary trie doesn't use per-account storage roots like MPT).
 	snapshotAcc := *acc.account
 	snapshotAcc.Root = types.EmptyRootHash
-	if err := g.writer.WriteAccount(acc.address, &snapshotAcc, 0); err != nil {
+	if err := g.writer.WriteAccount(acc.address, acc.addrHash, &snapshotAcc, 0); err != nil {
 		return fmt.Errorf("write account: %w", err)
 	}
 

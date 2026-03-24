@@ -57,28 +57,27 @@ func (w *GethWriter) DB() ethdb.KeyValueStore {
 }
 
 // WriteAccount writes an account to the snapshot layer.
-func (w *GethWriter) WriteAccount(addr common.Address, acc *types.StateAccount, incarnation uint64) error {
-	// Geth snapshot layer uses keccak256(address) as key
-	addrHash := crypto.Keccak256Hash(addr[:])
-
-	// SlimAccountRLP encodes the account for snapshot storage
+// addrHash is pre-computed keccak256(addr) to avoid redundant hashing.
+func (w *GethWriter) WriteAccount(addr common.Address, addrHash common.Hash, acc *types.StateAccount, incarnation uint64) error {
 	slimData := types.SlimAccountRLP(*acc)
-
 	key := gethAccountSnapshotKey(addrHash)
 	return w.bw.put(key, slimData, &w.accountBytes)
 }
 
 // WriteStorage writes a storage slot to the snapshot layer.
-func (w *GethWriter) WriteStorage(addr common.Address, incarnation uint64, slot, value common.Hash) error {
-	addrHash := crypto.Keccak256Hash(addr[:])
-	slotHash := crypto.Keccak256Hash(slot[:])
-
-	// RLP-encode the value with leading zeros trimmed
+// addrHash and slotHash are pre-computed keccak256 hashes (addr and slot are unused in geth format).
+func (w *GethWriter) WriteStorage(addr common.Address, addrHash common.Hash, slot common.Hash, slotHash common.Hash, value common.Hash) error {
 	valueRLP, err := gethEncodeStorageValue(value)
 	if err != nil {
 		return fmt.Errorf("encode storage value: %w", err)
 	}
+	key := gethStorageSnapshotKey(addrHash, slotHash)
+	return w.bw.put(key, valueRLP, &w.storageBytes)
+}
 
+// WriteStorageRLP writes a storage slot with pre-encoded RLP value.
+// Avoids double-encoding when the caller already has the RLP bytes.
+func (w *GethWriter) WriteStorageRLP(addrHash common.Hash, slotHash common.Hash, valueRLP []byte) error {
 	key := gethStorageSnapshotKey(addrHash, slotHash)
 	return w.bw.put(key, valueRLP, &w.storageBytes)
 }
@@ -87,12 +86,10 @@ func (w *GethWriter) WriteStorage(addr common.Address, incarnation uint64, slot,
 // The hashedSlot bypasses keccak256 and is used directly as the snapshot key.
 func (w *GethWriter) WriteRawStorage(addr common.Address, incarnation uint64, hashedSlot, value common.Hash) error {
 	addrHash := crypto.Keccak256Hash(addr[:])
-
 	valueRLP, err := gethEncodeStorageValue(value)
 	if err != nil {
 		return fmt.Errorf("encode storage value: %w", err)
 	}
-
 	key := gethStorageSnapshotKey(addrHash, hashedSlot)
 	return w.bw.put(key, valueRLP, &w.storageBytes)
 }
