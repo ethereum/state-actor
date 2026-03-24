@@ -114,7 +114,8 @@ func (w *ErigonWriter) createTables() error {
 }
 
 // WriteAccount buffers an account write.
-func (w *ErigonWriter) WriteAccount(addr common.Address, acc *types.StateAccount, incarnation uint64) error {
+// addrHash is accepted for interface compliance but not used (Erigon uses unhashed addresses).
+func (w *ErigonWriter) WriteAccount(addr common.Address, addrHash common.Hash, acc *types.StateAccount, incarnation uint64) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
@@ -131,21 +132,25 @@ func (w *ErigonWriter) WriteAccount(addr common.Address, acc *types.StateAccount
 }
 
 // WriteStorage buffers a storage slot write.
-func (w *ErigonWriter) WriteStorage(addr common.Address, incarnation uint64, slot, value common.Hash) error {
+// Erigon uses raw addr+slot (PlainState), ignoring pre-computed hashes.
+func (w *ErigonWriter) WriteStorage(addr common.Address, addrHash common.Hash, slot common.Hash, slotHash common.Hash, value common.Hash) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
 	key := erigonStorageKey{
 		addr:        addr,
-		incarnation: incarnation,
+		incarnation: 0,
 		slot:        slot,
 	}
 	w.storage[key] = value
 
-	// Estimate bytes: address(20) + incarnation(8) + slot(32) + value(32)
 	w.storageBytes.Add(20 + 8 + 32 + 32)
-
 	return nil
+}
+
+// WriteStorageRLP is not used by Erigon format (Erigon encodes values differently).
+func (w *ErigonWriter) WriteStorageRLP(addrHash common.Hash, slotHash common.Hash, valueRLP []byte) error {
+	return fmt.Errorf("WriteStorageRLP not supported for erigon format")
 }
 
 // WriteRawStorage returns an error because deep-branch mode is not supported

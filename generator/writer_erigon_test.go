@@ -6,6 +6,7 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
+	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/holiman/uint256"
 )
 
@@ -33,7 +34,7 @@ func TestErigonWriterBasic(t *testing.T) {
 		CodeHash: types.EmptyCodeHash.Bytes(),
 	}
 
-	if err := w.WriteAccount(addr, acc, 0); err != nil {
+	if err := w.WriteAccount(addr, crypto.Keccak256Hash(addr[:]), acc, 0); err != nil {
 		t.Fatalf("Failed to write account: %v", err)
 	}
 
@@ -41,7 +42,7 @@ func TestErigonWriterBasic(t *testing.T) {
 	slot := common.HexToHash("0x0000000000000000000000000000000000000000000000000000000000000001")
 	value := common.HexToHash("0x000000000000000000000000000000000000000000000000000000000000002a")
 
-	if err := w.WriteStorage(addr, 0, slot, value); err != nil {
+	if err := w.WriteStorage(addr, crypto.Keccak256Hash(addr[:]), slot, crypto.Keccak256Hash(slot[:]), value); err != nil {
 		t.Fatalf("Failed to write storage: %v", err)
 	}
 
@@ -213,7 +214,7 @@ func TestGethWriterBasic(t *testing.T) {
 		CodeHash: types.EmptyCodeHash.Bytes(),
 	}
 
-	if err := w.WriteAccount(addr, acc, 0); err != nil {
+	if err := w.WriteAccount(addr, crypto.Keccak256Hash(addr[:]), acc, 0); err != nil {
 		t.Fatalf("Failed to write account: %v", err)
 	}
 
@@ -221,7 +222,7 @@ func TestGethWriterBasic(t *testing.T) {
 	slot := common.HexToHash("0x0000000000000000000000000000000000000000000000000000000000000001")
 	value := common.HexToHash("0x000000000000000000000000000000000000000000000000000000000000002a")
 
-	if err := w.WriteStorage(addr, 0, slot, value); err != nil {
+	if err := w.WriteStorage(addr, crypto.Keccak256Hash(addr[:]), slot, crypto.Keccak256Hash(slot[:]), value); err != nil {
 		t.Fatalf("Failed to write storage: %v", err)
 	}
 
