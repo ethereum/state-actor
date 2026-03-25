@@ -251,9 +251,17 @@ func (g *Generator) generateStreamingMPT() (*Stats, error) {
 				snapErrCh <- fmt.Errorf("write account: %w", err)
 				return
 			}
-			// Store trie entry for Phase 2
-			slimData := types.SlimAccountRLP(work.acc)
-			if err := writeAcctTrieEntry(work.addrHash, slimData); err != nil {
+			// Store trie entry for Phase 2.
+			// MUST use full StateAccount RLP (not SlimAccountRLP) because geth's
+			// trie reader decodes leaf values as StateAccount with a fixed 32-byte
+			// Root field. SlimAccountRLP omits Root for EOAs → decode crash:
+			// "rlp: input string too short for common.Hash"
+			trieData, err := rlp.EncodeToBytes(&work.acc)
+			if err != nil {
+				snapErrCh <- fmt.Errorf("encode account for trie: %w", err)
+				return
+			}
+			if err := writeAcctTrieEntry(work.addrHash, trieData); err != nil {
 				snapErrCh <- fmt.Errorf("write trie entry: %w", err)
 				return
 			}
