@@ -9,6 +9,7 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto"
+	"github.com/ethereum/go-ethereum/trie/bintrie"
 	"github.com/holiman/uint256"
 )
 
@@ -227,43 +228,36 @@ func TestGenesisAccountsIntegrationBinaryTrie(t *testing.T) {
 		t.Errorf("Expected at least 2 storage slots from genesis, got %d", stats.StorageSlotsCreated)
 	}
 
-	// Verify genesis accounts are in the database
+	// In binary trie mode, flat state is stored as stem blobs under "vX" prefix,
+	// NOT as MPT-style "a"/"o" snapshot entries.
 	db := gen.DB()
 
+	// Verify genesis EOA exists in stem blobs
 	addr1 := common.HexToAddress("0x1111111111111111111111111111111111111111")
-	addrHash1 := crypto.Keccak256Hash(addr1[:])
-	data1, err := db.Get(append([]byte("a"), addrHash1[:]...))
+	var zeroKey [hashSize]byte
+	stem1 := bintrie.GetBinaryTreeKey(addr1, zeroKey[:])
+	stemBlobKey1 := append([]byte("vX"), stem1[:stemSize]...)
+	data1, err := db.Get(stemBlobKey1)
 	if err != nil {
-		t.Errorf("Genesis EOA not found in database: %v", err)
+		t.Errorf("Genesis EOA stem blob not found in database: %v", err)
 	}
-	if len(data1) == 0 {
-		t.Error("Genesis EOA data is empty")
+	if len(data1) < hashSize {
+		t.Error("Genesis EOA stem blob is too short")
 	}
 
+	// Verify genesis contract exists in stem blobs
 	addr2 := common.HexToAddress("0x2222222222222222222222222222222222222222")
-	addrHash2 := crypto.Keccak256Hash(addr2[:])
-	data2, err := db.Get(append([]byte("a"), addrHash2[:]...))
+	stem2 := bintrie.GetBinaryTreeKey(addr2, zeroKey[:])
+	stemBlobKey2 := append([]byte("vX"), stem2[:stemSize]...)
+	data2, err := db.Get(stemBlobKey2)
 	if err != nil {
-		t.Errorf("Genesis contract not found in database: %v", err)
+		t.Errorf("Genesis contract stem blob not found in database: %v", err)
 	}
-	if len(data2) == 0 {
-		t.Error("Genesis contract data is empty")
+	if len(data2) < hashSize {
+		t.Error("Genesis contract stem blob is too short")
 	}
 
-	// Verify storage slot
-	slotKey := common.HexToHash("0x01")
-	slotKeyHash := crypto.Keccak256Hash(slotKey[:])
-	storageKey := append([]byte("o"), addrHash2[:]...)
-	storageKey = append(storageKey, slotKeyHash[:]...)
-	storageData, err := db.Get(storageKey)
-	if err != nil {
-		t.Errorf("Genesis storage slot not found: %v", err)
-	}
-	if len(storageData) == 0 {
-		t.Error("Genesis storage slot data is empty")
-	}
-
-	// Verify code
+	// Verify code (still under "c" prefix)
 	codeHash := crypto.Keccak256Hash(genesisCode[addr2])
 	codeData, err := db.Get(append([]byte("c"), codeHash[:]...))
 	if err != nil {

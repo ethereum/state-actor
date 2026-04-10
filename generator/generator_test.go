@@ -1,12 +1,12 @@
 package generator
 
 import (
+	"math/bits"
 	"os"
 	"path/filepath"
 	"testing"
 
 	"github.com/ethereum/go-ethereum/common"
-	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/ethdb/pebble"
 	"github.com/ethereum/go-ethereum/rlp"
@@ -487,42 +487,68 @@ func TestDatabaseContentBinaryTrie(t *testing.T) {
 		t.Errorf("Snapshot root mismatch: got %s, want %s", snapshotRoot.Hex(), stats.StateRoot.Hex())
 	}
 
-	// Count account snapshots (prefix "a")
+	// MPT-style snapshot entries ("a", "o") should NOT exist in binary trie mode.
+	// Flat state is stored as stem blobs under "vX" prefix instead.
 	iter := db.NewIterator([]byte("a"), nil)
 	accountCount := 0
 	for iter.Next() {
-		// Decode slim account and verify Root == EmptyRootHash
-		// This is the key binary trie invariant: no per-account storage subtries
-		val := iter.Value()
-		acc, err := types.FullAccount(val)
-		if err != nil {
-			t.Fatalf("Failed to decode slim account: %v", err)
-		}
-		if acc.Root != types.EmptyRootHash {
-			t.Errorf("Binary trie account should have EmptyRootHash, got %s", acc.Root.Hex())
-		}
 		accountCount++
 	}
 	iter.Release()
-
-	expectedAccounts := config.NumAccounts + config.NumContracts
-	if accountCount != expectedAccounts {
-		t.Errorf("Expected %d accounts in DB, got %d", expectedAccounts, accountCount)
+	if accountCount != 0 {
+		t.Errorf("Expected 0 MPT account snapshots in binary trie mode, got %d", accountCount)
 	}
 
-	// Count storage snapshots (prefix "o")
 	iter = db.NewIterator([]byte("o"), nil)
 	storageCount := 0
 	for iter.Next() {
 		storageCount++
 	}
 	iter.Release()
-
-	if storageCount != stats.StorageSlotsCreated {
-		t.Errorf("Expected %d storage slots in DB, got %d", stats.StorageSlotsCreated, storageCount)
+	if storageCount != 0 {
+		t.Errorf("Expected 0 MPT storage snapshots in binary trie mode, got %d", storageCount)
 	}
 
-	// Count code entries (prefix "c")
+	// Verify stem blobs exist under "vX" prefix.
+	iter = db.NewIterator([]byte("vX"), nil)
+	stemBlobCount := 0
+	for iter.Next() {
+		key := iter.Key()
+		val := iter.Value()
+		// Key must be "vX" + stem(31 bytes) = 33 bytes total
+		if len(key) != len(binTrieFlatStatePrefix)+stemSize {
+			t.Errorf("Unexpected stem blob key length: got %d, want %d", len(key), len(binTrieFlatStatePrefix)+stemSize)
+		}
+		// Value must be bitmap(32) + N*32 bytes where N = popcount(bitmap)
+		if len(val) < hashSize {
+			t.Errorf("Stem blob too short: got %d bytes, want at least %d", len(val), hashSize)
+			continue
+		}
+		var bitmap [hashSize]byte
+		copy(bitmap[:], val[:hashSize])
+		popcount := 0
+		for _, b := range bitmap {
+			popcount += bits.OnesCount8(b)
+		}
+		expectedLen := hashSize + popcount*hashSize
+		if len(val) != expectedLen {
+			t.Errorf("Stem blob length mismatch: got %d, want %d (popcount=%d)", len(val), expectedLen, popcount)
+		}
+		stemBlobCount++
+	}
+	iter.Release()
+
+	if stemBlobCount == 0 {
+		t.Errorf("Expected stem blobs under 'vX' prefix, got 0")
+	}
+	t.Logf("Found %d stem blobs under 'vX' prefix", stemBlobCount)
+
+	// Verify StemBlobBytes stat is populated
+	if stats.StemBlobBytes == 0 {
+		t.Errorf("Expected StemBlobBytes > 0, got 0")
+	}
+
+	// Count code entries (prefix "c") — still written in binary trie mode
 	iter = db.NewIterator([]byte("c"), nil)
 	codeCount := 0
 	for iter.Next() {
@@ -532,6 +558,64 @@ func TestDatabaseContentBinaryTrie(t *testing.T) {
 
 	if codeCount != config.NumContracts {
 		t.Errorf("Expected %d code entries in DB, got %d", config.NumContracts, codeCount)
+	}
+}
+
+func TestStemBlobEncoding(t *testing.T) {
+	// Verify serializeStemBlob produces the expected format:
+	// [bitmap(32)][value0(32)][value1(32)]...
+	// Bitmap: byte offset/8, MSB = lowest in-byte offset.
+
+	entries := []trieEntry{
+		// Offset 0 (BasicData) — byte 0, bit 7
+		{Key: [32]byte{31: 0}, Value: [32]byte{0: 0xAA}},
+		// Offset 1 (CodeHash) — byte 0, bit 6
+		{Key: [32]byte{31: 1}, Value: [32]byte{0: 0xBB}},
+		// Offset 128 (code chunk 0) — byte 16, bit 7
+		{Key: [32]byte{31: 128}, Value: [32]byte{0: 0xCC}},
+	}
+
+	blob := serializeStemBlob(entries)
+
+	// Expected size: 32 (bitmap) + 3*32 (values) = 128
+	if len(blob) != 128 {
+		t.Fatalf("Expected blob length 128, got %d", len(blob))
+	}
+
+	// Check bitmap bits
+	bitmap := blob[:32]
+	// Offset 0: byte 0, bit 7 (0x80)
+	// Offset 1: byte 0, bit 6 (0x40)
+	// Combined byte 0 = 0xC0
+	if bitmap[0] != 0xC0 {
+		t.Errorf("Bitmap byte 0: got 0x%02X, want 0xC0", bitmap[0])
+	}
+	// Offset 128: byte 16, bit 7 (0x80)
+	if bitmap[16] != 0x80 {
+		t.Errorf("Bitmap byte 16: got 0x%02X, want 0x80", bitmap[16])
+	}
+	// All other bitmap bytes should be 0
+	for i, b := range bitmap {
+		if i == 0 || i == 16 {
+			continue
+		}
+		if b != 0 {
+			t.Errorf("Bitmap byte %d should be 0, got 0x%02X", i, b)
+		}
+	}
+
+	// Check values are packed in order
+	val0 := blob[32:64]
+	val1 := blob[64:96]
+	val2 := blob[96:128]
+	if val0[0] != 0xAA {
+		t.Errorf("Value 0 first byte: got 0x%02X, want 0xAA", val0[0])
+	}
+	if val1[0] != 0xBB {
+		t.Errorf("Value 1 first byte: got 0x%02X, want 0xBB", val1[0])
+	}
+	if val2[0] != 0xCC {
+		t.Errorf("Value 2 first byte: got 0x%02X, want 0xCC", val2[0])
 	}
 }
 
@@ -607,7 +691,7 @@ func TestBinaryTrieStateRootValue(t *testing.T) {
 		t.Fatalf("Failed to generate state: %v", err)
 	}
 
-	expected := common.HexToHash("0x705a2444d071172ede2025116221d21ee38c8dc9fc426b76eb61ecc348f913c2")
+	expected := common.HexToHash("0xee656cf3921d8cbd1aa003a881128846feed2f2c670fa9110cac78f6f8e9d263")
 	if stats.StateRoot != expected {
 		t.Errorf("Binary trie state root mismatch:\n  got:  %s\n  want: %s\nThis may indicate an upstream bintrie API change.",
 			stats.StateRoot.Hex(), expected.Hex())
@@ -726,7 +810,7 @@ func TestBinaryTrieCommitIntervalGoldenHash(t *testing.T) {
 	}
 
 	// Must match the same golden hash as TestBinaryTrieStateRootValue.
-	expected := common.HexToHash("0x705a2444d071172ede2025116221d21ee38c8dc9fc426b76eb61ecc348f913c2")
+	expected := common.HexToHash("0xee656cf3921d8cbd1aa003a881128846feed2f2c670fa9110cac78f6f8e9d263")
 	if stats.StateRoot != expected {
 		t.Errorf("CommitInterval golden hash mismatch:\n  got:  %s\n  want: %s",
 			stats.StateRoot.Hex(), expected.Hex())

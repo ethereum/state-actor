@@ -434,8 +434,8 @@ func TestParallelStreamingEquivalence(t *testing.T) {
 				parallelDB = rawdb.NewMemoryDatabase()
 			}
 			iter := tempDB.NewIterator(nil, nil)
-			parallelRoot, _, pErr := computeBinaryRootStreamingParallel(
-				context.Background(), iter, parallelDB, tc.groupDepth, 4,
+			parallelRoot, _, _, pErr := computeBinaryRootStreamingParallel(
+				context.Background(), iter, parallelDB, tc.groupDepth, 4, nil,
 			)
 			if pErr != nil {
 				t.Fatalf("parallel computation failed: %v", pErr)

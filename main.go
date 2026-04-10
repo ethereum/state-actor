@@ -395,6 +395,9 @@ func main() {
 	if stats.TrieNodeBytes > 0 {
 		fmt.Printf("Trie Node Bytes:   %s\n", formatBytes(stats.TrieNodeBytes))
 	}
+	if stats.StemBlobBytes > 0 {
+		fmt.Printf("Stem Blob Bytes:   %s\n", formatBytes(stats.StemBlobBytes))
+	}
 	// Report actual on-disk size (after Pebble compression).
 	if dbSize, err := dirSize(config.DBPath); err == nil {
 		fmt.Printf("Total DB Size:     %s\n", formatBytes(dbSize))

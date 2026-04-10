@@ -44,6 +44,12 @@ func bitmapSizeForDepth(groupDepth int) int {
 // (rawdb.VerklePrefix), so the full key is "v" + "A" + path.
 var verkleTrieNodeKeyPrefix = []byte("vA")
 
+// binTrieFlatStatePrefix is the database key prefix for bintrie flat-state
+// stem blobs. Each stem blob stores the packed (offset, value) pairs for a
+// single 31-byte stem. Full key: "v" + "X" + stem(31 bytes).
+// Matches rawdb.BinTrieStemPrefix in the go-ethereum bintrie-flat-state branch.
+var binTrieFlatStatePrefix = []byte("vX")
+
 // trieEntry is a single key-value pair destined for the binary trie.
 // Key[0:31] is the stem (routes through InternalNode bit tree, 248 bits).
 // Key[31] is the suffix (indexes into a StemNode's 256-slot Values array).
@@ -96,6 +102,73 @@ func (w *trieNodeWriter) flush() {
 	if w.batch.ValueSize() > 0 {
 		if err := w.batch.Write(); err != nil {
 			log.Fatalf("failed to flush trie node batch: %v", err)
+		}
+	}
+}
+
+// serializeStemBlob encodes trie entries sharing a stem into the bintrie
+// flat-state stem blob format: [bitmap(32)][value₀(32)][value₁(32)]...
+// This is the same bitmap+values encoding as serializeStemNode, minus the
+// [type][stem] prefix (the stem is stored in the DB key instead).
+//
+// Entries must share the same stem and be sorted by suffix (Key[31]).
+func serializeStemBlob(entries []trieEntry) []byte {
+	var bitmap [hashSize]byte
+	for _, e := range entries {
+		suffix := e.Key[stemSize]
+		bitmap[suffix/8] |= 1 << (7 - (suffix % 8))
+	}
+
+	buf := make([]byte, hashSize+len(entries)*hashSize)
+	copy(buf[:hashSize], bitmap[:])
+
+	offset := hashSize
+	for _, e := range entries {
+		copy(buf[offset:offset+hashSize], e.Value[:])
+		offset += hashSize
+	}
+	return buf
+}
+
+// stemBlobWriter batches flat-state stem blob writes to Pebble.
+// Each blob is written at key "vX" + stem(31 bytes). Flushes when
+// batch exceeds 256MB (same threshold as trieNodeWriter).
+type stemBlobWriter struct {
+	batch  ethdb.Batch
+	db     ethdb.KeyValueStore
+	stems  int
+	bytes  int64
+	keyBuf []byte
+}
+
+func (w *stemBlobWriter) writeStemBlob(stem []byte, entries []trieEntry) {
+	blob := serializeStemBlob(entries)
+
+	needed := len(binTrieFlatStatePrefix) + stemSize
+	if cap(w.keyBuf) < needed {
+		w.keyBuf = make([]byte, needed)
+	}
+	key := w.keyBuf[:needed]
+	copy(key, binTrieFlatStatePrefix)
+	copy(key[len(binTrieFlatStatePrefix):], stem[:stemSize])
+
+	if err := w.batch.Put(key, blob); err != nil {
+		log.Fatalf("failed to write stem blob: %v", err)
+	}
+	w.stems++
+	w.bytes += int64(len(key) + len(blob))
+	if w.batch.ValueSize() >= 256*1024*1024 {
+		if err := w.batch.Write(); err != nil {
+			log.Fatalf("failed to flush stem blob batch: %v", err)
+		}
+		w.batch.Reset()
+	}
+}
+
+func (w *stemBlobWriter) flush() {
+	if w.batch.ValueSize() > 0 {
+		if err := w.batch.Write(); err != nil {
+			log.Fatalf("failed to flush stem blob batch: %v", err)
 		}
 	}
 }
@@ -639,6 +712,11 @@ type trieNodeStats struct {
 	Bytes int64
 }
 
+type stemBlobStats struct {
+	Stems int
+	Bytes int64
+}
+
 // computeBinaryRootStreamingFromSlice is the slice-based variant used for
 // testing equivalence with the recursive approach. It feeds pre-sorted
 // entries directly into the streaming builder without needing a DB iterator.
@@ -826,7 +904,8 @@ func computeBinaryRootStreamingParallel(
 	db ethdb.KeyValueStore,
 	groupDepth int,
 	numWorkers int,
-) (common.Hash, trieNodeStats, error) {
+	sbw *stemBlobWriter, // nil to skip flat-state stem blob writes
+) (common.Hash, trieNodeStats, stemBlobStats, error) {
 	if numWorkers < 1 {
 		numWorkers = 1
 	}
@@ -846,6 +925,7 @@ func computeBinaryRootStreamingParallel(
 	// --- Builder goroutine ---
 	var rootHash common.Hash
 	var tnStats trieNodeStats
+	var sbStats stemBlobStats
 	var builderWg sync.WaitGroup
 	builderWg.Add(1)
 	go func() {
@@ -862,6 +942,9 @@ func computeBinaryRootStreamingParallel(
 
 		for r := range builderCh {
 			sb.feedStem(r.stem[:], r.hash, r.entries)
+			if sbw != nil {
+				sbw.writeStemBlob(r.stem[:], r.entries)
+			}
 		}
 
 		rootHash = sb.finish()
@@ -869,6 +952,11 @@ func computeBinaryRootStreamingParallel(
 			sb.w.flush()
 			tnStats = trieNodeStats{Nodes: sb.w.nodes, Bytes: sb.w.bytes}
 			log.Printf("Wrote %d trie nodes (%d MB)", sb.w.nodes, sb.w.bytes/1024/1024)
+		}
+		if sbw != nil {
+			sbw.flush()
+			sbStats = stemBlobStats{Stems: sbw.stems, Bytes: sbw.bytes}
+			log.Printf("Wrote %d stem blobs (%d MB)", sbw.stems, sbw.bytes/1024/1024)
 		}
 	}()
 
@@ -1014,13 +1102,13 @@ done:
 	// Check for errors
 	select {
 	case err := <-errCh:
-		return common.Hash{}, trieNodeStats{}, err
+		return common.Hash{}, trieNodeStats{}, stemBlobStats{}, err
 	default:
 	}
 
 	if ctx.Err() != nil {
-		return common.Hash{}, trieNodeStats{}, ctx.Err()
+		return common.Hash{}, trieNodeStats{}, stemBlobStats{}, ctx.Err()
 	}
 
-	return rootHash, tnStats, nil
+	return rootHash, tnStats, sbStats, nil
 }

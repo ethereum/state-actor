@@ -778,8 +778,9 @@ func (g *Generator) generateStreamingBinary() (retStats *Stats, retErr error) {
 
 	// Note: We use g.writer (StateWriter) for final output, not batchWriter
 
-	// Snapshot writes happen in a background goroutine so they don't block
-	// the critical path (temp DB writes for Phase 2).
+	// Background goroutine writes code entries ("c" + keccak256(code)) during
+	// Phase 1. Account/storage flat state is NOT written here — stem blobs are
+	// written in Phase 2 by the builder goroutine via stemBlobWriter.
 	type snapshotWork struct {
 		acc *accountData
 	}
@@ -790,7 +791,7 @@ func (g *Generator) generateStreamingBinary() (retStats *Stats, retErr error) {
 	go func() {
 		defer snapWg.Done()
 		for sw := range snapCh {
-			if err := g.writeAccountSnapshot(sw.acc); err != nil {
+			if err := g.writeCodeOnly(sw.acc); err != nil {
 				snapErr.Store(err)
 				for range snapCh {
 				}
@@ -1112,6 +1113,14 @@ func (g *Generator) generateStreamingBinary() (retStats *Stats, retErr error) {
 	if g.config.WriteTrieNodes && g.config.OutputFormat == OutputGeth && g.db != nil {
 		nodeDB = g.db
 	}
+
+	// Create stem blob writer for bintrie flat-state.
+	// Writes stem blobs at "vX" + stem during Phase 2 (alongside trie nodes).
+	var sbw *stemBlobWriter
+	if g.config.OutputFormat == OutputGeth && g.db != nil {
+		sbw = &stemBlobWriter{batch: g.db.NewBatch(), db: g.db}
+	}
+
 	iter := tempDB.NewIterator(nil, nil)
 	numWorkers := runtime.GOMAXPROCS(0) - 2
 	if numWorkers < 2 {
@@ -1120,8 +1129,8 @@ func (g *Generator) generateStreamingBinary() (retStats *Stats, retErr error) {
 	if g.config.Verbose {
 		log.Printf("Phase 2: using %d parallel workers", numWorkers)
 	}
-	stateRoot, tnStats, err := computeBinaryRootStreamingParallel(
-		context.Background(), iter, nodeDB, g.config.GroupDepth, numWorkers,
+	stateRoot, tnStats, sbStats, err := computeBinaryRootStreamingParallel(
+		context.Background(), iter, nodeDB, g.config.GroupDepth, numWorkers, sbw,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to compute binary root: %w", err)
@@ -1130,11 +1139,11 @@ func (g *Generator) generateStreamingBinary() (retStats *Stats, retErr error) {
 		log.Printf("Computed binary trie root in %v", time.Since(hashStart).Round(time.Millisecond))
 	}
 
-	// Wait for snapshot writes to complete (they ran concurrently with Phase 2).
+	// Wait for code writes to complete (they ran concurrently with Phase 2).
 	closeSnap()
 	snapWg.Wait()
 	if e := snapErr.Load(); e != nil {
-		return nil, fmt.Errorf("snapshot write failed: %w", e.(error))
+		return nil, fmt.Errorf("code write failed: %w", e.(error))
 	}
 	if err := g.writer.Flush(); err != nil {
 		return nil, fmt.Errorf("failed to flush writer: %w", err)
@@ -1158,7 +1167,8 @@ func (g *Generator) generateStreamingBinary() (retStats *Stats, retErr error) {
 	stats.StorageBytes = writerStats.StorageBytes
 	stats.CodeBytes = writerStats.CodeBytes
 	stats.TrieNodeBytes = uint64(tnStats.Bytes)
-	stats.TotalBytes = stats.AccountBytes + stats.StorageBytes + stats.CodeBytes + stats.TrieNodeBytes
+	stats.StemBlobBytes = uint64(sbStats.Bytes)
+	stats.TotalBytes = stats.AccountBytes + stats.StorageBytes + stats.CodeBytes + stats.TrieNodeBytes + stats.StemBlobBytes
 
 	elapsed := time.Since(start)
 	stats.GenerationTime = elapsed
@@ -1167,33 +1177,16 @@ func (g *Generator) generateStreamingBinary() (retStats *Stats, retErr error) {
 	return stats, nil
 }
 
-// writeAccountSnapshot writes snapshot entries for an account using the StateWriter.
-// Handles storage, account, and code writes. This is the snapshot layer —
-// separate from trie root computation.
-func (g *Generator) writeAccountSnapshot(acc *accountData) error {
-	// Storage: write each slot via StateWriter (pre-compute hashes to avoid redundant work)
-	for _, slot := range acc.storage {
-		slotHash := crypto.Keccak256Hash(slot.Key[:])
-		if err := g.writer.WriteStorage(acc.address, acc.addrHash, slot.Key, slotHash, slot.Value); err != nil {
-			return fmt.Errorf("write storage: %w", err)
-		}
-	}
-
-	// Account: Root is always EmptyRootHash in binary trie mode
-	// (binary trie doesn't use per-account storage roots like MPT).
-	snapshotAcc := *acc.account
-	snapshotAcc.Root = types.EmptyRootHash
-	if err := g.writer.WriteAccount(acc.address, acc.addrHash, &snapshotAcc, 0); err != nil {
-		return fmt.Errorf("write account: %w", err)
-	}
-
-	// Code
+// writeCodeOnly writes only contract code to the DB. Used in binary trie mode
+// where account/storage flat state is written as stem blobs in Phase 2, but
+// code still needs to be persisted under "c" + keccak256(code) for geth's
+// code reader (the EVM reads full code from there, not from trie chunks).
+func (g *Generator) writeCodeOnly(acc *accountData) error {
 	if len(acc.code) > 0 {
 		if err := g.writer.WriteCode(acc.codeHash, acc.code); err != nil {
 			return fmt.Errorf("write code: %w", err)
 		}
 	}
-
 	return nil
 }
 

@@ -169,6 +169,10 @@ type Stats struct {
 	// Only populated when WriteTrieNodes is true.
 	TrieNodeBytes uint64
 
+	// StemBlobBytes is the number of bytes written for bintrie flat-state
+	// stem blobs (Phase 2). Only populated in binary trie mode.
+	StemBlobBytes uint64
+
 	// DeepBranchAccounts is the number of deep-branch contracts created.
 	DeepBranchAccounts int
 
