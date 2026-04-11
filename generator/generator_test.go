@@ -375,6 +375,57 @@ func benchmarkGenerate(b *testing.B, accounts, contracts, maxSlots int) {
 	}
 }
 
+func BenchmarkBinaryTrie10K(b *testing.B) {
+	benchmarkBinaryTrie(b, 100, 100, 100)
+}
+
+func BenchmarkBinaryTrie100K(b *testing.B) {
+	benchmarkBinaryTrie(b, 1000, 1000, 100)
+}
+
+func benchmarkBinaryTrie(b *testing.B, accounts, contracts, maxSlots int) {
+	b.ReportAllocs()
+
+	for i := 0; i < b.N; i++ {
+		tmpDir, err := os.MkdirTemp("", "bintrie-bench-*")
+		if err != nil {
+			b.Fatal(err)
+		}
+		dbPath := filepath.Join(tmpDir, "testdb")
+
+		config := Config{
+			DBPath:       dbPath,
+			NumAccounts:  accounts,
+			NumContracts: contracts,
+			MaxSlots:     maxSlots,
+			MinSlots:     10,
+			Distribution: PowerLaw,
+			Seed:         int64(i),
+			BatchSize:    10000,
+			Workers:      4,
+			CodeSize:     512,
+			TrieMode:     TrieModeBinary,
+			Verbose:      false,
+		}
+
+		gen, err := New(config)
+		if err != nil {
+			b.Fatal(err)
+		}
+
+		stats, err := gen.Generate()
+		if err != nil {
+			b.Fatal(err)
+		}
+		gen.Close()
+
+		b.ReportMetric(float64(stats.StorageSlotsCreated), "slots")
+		b.ReportMetric(float64(stats.TotalBytes)/1024/1024, "MB")
+
+		os.RemoveAll(tmpDir)
+	}
+}
+
 // --- Binary Trie Tests ---
 
 func TestGenerateBinaryTrie(t *testing.T) {

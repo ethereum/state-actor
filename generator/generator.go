@@ -811,41 +811,35 @@ func (g *Generator) generateStreamingBinary() (retStats *Stats, retErr error) {
 		}
 	}()
 
-	// --- Phase 1: Generate data, write snapshots, write trie entries to temp DB ---
+	// --- Phase 1: Generate data, write code, write trie entries to bucket files ---
 	//
-	// Instead of collecting entries in an in-memory slice (which grows linearly
-	// with state size), we write each trie entry to a temporary Pebble DB.
-	// Pebble's LSM tree keeps keys sorted automatically, so Phase 2 can
-	// iterate in order without an explicit sort step. Memory stays O(1).
+	// Entries are partitioned into 256 flat binary files by key[0] (first byte
+	// of the SHA256-derived trie key). Each entry is a fixed 64-byte record.
+	// Phase 2 processes buckets 0x00→0xFF sequentially: load, sort in memory
+	// (~2.1GB per bucket), feed to the streaming builder.
+	//
+	// This replaces the Pebble temp DB, eliminating write amplification (6-10×),
+	// compaction overhead, and Pebble's per-key CPU cost.
 	tempDir, err := os.MkdirTemp("", "state-actor-sort-*")
 	if err != nil {
 		return nil, fmt.Errorf("failed to create temp dir: %w", err)
 	}
 	defer os.RemoveAll(tempDir)
 
-	tempDB, err := pebble.New(tempDir, 128, 64, "temp/", false)
+	buckets, err := newBucketWriter(tempDir)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create temp sort DB: %w", err)
+		return nil, fmt.Errorf("failed to create bucket writer: %w", err)
 	}
-	defer tempDB.Close()
+	defer buckets.close()
 
-	tempBatch := tempDB.NewBatch()
 	var entryCount int64
 
-	// writeEntries writes a batch of trie entries to the temp DB.
+	// writeEntries writes trie entries to the appropriate bucket files.
 	writeEntries := func(entries []trieEntry) error {
-		for i := range entries {
-			if err := tempBatch.Put(entries[i].Key[:], entries[i].Value[:]); err != nil {
-				return err
-			}
-			entryCount++
-			if tempBatch.ValueSize() >= 64*1024*1024 { // flush every 64 MB
-				if err := tempBatch.Write(); err != nil {
-					return err
-				}
-				tempBatch.Reset()
-			}
+		if err := buckets.writeEntries(entries); err != nil {
+			return err
 		}
+		entryCount += int64(len(entries))
 		return nil
 	}
 
@@ -1049,28 +1043,25 @@ func (g *Generator) generateStreamingBinary() (retStats *Stats, retErr error) {
 		contractIdx++
 		logProgress("Contract", contractIdx, g.config.NumContracts, int64(stats.StorageSlotsCreated))
 
-		// Check target size periodically using actual disk measurement.
+		// Check target size periodically.
+		// In binary trie mode with bucket sort, the main DB has only code entries
+		// during Phase 1. Project final size from entry count: empirically ~130
+		// bytes/entry after Pebble compression (trie nodes + stem blobs + code).
 		if g.config.TargetSize > 0 && contractIdx%targetCheckInterval == 0 {
-			mainDBSize, err := dirSize(g.config.DBPath)
-			if err == nil {
-				// Project trie node overhead: empirically, trie nodes add
-				// ~1.5× the snapshot data, so total ≈ 2.5× snapshot.
-				projected := mainDBSize
-				if g.config.WriteTrieNodes {
-					projected = mainDBSize * 5 / 2
+			// Project from entry count: each trie entry produces ~130 bytes
+			// on disk after compression (trie nodes + stem blobs + overhead).
+			projected := uint64(entryCount) * 130
+			lastProjectedSize = projected
+			if projected >= g.config.TargetSize {
+				if g.config.Verbose {
+					log.Printf("Target size reached: %d entries × 130 = %s (target: %s)",
+						entryCount,
+						formatBytesInternal(projected),
+						formatBytesInternal(g.config.TargetSize))
 				}
-				lastProjectedSize = projected
-				if projected >= g.config.TargetSize {
-					if g.config.Verbose {
-						log.Printf("Target size reached: DB %s × 2.5 = %s (target: %s)",
-							formatBytesInternal(mainDBSize),
-							formatBytesInternal(projected),
-							formatBytesInternal(g.config.TargetSize))
-					}
-					targetReached = true
-					close(done)
-					break
-				}
+				targetReached = true
+				close(done)
+				break
 			}
 		}
 	}
@@ -1080,31 +1071,20 @@ func (g *Generator) generateStreamingBinary() (retStats *Stats, retErr error) {
 		}
 	}
 
-	// Flush remaining temp entries.
-	if tempBatch.ValueSize() > 0 {
-		if err := tempBatch.Write(); err != nil {
-			return nil, fmt.Errorf("failed to flush temp batch: %w", err)
-		}
+	// Flush remaining bucket buffers.
+	if err := buckets.flush(); err != nil {
+		return nil, fmt.Errorf("failed to flush bucket writer: %w", err)
 	}
 
-	// --- Phase 2: Stream sorted entries from temp DB → compute root hash ---
-
-	// Compact the temp DB to flatten LSM levels into a single sorted run.
-	// This makes the sequential iteration single-pass I/O instead of a
-	// multi-level merge, reducing per-key CPU overhead across billions of entries.
-	if g.config.Verbose {
-		log.Printf("Compacting temp DB (%d entries)...", entryCount)
-	}
-	compactStart := time.Now()
-	if err := tempDB.Compact(nil, nil); err != nil {
-		return nil, fmt.Errorf("failed to compact temp DB: %w", err)
-	}
-	if g.config.Verbose {
-		log.Printf("Temp DB compaction complete in %v", time.Since(compactStart).Round(time.Millisecond))
-	}
+	// --- Phase 2: Stream sorted entries from bucket files → compute root hash ---
+	//
+	// Process buckets 0x00→0xFF sequentially via bucketChainIterator.
+	// Each bucket is loaded into memory (~2.1GB max), sorted, then fed to
+	// the streaming builder pipeline. Double-buffering overlaps read+sort
+	// of the next bucket with processing of the current one.
 
 	if g.config.Verbose {
-		log.Printf("Computing root from %d trie entries (streaming, O(depth) memory)...", entryCount)
+		log.Printf("Computing root from %d trie entries (bucket-sort, %d buckets)...", entryCount, numBuckets)
 	}
 
 	hashStart := time.Now()
@@ -1121,7 +1101,7 @@ func (g *Generator) generateStreamingBinary() (retStats *Stats, retErr error) {
 		sbw = &stemBlobWriter{batch: g.db.NewBatch(), db: g.db}
 	}
 
-	iter := tempDB.NewIterator(nil, nil)
+	iter := newBucketChainIterator(tempDir, buckets.counts)
 	numWorkers := runtime.GOMAXPROCS(0) - 2
 	if numWorkers < 2 {
 		numWorkers = 2
