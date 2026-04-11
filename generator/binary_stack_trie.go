@@ -911,7 +911,7 @@ func computeBinaryRootStreamingParallel(
 	}
 
 	// Channels
-	const maxInFlight = 64
+	const maxInFlight = 256
 	sem := make(chan struct{}, maxInFlight)           // bounds total in-flight stems
 	workCh := make(chan *stemWork, 2*numWorkers)      // reader -> workers
 	resultCh := make(chan *stemResult, 2*numWorkers)  // workers -> resequencer

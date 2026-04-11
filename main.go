@@ -72,7 +72,20 @@ var (
 	statsPort = flag.Int("stats-port", 0, "Port for live stats HTTP server (0 = disabled)")
 )
 
+// raiseFileLimit raises the soft file descriptor limit to the hard limit.
+// The binary trie bucket-sort uses 256 concurrent file handles for temp
+// files, which exceeds macOS's default soft limit of 256.
+func raiseFileLimit() {
+	var rlimit syscall.Rlimit
+	if err := syscall.Getrlimit(syscall.RLIMIT_NOFILE, &rlimit); err != nil {
+		return
+	}
+	rlimit.Cur = rlimit.Max
+	syscall.Setrlimit(syscall.RLIMIT_NOFILE, &rlimit)
+}
+
 func main() {
+	raiseFileLimit()
 	flag.Parse()
 
 	if *dbPath == "" {
