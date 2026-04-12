@@ -293,3 +293,244 @@ func (it *bucketChainIterator) Seek(_ []byte) bool { return false }
 
 // io.Writer noop for compatibility
 func (it *bucketChainIterator) Write(p []byte) (n int, err error) { return 0, io.EOF }
+
+// --- Variable-length bucket sort (for MPT account trie entries) ---
+//
+// MPT account trie entries have variable-length values (~80-120 bytes RLP).
+// Record format: [key: 32 bytes][valueLen: 2 bytes uint16 BE][value: valueLen bytes]
+
+type varlenBucketEntry struct {
+	Key   [hashSize]byte
+	Value []byte
+}
+
+type varlenBucketWriter struct {
+	dir     string
+	files   [numBuckets]*os.File
+	buffers [numBuckets]*bufio.Writer
+	counts  [numBuckets]int64
+	total   int64
+}
+
+func newVarlenBucketWriter(dir string) (*varlenBucketWriter, error) {
+	bw := &varlenBucketWriter{dir: dir}
+	for i := range numBuckets {
+		path := filepath.Join(dir, fmt.Sprintf("vbucket_%02x.bin", i))
+		f, err := os.Create(path)
+		if err != nil {
+			bw.close()
+			return nil, fmt.Errorf("create varlen bucket file %02x: %w", i, err)
+		}
+		bw.files[i] = f
+		bw.buffers[i] = bufio.NewWriterSize(f, bucketBufSize)
+	}
+	return bw, nil
+}
+
+func (bw *varlenBucketWriter) writeEntry(key [hashSize]byte, value []byte) error {
+	bucket := key[0]
+	if _, err := bw.buffers[bucket].Write(key[:]); err != nil {
+		return err
+	}
+	var lenBuf [2]byte
+	binary.BigEndian.PutUint16(lenBuf[:], uint16(len(value)))
+	if _, err := bw.buffers[bucket].Write(lenBuf[:]); err != nil {
+		return err
+	}
+	if _, err := bw.buffers[bucket].Write(value); err != nil {
+		return err
+	}
+	bw.counts[bucket]++
+	bw.total++
+	return nil
+}
+
+func (bw *varlenBucketWriter) flush() error {
+	for i := range numBuckets {
+		if bw.buffers[i] != nil {
+			if err := bw.buffers[i].Flush(); err != nil {
+				return fmt.Errorf("flush varlen bucket %02x: %w", i, err)
+			}
+		}
+	}
+	return nil
+}
+
+func (bw *varlenBucketWriter) close() {
+	for i := range numBuckets {
+		if bw.files[i] != nil {
+			bw.files[i].Close()
+		}
+	}
+}
+
+func loadVarlenBucket(dir string, bucket int) ([]varlenBucketEntry, error) {
+	path := filepath.Join(dir, fmt.Sprintf("vbucket_%02x.bin", bucket))
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("read varlen bucket %02x: %w", bucket, err)
+	}
+	var entries []varlenBucketEntry
+	off := 0
+	for off < len(data) {
+		if off+hashSize+2 > len(data) {
+			return nil, fmt.Errorf("varlen bucket %02x: truncated record at offset %d", bucket, off)
+		}
+		var e varlenBucketEntry
+		copy(e.Key[:], data[off:off+hashSize])
+		off += hashSize
+		vlen := int(binary.BigEndian.Uint16(data[off : off+2]))
+		off += 2
+		if off+vlen > len(data) {
+			return nil, fmt.Errorf("varlen bucket %02x: truncated value at offset %d", bucket, off)
+		}
+		e.Value = make([]byte, vlen)
+		copy(e.Value, data[off:off+vlen])
+		off += vlen
+		entries = append(entries, e)
+	}
+	return entries, nil
+}
+
+func sortVarlenBucket(entries []varlenBucketEntry) {
+	slices.SortFunc(entries, func(a, b varlenBucketEntry) int {
+		aHi := binary.BigEndian.Uint64(a.Key[:8])
+		bHi := binary.BigEndian.Uint64(b.Key[:8])
+		if aHi < bHi {
+			return -1
+		}
+		if aHi > bHi {
+			return 1
+		}
+		return bytes.Compare(a.Key[:], b.Key[:])
+	})
+}
+
+// varlenBucketChainIterator concatenates sorted variable-length bucket files
+// into a single globally-sorted stream. Loads one bucket at a time.
+type varlenBucketChainIterator struct {
+	dir    string
+	counts [numBuckets]int64
+
+	curBucket int
+	sorted    []varlenBucketEntry
+	pos       int
+
+	nextBucket int
+	nextSorted []varlenBucketEntry
+	nextErr    error
+	nextReady  chan struct{}
+	preloadWg  sync.WaitGroup
+
+	curKey   []byte
+	curValue []byte
+	released bool
+}
+
+func newVarlenBucketChainIterator(dir string, counts [numBuckets]int64) *varlenBucketChainIterator {
+	it := &varlenBucketChainIterator{
+		dir:       dir,
+		counts:    counts,
+		curBucket: -1,
+	}
+
+	first := it.findNextNonEmpty(0)
+	if first < numBuckets {
+		it.nextBucket = first
+		it.nextReady = make(chan struct{})
+		it.preloadWg.Add(1)
+		go func() {
+			defer it.preloadWg.Done()
+			it.nextSorted, it.nextErr = loadVarlenBucket(dir, first)
+			if it.nextErr == nil {
+				sortVarlenBucket(it.nextSorted)
+			}
+			close(it.nextReady)
+		}()
+	} else {
+		it.curBucket = numBuckets
+	}
+
+	return it
+}
+
+func (it *varlenBucketChainIterator) findNextNonEmpty(from int) int {
+	for i := from; i < numBuckets; i++ {
+		if it.counts[i] > 0 {
+			return i
+		}
+	}
+	return numBuckets
+}
+
+func (it *varlenBucketChainIterator) advanceBucket() bool {
+	if it.nextReady == nil {
+		return false
+	}
+	<-it.nextReady
+	if it.nextErr != nil {
+		return false
+	}
+
+	it.sorted = it.nextSorted
+	it.pos = 0
+	it.curBucket = it.nextBucket
+
+	next := it.findNextNonEmpty(it.curBucket + 1)
+	if next < numBuckets {
+		it.nextBucket = next
+		it.nextReady = make(chan struct{})
+		it.preloadWg.Add(1)
+		go func() {
+			defer it.preloadWg.Done()
+			it.nextSorted, it.nextErr = loadVarlenBucket(it.dir, next)
+			if it.nextErr == nil {
+				sortVarlenBucket(it.nextSorted)
+			}
+			close(it.nextReady)
+		}()
+	} else {
+		it.nextReady = nil
+	}
+
+	return len(it.sorted) > 0
+}
+
+func (it *varlenBucketChainIterator) Next() bool {
+	if it.released {
+		return false
+	}
+	if it.sorted != nil && it.pos < len(it.sorted) {
+		it.curKey = it.sorted[it.pos].Key[:]
+		it.curValue = it.sorted[it.pos].Value
+		it.pos++
+		return true
+	}
+	if !it.advanceBucket() {
+		return false
+	}
+	if len(it.sorted) == 0 {
+		return false
+	}
+	it.curKey = it.sorted[it.pos].Key[:]
+	it.curValue = it.sorted[it.pos].Value
+	it.pos++
+	return true
+}
+
+func (it *varlenBucketChainIterator) Key() []byte   { return it.curKey }
+func (it *varlenBucketChainIterator) Value() []byte { return it.curValue }
+func (it *varlenBucketChainIterator) Error() error  { return it.nextErr }
+
+func (it *varlenBucketChainIterator) Release() {
+	it.released = true
+	it.preloadWg.Wait()
+	it.sorted = nil
+	it.nextSorted = nil
+}
+
+func (it *varlenBucketChainIterator) Seek(_ []byte) bool          { return false }
+func (it *varlenBucketChainIterator) Write(p []byte) (int, error) { return 0, io.EOF }

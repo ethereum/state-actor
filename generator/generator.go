@@ -154,33 +154,23 @@ func (g *Generator) generateStreamingMPT() (*Stats, error) {
 		defer nodeWriter.flush()
 	}
 
-	// Temp DB for account trie entries: key=addrHash, value=slimAccountRLP.
-	// Pebble sorts by key automatically, so Phase 2 iterates in addrHash order.
+	// Bucket-sort for account trie entries: key=addrHash, value=fullStateAccountRLP.
+	// Entries are partitioned into 256 flat files by addrHash[0]. Phase 2 loads
+	// each bucket, sorts in memory, and feeds geth's StackTrie.
 	tempDir, err := os.MkdirTemp("", "mpt-acct-trie-*")
 	if err != nil {
 		return nil, fmt.Errorf("create temp dir: %w", err)
 	}
 	defer os.RemoveAll(tempDir)
 
-	acctTrieDB, err := pebble.New(tempDir, 128, 64, "mpt-acct/", false)
+	acctBuckets, err := newVarlenBucketWriter(tempDir)
 	if err != nil {
-		return nil, fmt.Errorf("create temp account trie DB: %w", err)
+		return nil, fmt.Errorf("create account trie bucket writer: %w", err)
 	}
-	defer acctTrieDB.Close()
-	acctTrieBatch := acctTrieDB.NewBatch()
+	defer acctBuckets.close()
 
-	// writeAcctTrieEntry stores an account's trie entry for Phase 2.
-	writeAcctTrieEntry := func(addrHash common.Hash, slimData []byte) error {
-		if err := acctTrieBatch.Put(addrHash[:], slimData); err != nil {
-			return err
-		}
-		if acctTrieBatch.ValueSize() >= 64*1024*1024 {
-			if err := acctTrieBatch.Write(); err != nil {
-				return err
-			}
-			acctTrieBatch.Reset()
-		}
-		return nil
+	writeAcctTrieEntry := func(addrHash common.Hash, data []byte) error {
+		return acctBuckets.writeEntry(addrHash, data)
 	}
 
 	// Genesis addresses set — only for collision avoidance with genesis accounts.
@@ -210,7 +200,12 @@ func (g *Generator) generateStreamingMPT() (*Stats, error) {
 		code           []byte
 		codeHash       common.Hash
 		storageEntries []mptStorageEntry // pre-computed storage snapshots
+		numSlots       int               // for stats tracking in the consumer
+		isContract     bool              // true for contracts, false for EOAs
 	}
+
+	var pipelineContracts atomic.Int64
+	var pipelineSlots atomic.Int64
 
 	snapCh := make(chan accountSnapWork, 64)
 	snapErrCh := make(chan error, 1)
@@ -264,6 +259,16 @@ func (g *Generator) generateStreamingMPT() (*Stats, error) {
 			if err := writeAcctTrieEntry(work.addrHash, trieData); err != nil {
 				snapErrCh <- fmt.Errorf("write trie entry: %w", err)
 				return
+			}
+
+			// Track stats for pipeline-generated contracts via atomics
+			// to avoid racing with the main goroutine's deep-branch stats.
+			if work.isContract {
+				pipelineContracts.Add(1)
+				pipelineSlots.Add(int64(work.numSlots))
+				if g.config.LiveStats != nil {
+					g.config.LiveStats.AddContract(work.numSlots)
+				}
 			}
 		}
 	}()
@@ -509,86 +514,115 @@ func (g *Generator) generateStreamingMPT() (*Stats, error) {
 	}
 
 	// ============================================================
-	// Phase 1c: Contracts (streaming, one at a time)
+	// Phase 1c: Contracts (producer-consumer pipeline)
 	// ============================================================
+	//
+	// Three-stage pipeline:
+	// 1. RNG producer (1 goroutine): extracts deterministic seeds from main RNG
+	// 2. Workers (N goroutines): code gen + keccak + sort + StackTrie (heavy compute)
+	// 3. snapCh consumer (existing, 1 goroutine): writes snapshots + trie entries
+	//
+	// After the main RNG produces (addr, nonce, balance, codeSeed, slotCount),
+	// each contract's computation is fully independent — workers use sub-RNGs
+	// seeded by codeSeed.
 	if g.config.LiveStats != nil {
 		g.config.LiveStats.SetPhase("contracts")
 	}
 
-	targetCheckInterval := 500
-	targetReached := false
-	contractIdx := 0
-
-	for contractIdx < g.config.NumContracts {
-		var addr common.Address
-		g.rng.Read(addr[:])
-		for genesisAddrs[addr] {
-			g.rng.Read(addr[:])
-		}
-
-		// RNG sequence must match old generateAccountMetas:
-		// Intn(1000) for nonce, Intn(100) for balance, Intn(CodeSize) for codeSize, Int63() for codeSeed
-		nonce := uint64(g.rng.Intn(1000))
-		balance := new(uint256.Int).Mul(uint256.NewInt(uint64(g.rng.Intn(100))), uint256.NewInt(1e18))
-		codeSize := g.config.CodeSize + g.rng.Intn(g.config.CodeSize)
-		codeSeed := g.rng.Int63()
-		numSlots := g.generateSlotCount()
-
-		// Generate code from seed
-		rng := mrand.New(mrand.NewSource(codeSeed))
-		code := make([]byte, codeSize)
-		rng.Read(code)
-		codeHash := crypto.Keccak256Hash(code)
-
-		// Compute storage root (trie nodes written inline, snapshots collected for async).
-		addrHash := crypto.Keccak256Hash(addr[:])
-		storageRoot, storageEntries, err := computeStorageRootMPT(addr, addrHash, numSlots, rng)
-		if err != nil {
-			return nil, fmt.Errorf("compute storage root for contract %d: %w", contractIdx, err)
-		}
-
-		acc := &types.StateAccount{
-			Nonce:    nonce,
-			Balance:  balance,
-			Root:     storageRoot,
-			CodeHash: codeHash.Bytes(),
-		}
-
-		// Send all snapshot writes (storage + account + code) to background goroutine.
-		if err := sendSnapshot(addr, addrHash, acc, code, codeHash, storageEntries); err != nil {
-			return nil, fmt.Errorf("send snapshot for contract %d: %w", contractIdx, err)
-		}
-
-		stats.ContractsCreated++
-		stats.StorageSlotsCreated += numSlots
-		if len(stats.SampleContracts) < 3 {
-			stats.SampleContracts = append(stats.SampleContracts, addr)
-		}
-
-		if g.config.LiveStats != nil {
-			g.config.LiveStats.AddContract(numSlots)
-			if stats.ContractsCreated%100 == 0 {
-				g.config.LiveStats.SyncBytes(g.writer.Stats())
-			}
-		}
-
-		contractIdx++
-		logProgress("contracts", contractIdx)
-
-		// Check target size periodically.
-		if g.config.TargetSize > 0 && contractIdx%targetCheckInterval == 0 {
-			mainDBSize, err := dirSize(g.config.DBPath)
-			if err == nil && mainDBSize >= g.config.TargetSize {
-				if g.config.Verbose {
-					log.Printf("Target size reached: DB %s (target: %s)",
-						formatBytesInternal(mainDBSize),
-						formatBytesInternal(g.config.TargetSize))
-				}
-				targetReached = true
-				break
-			}
-		}
+	type contractSeed struct {
+		addr     common.Address
+		nonce    uint64
+		balance  *uint256.Int
+		codeSize int
+		codeSeed int64
+		numSlots int
 	}
+
+	numContractWorkers := runtime.GOMAXPROCS(0)
+	if numContractWorkers < 2 {
+		numContractWorkers = 2
+	}
+	seedCh := make(chan contractSeed, numContractWorkers*2)
+	done := make(chan struct{})
+	targetReached := false
+
+	// Stage 1: RNG producer — only goroutine touching g.rng.
+	go func() {
+		defer close(seedCh)
+		for i := 0; i < g.config.NumContracts; i++ {
+			var addr common.Address
+			g.rng.Read(addr[:])
+			for genesisAddrs[addr] {
+				g.rng.Read(addr[:])
+			}
+			nonce := uint64(g.rng.Intn(1000))
+			balance := new(uint256.Int).Mul(
+				uint256.NewInt(uint64(g.rng.Intn(100))),
+				uint256.NewInt(1e18),
+			)
+			codeSize := g.config.CodeSize + g.rng.Intn(g.config.CodeSize)
+			codeSeed := g.rng.Int63()
+			numSlots := g.generateSlotCount()
+
+			select {
+			case seedCh <- contractSeed{addr, nonce, balance, codeSize, codeSeed, numSlots}:
+			case <-done:
+				return
+			}
+		}
+	}()
+
+	// Stage 2: N workers — heavy compute (code + slots + keccak + StackTrie).
+	var workerWg sync.WaitGroup
+	var workerErr atomic.Value
+	for w := 0; w < numContractWorkers; w++ {
+		workerWg.Add(1)
+		go func() {
+			defer workerWg.Done()
+			for seed := range seedCh {
+				rng := mrand.New(mrand.NewSource(seed.codeSeed))
+				code := make([]byte, seed.codeSize)
+				rng.Read(code)
+				codeHash := crypto.Keccak256Hash(code)
+				addrHash := crypto.Keccak256Hash(seed.addr[:])
+
+				storageRoot, storageEntries, err := computeStorageRootMPT(
+					seed.addr, addrHash, seed.numSlots, rng,
+				)
+				if err != nil {
+					workerErr.Store(err)
+					return
+				}
+
+				acc := &types.StateAccount{
+					Nonce:    seed.nonce,
+					Balance:  seed.balance,
+					Root:     storageRoot,
+					CodeHash: codeHash.Bytes(),
+				}
+
+				snapCh <- accountSnapWork{
+					addr:           seed.addr,
+					addrHash:       addrHash,
+					acc:            *acc,
+					code:           code,
+					codeHash:       codeHash,
+					storageEntries: storageEntries,
+					numSlots:       seed.numSlots,
+					isContract:     true,
+				}
+			}
+		}()
+	}
+
+	// Wait for all contract workers to finish before proceeding.
+	workerWg.Wait()
+	if e := workerErr.Load(); e != nil {
+		return nil, fmt.Errorf("contract worker: %w", e.(error))
+	}
+
+	// Count contracts completed (all seeds were consumed unless done was closed).
+	// The snapCh consumer tracks per-contract stats below.
 
 	// Deep-branch contracts
 	if g.config.DeepBranch.Enabled() {
@@ -682,25 +716,21 @@ func (g *Generator) generateStreamingMPT() (*Stats, error) {
 	default:
 	}
 
+	// Merge pipeline contract stats (tracked via atomics in the consumer).
+	stats.ContractsCreated += int(pipelineContracts.Load())
+	stats.StorageSlotsCreated += int(pipelineSlots.Load())
+
 	// Flush Phase 1 writes.
-	if acctTrieBatch.ValueSize() > 0 {
-		if err := acctTrieBatch.Write(); err != nil {
-			return nil, fmt.Errorf("flush account trie batch: %w", err)
-		}
+	if err := acctBuckets.flush(); err != nil {
+		return nil, fmt.Errorf("flush account trie buckets: %w", err)
 	}
 	if err := g.writer.Flush(); err != nil {
 		return nil, fmt.Errorf("flush snapshot writes: %w", err)
 	}
 
 	// ============================================================
-	// Phase 2: Build account trie from temp DB (sorted by addrHash)
+	// Phase 2: Build account trie from bucket-sorted entries
 	// ============================================================
-
-	// Compact temp DB to flatten LSM levels for single-pass sequential iteration.
-	// Same optimization the binary trie path uses before Phase 2.
-	if err := acctTrieDB.Compact(nil, nil); err != nil {
-		return nil, fmt.Errorf("compact account trie temp DB: %w", err)
-	}
 
 	phase2Start := time.Now()
 
@@ -710,7 +740,7 @@ func (g *Generator) generateStreamingMPT() (*Stats, error) {
 	}
 	accountTrie := trie.NewStackTrie(acctCallback)
 
-	iter := acctTrieDB.NewIterator(nil, nil)
+	iter := newVarlenBucketChainIterator(tempDir, acctBuckets.counts)
 	acctTrieCount := 0
 	for iter.Next() {
 		accountTrie.Update(iter.Key(), iter.Value())
