@@ -205,6 +205,11 @@ func (it *bucketChainIterator) findNextNonEmpty(from int) int {
 	return numBuckets
 }
 
+func (it *bucketChainIterator) deleteBucket(bucket int) {
+	path := filepath.Join(it.dir, fmt.Sprintf("bucket_%02x.bin", bucket))
+	os.Remove(path)
+}
+
 func (it *bucketChainIterator) advanceBucket() bool {
 	if it.nextReady == nil {
 		return false
@@ -212,6 +217,12 @@ func (it *bucketChainIterator) advanceBucket() bool {
 	<-it.nextReady
 	if it.nextErr != nil {
 		return false
+	}
+
+	// Delete the previous bucket file — its data has been fully consumed.
+	prevBucket := it.curBucket
+	if prevBucket >= 0 {
+		it.deleteBucket(prevBucket)
 	}
 
 	// Swap buffers: the current sorted data goes to the "old" buffer
@@ -282,6 +293,9 @@ func (it *bucketChainIterator) Error() error  { return it.nextErr }
 func (it *bucketChainIterator) Release() {
 	it.released = true
 	it.preloadWg.Wait()
+	if it.curBucket >= 0 {
+		it.deleteBucket(it.curBucket)
+	}
 	it.sorted = nil
 	it.nextSorted = nil
 	it.buf0 = nil
@@ -466,6 +480,11 @@ func (it *varlenBucketChainIterator) findNextNonEmpty(from int) int {
 	return numBuckets
 }
 
+func (it *varlenBucketChainIterator) deleteBucket(bucket int) {
+	path := filepath.Join(it.dir, fmt.Sprintf("vbucket_%02x.bin", bucket))
+	os.Remove(path)
+}
+
 func (it *varlenBucketChainIterator) advanceBucket() bool {
 	if it.nextReady == nil {
 		return false
@@ -473,6 +492,11 @@ func (it *varlenBucketChainIterator) advanceBucket() bool {
 	<-it.nextReady
 	if it.nextErr != nil {
 		return false
+	}
+
+	prevBucket := it.curBucket
+	if prevBucket >= 0 {
+		it.deleteBucket(prevBucket)
 	}
 
 	it.sorted = it.nextSorted
@@ -528,6 +552,9 @@ func (it *varlenBucketChainIterator) Error() error  { return it.nextErr }
 func (it *varlenBucketChainIterator) Release() {
 	it.released = true
 	it.preloadWg.Wait()
+	if it.curBucket >= 0 {
+		it.deleteBucket(it.curBucket)
+	}
 	it.sorted = nil
 	it.nextSorted = nil
 }
