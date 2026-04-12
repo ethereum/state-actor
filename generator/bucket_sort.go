@@ -6,10 +6,12 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"path/filepath"
 	"slices"
 	"sync"
+	"time"
 )
 
 const (
@@ -151,15 +153,26 @@ type bucketChainIterator struct {
 	curKey   []byte
 	curValue []byte
 
+	// Progress tracking
+	totalEntries   int64
+	entriesYielded int64
+	bucketsTotal   int
+	bucketsDone    int
+	startTime      time.Time
+
 	released bool
 }
 
 func newBucketChainIterator(dir string, counts [numBuckets]int64) *bucketChainIterator {
-	// Find max bucket size for buffer allocation
-	var maxCount int64
+	var maxCount, totalEntries int64
+	var bucketsTotal int
 	for _, c := range counts {
 		if c > maxCount {
 			maxCount = c
+		}
+		totalEntries += c
+		if c > 0 {
+			bucketsTotal++
 		}
 	}
 	if maxCount == 0 {
@@ -167,12 +180,15 @@ func newBucketChainIterator(dir string, counts [numBuckets]int64) *bucketChainIt
 	}
 
 	it := &bucketChainIterator{
-		dir:       dir,
-		counts:    counts,
-		curBucket: -1, // will advance on first Next()
-		buf0:      make([]trieEntry, maxCount),
-		buf1:      make([]trieEntry, maxCount),
-		usingBuf0: true,
+		dir:          dir,
+		counts:       counts,
+		curBucket:    -1,
+		buf0:         make([]trieEntry, maxCount),
+		buf1:         make([]trieEntry, maxCount),
+		usingBuf0:    true,
+		totalEntries: totalEntries,
+		bucketsTotal: bucketsTotal,
+		startTime:    time.Now(),
 	}
 
 	// Pre-load the first non-empty bucket
@@ -222,6 +238,8 @@ func (it *bucketChainIterator) advanceBucket() bool {
 	// Delete the previous bucket file — its data has been fully consumed.
 	prevBucket := it.curBucket
 	if prevBucket >= 0 {
+		it.entriesYielded += int64(len(it.sorted))
+		it.bucketsDone++
 		it.deleteBucket(prevBucket)
 	}
 
@@ -231,6 +249,26 @@ func (it *bucketChainIterator) advanceBucket() bool {
 	it.pos = 0
 	it.curBucket = it.nextBucket
 	it.usingBuf0 = !it.usingBuf0
+
+	// Log progress every ~10% or every 16 buckets, whichever comes first.
+	logInterval := it.bucketsTotal / 10
+	if logInterval < 1 {
+		logInterval = 1
+	}
+	if logInterval > 16 {
+		logInterval = 16
+	}
+	if it.bucketsDone%logInterval == 0 || it.bucketsDone == it.bucketsTotal-1 {
+		pct := float64(it.entriesYielded) / float64(it.totalEntries) * 100
+		elapsed := time.Since(it.startTime)
+		var eta time.Duration
+		if it.entriesYielded > 0 {
+			eta = time.Duration(float64(elapsed) / float64(it.entriesYielded) * float64(it.totalEntries-it.entriesYielded))
+		}
+		log.Printf("[Phase 2] bucket %d/%d (%.1f%%) — elapsed %v, ETA %v",
+			it.bucketsDone+1, it.bucketsTotal, pct,
+			elapsed.Round(time.Second), eta.Round(time.Second))
+	}
 
 	// Start preloading the next non-empty bucket
 	next := it.findNextNonEmpty(it.curBucket + 1)
