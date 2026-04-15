@@ -20,13 +20,17 @@ type LiveStats struct {
 	Seed            int64  `json:"seed"`
 
 	// Progress
-	AccountsCreated     int   `json:"accountsCreated"`
-	ContractsCreated    int   `json:"contractsCreated"`
-	StorageSlotsCreated int   `json:"storageSlotsCreated"`
-	TotalBytes          int64 `json:"totalBytes"`
-	AccountBytes        int64 `json:"accountBytes"`
-	StorageBytes        int64 `json:"storageBytes"`
-	CodeBytes           int64 `json:"codeBytes"`
+	AccountsCreated     int    `json:"accountsCreated"`
+	ContractsCreated    int    `json:"contractsCreated"`
+	StorageSlotsCreated int    `json:"storageSlotsCreated"`
+	TrieEntriesCreated  int64  `json:"trieEntriesCreated"`
+	TargetEntries       uint64 `json:"targetEntries"`
+	TargetSize          uint64 `json:"targetSize"`
+	ProjectedFinalSize  uint64 `json:"projectedFinalSize"`
+	TotalBytes          int64  `json:"totalBytes"`
+	AccountBytes        int64  `json:"accountBytes"`
+	StorageBytes        int64  `json:"storageBytes"`
+	CodeBytes           int64  `json:"codeBytes"`
 
 	// Timing
 	StartTime  time.Time `json:"startTime"`
@@ -202,6 +206,20 @@ func (ls *LiveStats) SyncBytes(ws WriterStats) {
 }
 
 // SetDeepBranch configures deep-branch display fields.
+func (ls *LiveStats) SetTargetEntries(entries, targetSize uint64) {
+	ls.mu.Lock()
+	defer ls.mu.Unlock()
+	ls.TargetEntries = entries
+	ls.TargetSize = targetSize
+}
+
+func (ls *LiveStats) SetTrieEntries(count int64, projectedFinalSize uint64) {
+	ls.mu.Lock()
+	defer ls.mu.Unlock()
+	ls.TrieEntriesCreated = count
+	ls.ProjectedFinalSize = projectedFinalSize
+}
+
 func (ls *LiveStats) SetDeepBranch(accounts, depth, knownSlots int) {
 	ls.mu.Lock()
 	defer ls.mu.Unlock()
@@ -489,15 +507,43 @@ const dashboardHTML = `<!DOCTYPE html>
 
         function render(s) {
             const pctA = s.targetAccounts ? (s.accountsCreated / s.targetAccounts * 100) : 0;
-            const pctC = s.targetContracts ? (s.contractsCreated / s.targetContracts * 100) : 0;
+            const pctC = s.targetContracts < 2000000000 ? (s.contractsCreated / s.targetContracts * 100) : 0;
+            const hasTargetEntries = s.targetEntries > 0;
+            const pctEntries = hasTargetEntries ? Math.min(s.trieEntriesCreated / s.targetEntries * 100, 100) : 0;
             const statusClass = s.phase === 'done' ? 'done' : (s.phase === 'init' ? 'init' : 'running');
             const maxHist = Math.max(...s.slotHistogram, 1);
             const avgSlots = s.contractsCreated > 0 ? (s.storageSlotsCreated / s.contractsCreated).toFixed(1) : '0';
 
-            document.getElementById('config').innerHTML = 
+            // Projected final size: prefer real measurement, fall back to entry-based estimate
+            const hasProjection = s.projectedFinalSize > 0;
+            const estimatedSize = hasProjection ? s.projectedFinalSize
+                : hasTargetEntries ? (s.trieEntriesCreated / s.targetEntries * s.targetSize)
+                : s.totalBytes;
+            const pctSize = s.targetSize > 0 ? Math.min(estimatedSize / s.targetSize * 100, 100) : 0;
+
+            // ETA: use projected-size-based progress when available (more accurate)
+            let etaStr = '';
+            const pctForEta = hasProjection ? pctSize : pctEntries;
+            if (pctForEta > 0 && s.elapsedMs > 5000 && pctForEta < 100) {
+                const etaMs = s.elapsedMs / pctForEta * (100 - pctForEta);
+                etaStr = '~' + fmtTime(etaMs) + ' remaining';
+            }
+
+            document.getElementById('config').innerHTML =
                 '<span>seed</span> ' + s.seed + ' · <span>dist</span> ' + s.distribution + ' · <span>format</span> ' + s.outputFormat;
 
-            document.getElementById('dashboard').innerHTML = 
+            document.getElementById('dashboard').innerHTML =
+                (hasTargetEntries || hasProjection ?
+                    '<div class="card span2">' +
+                        '<div class="card-title">overall progress' + (hasProjection ? '' : ' (est.)') + '</div>' +
+                        '<div class="metric">' + (hasProjection ? pctSize : pctEntries).toFixed(1) + '<span class="unit">%</span></div>' +
+                        '<div class="sub">' + fmtBytes(estimatedSize) + ' / ' + fmtBytes(s.targetSize) +
+                            (hasTargetEntries ? ' · ' + fmt(s.trieEntriesCreated) + ' / ' + fmt(s.targetEntries) + ' entries' : '') +
+                        '</div>' +
+                        (etaStr ? '<div class="sub" style="color:var(--accent)">' + etaStr + '</div>' : '') +
+                        '<div class="progress"><div class="progress-fill" style="width:' + (hasProjection ? pctSize : pctEntries) + '%"></div></div>' +
+                    '</div>'
+                : '') +
                 '<div class="card">' +
                     '<div class="card-title">status</div>' +
                     '<span class="status ' + statusClass + '">' + s.phase + '</span>' +
@@ -513,12 +559,20 @@ const dashboardHTML = `<!DOCTYPE html>
                     '<div class="sub">/ ' + fmt(s.targetAccounts) + '</div>' +
                     '<div class="progress"><div class="progress-fill" style="width:' + pctA + '%"></div></div>' +
                 '</div>' +
-                '<div class="card">' +
-                    '<div class="card-title">contracts</div>' +
-                    '<div class="metric orange">' + fmt(s.contractsCreated) + '</div>' +
-                    '<div class="sub">/ ' + fmt(s.targetContracts) + '</div>' +
-                    '<div class="progress"><div class="progress-fill" style="width:' + pctC + '%"></div></div>' +
-                '</div>' +
+                (hasTargetEntries ?
+                    '<div class="card">' +
+                        '<div class="card-title">contracts</div>' +
+                        '<div class="metric orange">' + fmt(s.contractsCreated) + '</div>' +
+                        '<div class="sub">unlimited (target-size)</div>' +
+                    '</div>'
+                :
+                    '<div class="card">' +
+                        '<div class="card-title">contracts</div>' +
+                        '<div class="metric orange">' + fmt(s.contractsCreated) + '</div>' +
+                        '<div class="sub">/ ' + fmt(s.targetContracts) + '</div>' +
+                        '<div class="progress"><div class="progress-fill" style="width:' + pctC + '%"></div></div>' +
+                    '</div>'
+                ) +
                 '<div class="card">' +
                     '<div class="card-title">slots</div>' +
                     '<div class="metric purple">' + fmt(s.storageSlotsCreated) + '</div>' +

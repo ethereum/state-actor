@@ -120,6 +120,14 @@ type Config struct {
 	// NumContracts serves as a safety upper bound. 0 means no size limit.
 	TargetSize uint64
 
+	// TargetEntries is the estimated total number of trie entries needed
+	// to reach TargetSize, computed as TargetSize / bytesPerEntry during
+	// auto-scaling. Used for entry-based progress reporting and as the
+	// primary stop condition in binary trie mode (where dirSize of the
+	// main DB stays small during Phase 1 because only code blobs are
+	// written — account/storage flat state is deferred to Phase 2 stem blobs).
+	TargetEntries uint64
+
 	// OutputFormat specifies the database format to generate.
 	// Defaults to OutputGeth if empty.
 	OutputFormat OutputFormat

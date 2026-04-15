@@ -111,6 +111,7 @@ func main() {
 
 	// Parse --target-size
 	var parsedTargetSize uint64
+	var parsedTargetEntries uint64
 	if *targetSize != "" {
 		var err error
 		parsedTargetSize, err = parseSize(*targetSize)
@@ -232,8 +233,12 @@ func main() {
 		log.Printf("  code-size:    %d", *codeSize)
 		log.Printf("  distribution: %s", *distribution)
 
-		// Set contracts to MaxInt32 — dirSize() is the real stopping condition.
+		// Set contracts to MaxInt32 — entry count is the real stopping condition.
 		*contracts = math.MaxInt32
+		// Stash totalEntries for the generator to use as primary progress
+		// metric and stop condition (dirSize doesn't work in bintrie Phase 1
+		// because the main DB only holds code blobs until Phase 2).
+		parsedTargetEntries = totalEntries
 	}
 
 	// Validate deep-branch flags
@@ -266,6 +271,7 @@ func main() {
 		WriteTrieNodes:  true, // Always write trie nodes — DB is unusable without them
 		InjectAddresses: injectAddrs,
 		TargetSize:      parsedTargetSize,
+		TargetEntries:   parsedTargetEntries,
 		OutputFormat:    generator.ParseOutputFormat(*outputFormat),
 		DeepBranch: generator.DeepBranchConfig{
 			NumAccounts: *deepBranchAccounts,
