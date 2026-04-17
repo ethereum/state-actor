@@ -830,15 +830,20 @@ func (g *Generator) generateStreamingBinary() (retStats *Stats, retErr error) {
 	defer tempDB.Close()
 
 	tempBatch := tempDB.NewBatch()
-	var entryCount int64
 
-	// writeEntries writes a batch of trie entries to the temp DB.
-	writeEntries := func(entries []trieEntry) error {
+	// Entry counters are split so the stop condition (tier 2) reads only the
+	// contract-loop-generated entries, not the genesis/inject/EOA preamble.
+	// Progress logs and Phase-2 diagnostics use the sum (totalEntries).
+	var preambleEntries, contractEntries int64
+
+	// writeEntries writes a batch of trie entries to the temp DB, incrementing
+	// the caller-supplied counter (either &preambleEntries or &contractEntries).
+	writeEntries := func(entries []trieEntry, counter *int64) error {
 		for i := range entries {
 			if err := tempBatch.Put(entries[i].Key[:], entries[i].Value[:]); err != nil {
 				return err
 			}
-			entryCount++
+			*counter++
 			if tempBatch.ValueSize() >= 64*1024*1024 { // flush every 64 MB
 				if err := tempBatch.Write(); err != nil {
 					return err
@@ -856,6 +861,7 @@ func (g *Generator) generateStreamingBinary() (retStats *Stats, retErr error) {
 			return
 		}
 		lastLogTime = time.Now()
+		totalEntries := preambleEntries + contractEntries
 		if g.config.TargetSize > 0 && g.config.NumContracts >= math.MaxInt32 {
 			// Prefer temp-DB-based progress when available (real measurement).
 			// Fall back to entry-count-based estimate otherwise.
@@ -870,8 +876,8 @@ func (g *Generator) generateStreamingBinary() (retStats *Stats, retErr error) {
 				pct = float64(projectedFinal) / float64(g.config.TargetSize) * 100
 				estimatedBytes = projectedFinal
 			} else if g.config.TargetEntries > 0 {
-				pct = float64(entryCount) / float64(g.config.TargetEntries) * 100
-				estimatedBytes = uint64(float64(entryCount) * float64(g.config.TargetSize) / float64(g.config.TargetEntries))
+				pct = float64(totalEntries) / float64(g.config.TargetEntries) * 100
+				estimatedBytes = uint64(float64(totalEntries) * float64(g.config.TargetSize) / float64(g.config.TargetEntries))
 			}
 			if pct > 100 {
 				pct = 100
@@ -880,11 +886,11 @@ func (g *Generator) generateStreamingBinary() (retStats *Stats, retErr error) {
 				phase, pct,
 				formatBytesInternal(estimatedBytes),
 				formatBytesInternal(g.config.TargetSize),
-				current, slots, entryCount)
+				current, slots, totalEntries)
 		} else {
 			pct := float64(current) / float64(total) * 100
 			log.Printf("[%s] %d/%d (%.1f%%), %d storage slots, %d trie entries",
-				phase, current, total, pct, slots, entryCount)
+				phase, current, total, pct, slots, totalEntries)
 		}
 	}
 
@@ -921,7 +927,7 @@ func (g *Generator) generateStreamingBinary() (retStats *Stats, retErr error) {
 		}
 
 		entryBuf = collectAccountEntries(addr, acc, len(ad.code), ad.code, ad.storage, entryBuf[:0])
-		if err := writeEntries(entryBuf); err != nil {
+		if err := writeEntries(entryBuf, &preambleEntries); err != nil {
 			return nil, fmt.Errorf("failed to write genesis trie entries: %w", err)
 		}
 		snapCh <- snapshotWork{acc: ad}
@@ -952,7 +958,7 @@ func (g *Generator) generateStreamingBinary() (retStats *Stats, retErr error) {
 			CodeHash: types.EmptyCodeHash.Bytes(),
 		}
 		entryBuf = collectAccountEntries(addr, injectAccount, 0, nil, nil, entryBuf[:0])
-		if err := writeEntries(entryBuf); err != nil {
+		if err := writeEntries(entryBuf, &preambleEntries); err != nil {
 			return nil, fmt.Errorf("failed to write injected trie entries: %w", err)
 		}
 		ad := &accountData{
@@ -978,7 +984,7 @@ func (g *Generator) generateStreamingBinary() (retStats *Stats, retErr error) {
 		}
 
 		entryBuf = collectAccountEntries(acc.address, acc.account, 0, nil, nil, entryBuf[:0])
-		if err := writeEntries(entryBuf); err != nil {
+		if err := writeEntries(entryBuf, &preambleEntries); err != nil {
 			return nil, fmt.Errorf("failed to write EOA trie entries: %w", err)
 		}
 		snapCh <- snapshotWork{acc: acc}
@@ -1049,7 +1055,7 @@ func (g *Generator) generateStreamingBinary() (retStats *Stats, retErr error) {
 			entryBuf = collectAccountEntries(contract.address, contract.account, len(contract.code), contract.code, contract.storage, entryBuf[:0])
 			entries = entryBuf
 		}
-		if err := writeEntries(entries); err != nil {
+		if err := writeEntries(entries, &contractEntries); err != nil {
 			return nil, fmt.Errorf("failed to write contract trie entries: %w", err)
 		}
 		snapCh <- snapshotWork{acc: contract}
@@ -1068,7 +1074,7 @@ func (g *Generator) generateStreamingBinary() (retStats *Stats, retErr error) {
 						projected = lastTempSize*3/2 + ms
 					}
 				}
-				g.config.LiveStats.SetTrieEntries(entryCount, projected)
+				g.config.LiveStats.SetTrieEntries(preambleEntries+contractEntries, projected)
 			}
 		}
 		if len(stats.SampleContracts) < 3 {
@@ -1120,10 +1126,13 @@ func (g *Generator) generateStreamingBinary() (retStats *Stats, retErr error) {
 			}
 
 			// Tier 2: entry-count estimate (no disk I/O, always available).
-			if !shouldStop && g.config.TargetEntries > 0 && uint64(entryCount) >= g.config.TargetEntries {
+			// Uses contractEntries only — preamble (genesis/inject/EOA) entries
+			// are excluded so small targets with nontrivial genesis alloc don't
+			// trip the check before the contract loop has produced anything.
+			if !shouldStop && g.config.TargetEntries > 0 && uint64(contractEntries) >= g.config.TargetEntries {
 				if g.config.Verbose {
-					log.Printf("Target entries reached: %d / %d entries (target: %s)",
-						entryCount, g.config.TargetEntries,
+					log.Printf("Target entries reached: %d / %d contract entries (target: %s)",
+						contractEntries, g.config.TargetEntries,
 						formatBytesInternal(g.config.TargetSize))
 				}
 				shouldStop = true
@@ -1168,11 +1177,13 @@ func (g *Generator) generateStreamingBinary() (retStats *Stats, retErr error) {
 
 	// --- Phase 2: Stream sorted entries from temp DB → compute root hash ---
 
+	totalEntries := preambleEntries + contractEntries
+
 	// Compact the temp DB to flatten LSM levels into a single sorted run.
 	// This makes the sequential iteration single-pass I/O instead of a
 	// multi-level merge, reducing per-key CPU overhead across billions of entries.
 	if g.config.Verbose {
-		log.Printf("Compacting temp DB (%d entries)...", entryCount)
+		log.Printf("Compacting temp DB (%d entries)...", totalEntries)
 	}
 	compactStart := time.Now()
 	if err := tempDB.Compact(nil, nil); err != nil {
@@ -1183,7 +1194,7 @@ func (g *Generator) generateStreamingBinary() (retStats *Stats, retErr error) {
 	}
 
 	if g.config.Verbose {
-		log.Printf("Computing root from %d trie entries (streaming, O(depth) memory)...", entryCount)
+		log.Printf("Computing root from %d trie entries (streaming, O(depth) memory)...", totalEntries)
 	}
 
 	hashStart := time.Now()
@@ -1238,7 +1249,7 @@ func (g *Generator) generateStreamingBinary() (retStats *Stats, retErr error) {
 	if g.config.Verbose {
 		log.Printf("State root (binary stack trie): %s", stateRoot.Hex())
 		log.Printf("Generated %d accounts, %d contracts with %d total storage slots (%d trie entries)",
-			stats.AccountsCreated, stats.ContractsCreated, stats.StorageSlotsCreated, entryCount)
+			stats.AccountsCreated, stats.ContractsCreated, stats.StorageSlotsCreated, totalEntries)
 	}
 
 	writerStats := g.writer.Stats()
