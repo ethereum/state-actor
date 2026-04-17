@@ -191,6 +191,18 @@ type Stats struct {
 	// stem blobs (Phase 2). Only populated in binary trie mode.
 	StemBlobBytes uint64
 
+	// RawEntryBytes is the running sum of len(key)+len(value) over every
+	// trie entry written during Phase 1 (before Pebble compression and
+	// Phase-2 transformation into stem blobs + trie nodes). Used as the
+	// denominator for post-run calibration: actualFactor = finalDBSize /
+	// RawEntryBytes gives the true FinalSizeFactor for this workload.
+	// Only populated in binary trie mode.
+	RawEntryBytes uint64
+
+	// TrieEntries is the total number of trie entries written during
+	// Phase 1 (preamble + contract). Only populated in binary trie mode.
+	TrieEntries uint64
+
 	// DeepBranchAccounts is the number of deep-branch contracts created.
 	DeepBranchAccounts int
 

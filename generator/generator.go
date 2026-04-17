@@ -1211,6 +1211,8 @@ func (g *Generator) generateStreamingBinary() (retStats *Stats, retErr error) {
 	stats.TrieNodeBytes = uint64(tnStats.Bytes)
 	stats.StemBlobBytes = uint64(sbStats.Bytes)
 	stats.TotalBytes = stats.AccountBytes + stats.StorageBytes + stats.CodeBytes + stats.TrieNodeBytes + stats.StemBlobBytes
+	stats.RawEntryBytes = uint64(rawEntryBytes)
+	stats.TrieEntries = uint64(totalEntries)
 
 	elapsed := time.Since(start)
 	stats.GenerationTime = elapsed

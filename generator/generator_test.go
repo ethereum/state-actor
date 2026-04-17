@@ -974,6 +974,13 @@ func TestTargetSizeStopsAccurately_Bintrie(t *testing.T) {
 		fmtBytes(target), stats.ContractsCreated, stats.StorageSlotsCreated,
 		stats.StateRoot.Hex())
 	assertDBSizeWithin(t, dbPath, target, 0.35)
+
+	// Calibration-counter invariant: bintrie trie entries are always 32-byte
+	// key + 32-byte value = 64 raw bytes each.
+	if stats.RawEntryBytes != 64*stats.TrieEntries {
+		t.Errorf("RawEntryBytes=%d != 64 × TrieEntries=%d (product=%d)",
+			stats.RawEntryBytes, stats.TrieEntries, 64*stats.TrieEntries)
+	}
 }
 
 // TestTargetSizeStopsAccurately_MPT is the sanity check for the MPT path.

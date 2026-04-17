@@ -407,6 +407,19 @@ func main() {
 	// Report actual on-disk size (after Pebble compression).
 	if dbSize, err := dirSize(config.DBPath); err == nil {
 		fmt.Printf("Total DB Size:     %s\n", formatBytes(dbSize))
+		// Post-run calibration: if we have raw-entry bookkeeping (bintrie
+		// only today), report the observed bytes-per-entry and size factor.
+		// Operators can pass the factor to a subsequent run via
+		// --final-size-factor to tighten --target-size accuracy for their
+		// specific workload.
+		if stats.RawEntryBytes > 0 && stats.TrieEntries > 0 {
+			actualFactor := float64(dbSize) / float64(stats.RawEntryBytes)
+			actualBPE := float64(dbSize) / float64(stats.TrieEntries)
+			fmt.Printf("Calibration:       %.1f bytes/entry, size factor %.3f\n",
+				actualBPE, actualFactor)
+			fmt.Printf("                   (pass --final-size-factor %.3f next run to tune)\n",
+				actualFactor)
+		}
 	}
 	fmt.Printf("Throughput:        %.2f slots/sec\n", float64(stats.StorageSlotsCreated)/elapsed.Seconds())
 	if stats.DeepBranchAccounts > 0 {
