@@ -121,12 +121,22 @@ type Config struct {
 	TargetSize uint64
 
 	// TargetEntries is the estimated total number of trie entries needed
-	// to reach TargetSize, computed as TargetSize / bytesPerEntry during
-	// auto-scaling. Used for entry-based progress reporting and as the
-	// primary stop condition in binary trie mode (where dirSize of the
-	// main DB stays small during Phase 1 because only code blobs are
-	// written — account/storage flat state is deferred to Phase 2 stem blobs).
+	// to reach TargetSize, derived from TargetSize / (64 × FinalSizeFactor)
+	// at the main.go auto-scaling layer. Retained for progress-UI entry
+	// counters; the stop condition uses FinalSizeFactor-based byte projection.
 	TargetEntries uint64
+
+	// FinalSizeFactor is the ratio of on-disk final-DB bytes to raw trie-entry
+	// bytes (key+value, 64 B each) used by the bintrie stop condition to
+	// project the final database size from a running in-memory byte counter.
+	// Zero selects the per-TrieMode default (2.03 for TrieModeBinary, derived
+	// from the observed 22.4M entries → 2.9 GB run: 130 B/entry ÷ 64 raw
+	// B/entry). Non-zero values must lie in [0.5, 5.0].
+	//
+	// The default is tuned for GroupDepth=8; smaller group depths shift the
+	// ratio because stem-blob grouping density changes. If you set GroupDepth
+	// below 8, pass an explicit FinalSizeFactor or expect overshoot/undershoot.
+	FinalSizeFactor float64
 
 	// OutputFormat specifies the database format to generate.
 	// Defaults to OutputGeth if empty.

@@ -48,6 +48,23 @@ func New(config Config) (*Generator, error) {
 		config.OutputFormat = OutputGeth
 	}
 
+	// Default FinalSizeFactor per trie mode when not explicitly set. The
+	// bintrie default (2.03) reflects an observed 22.4M-entries → 2.9 GB
+	// run with GroupDepth=8; MPT is left at zero here and handled by its
+	// own (legacy) stop path until a follow-up PR migrates it.
+	fsfDefaulted := false
+	if config.FinalSizeFactor == 0 && config.TrieMode == TrieModeBinary {
+		config.FinalSizeFactor = 2.03
+		fsfDefaulted = true
+	}
+	if config.FinalSizeFactor != 0 && (config.FinalSizeFactor < 0.5 || config.FinalSizeFactor > 5.0) {
+		return nil, fmt.Errorf("FinalSizeFactor=%.3f out of range [0.5, 5.0]", config.FinalSizeFactor)
+	}
+	if fsfDefaulted && config.GroupDepth != 0 && config.GroupDepth != 8 && config.TargetSize > 0 {
+		log.Printf("WARNING: FinalSizeFactor defaulted to 2.03 (tuned for GroupDepth=8) but GroupDepth=%d; target-size may drift. Pass --final-size-factor explicitly after one run to calibrate.",
+			config.GroupDepth)
+	}
+
 	var db ethdb.KeyValueStore
 	var writer StateWriter
 	var err error
@@ -831,19 +848,26 @@ func (g *Generator) generateStreamingBinary() (retStats *Stats, retErr error) {
 
 	tempBatch := tempDB.NewBatch()
 
-	// Entry counters are split so the stop condition (tier 2) reads only the
-	// contract-loop-generated entries, not the genesis/inject/EOA preamble.
-	// Progress logs and Phase-2 diagnostics use the sum (totalEntries).
+	// Entry counters for reporting: preambleEntries covers genesis/inject/EOA,
+	// contractEntries covers the contract loop. The sum (totalEntries) is
+	// shown in progress logs and Phase-2 diagnostics.
 	var preambleEntries, contractEntries int64
 
+	// rawEntryBytes is the running sum of len(key)+len(value) across every
+	// entry written to the temp DB. Combined with a calibrated FinalSizeFactor
+	// and the main-DB code-blob byte count, this drives the bintrie stop
+	// condition — a pure arithmetic projection, no disk I/O.
+	var rawEntryBytes int64
+
 	// writeEntries writes a batch of trie entries to the temp DB, incrementing
-	// the caller-supplied counter (either &preambleEntries or &contractEntries).
+	// both the caller-supplied entry counter and the shared rawEntryBytes.
 	writeEntries := func(entries []trieEntry, counter *int64) error {
 		for i := range entries {
 			if err := tempBatch.Put(entries[i].Key[:], entries[i].Value[:]); err != nil {
 				return err
 			}
 			*counter++
+			rawEntryBytes += int64(len(entries[i].Key) + len(entries[i].Value))
 			if tempBatch.ValueSize() >= 64*1024*1024 { // flush every 64 MB
 				if err := tempBatch.Write(); err != nil {
 					return err
@@ -854,8 +878,19 @@ func (g *Generator) generateStreamingBinary() (retStats *Stats, retErr error) {
 		return nil
 	}
 
+	// projectedFinalSize returns the current estimate of the final on-disk
+	// database size: raw-entry bytes amplified by FinalSizeFactor, plus code
+	// blobs already written to the main DB. Used by both the stop check and
+	// the progress reporter so the two stay in lockstep.
+	projectedFinalSize := func() uint64 {
+		if g.config.FinalSizeFactor == 0 {
+			return 0
+		}
+		codeBytes := uint64(g.writer.Stats().CodeBytes)
+		return uint64(float64(rawEntryBytes)*g.config.FinalSizeFactor) + codeBytes
+	}
+
 	var lastLogTime = time.Now()
-	var lastTempSize uint64 // cached from most recent dirSize(tempDir) in stop check
 	logProgress := func(phase string, current, total int, slots int64) {
 		if time.Since(lastLogTime) < 20*time.Second {
 			return
@@ -863,28 +898,15 @@ func (g *Generator) generateStreamingBinary() (retStats *Stats, retErr error) {
 		lastLogTime = time.Now()
 		totalEntries := preambleEntries + contractEntries
 		if g.config.TargetSize > 0 && g.config.NumContracts >= math.MaxInt32 {
-			// Prefer temp-DB-based progress when available (real measurement).
-			// Fall back to entry-count-based estimate otherwise.
-			var pct float64
-			var estimatedBytes uint64
-			if lastTempSize > 0 {
-				mainSize, err := dirSize(g.config.DBPath)
-				if err != nil {
-					mainSize = 0
-				}
-				projectedFinal := lastTempSize*3/2 + mainSize
-				pct = float64(projectedFinal) / float64(g.config.TargetSize) * 100
-				estimatedBytes = projectedFinal
-			} else if g.config.TargetEntries > 0 {
-				pct = float64(totalEntries) / float64(g.config.TargetEntries) * 100
-				estimatedBytes = uint64(float64(totalEntries) * float64(g.config.TargetSize) / float64(g.config.TargetEntries))
-			}
+			projected := projectedFinalSize()
+			pct := float64(projected) / float64(g.config.TargetSize) * 100
+			overshoot := ""
 			if pct > 100 {
-				pct = 100
+				overshoot = " OVER"
 			}
-			log.Printf("[%s] %.1f%% of target (%s / %s est.), %d contracts, %d storage slots, %d trie entries",
-				phase, pct,
-				formatBytesInternal(estimatedBytes),
+			log.Printf("[%s] %.1f%% of target%s (%s / %s proj.), %d contracts, %d storage slots, %d trie entries",
+				phase, pct, overshoot,
+				formatBytesInternal(projected),
 				formatBytesInternal(g.config.TargetSize),
 				current, slots, totalEntries)
 		} else {
@@ -1041,10 +1063,6 @@ func (g *Generator) generateStreamingBinary() (retStats *Stats, retErr error) {
 	if g.config.LiveStats != nil {
 		g.config.LiveStats.SetPhase("contracts")
 	}
-	targetCheckInterval := 500
-	if g.config.NumContracts < 500*5 {
-		targetCheckInterval = max(1, g.config.NumContracts/5)
-	}
 	contractIdx := 0
 	targetReached := false
 	for contract := range contractCh {
@@ -1063,18 +1081,10 @@ func (g *Generator) generateStreamingBinary() (retStats *Stats, retErr error) {
 		stats.StorageSlotsCreated += len(contract.storage)
 		if g.config.LiveStats != nil {
 			g.config.LiveStats.AddContract(len(contract.storage))
-			// Sync byte stats and entry count every 100 contracts
+			// Sync byte stats and projected size every 100 contracts
 			if stats.ContractsCreated%100 == 0 {
 				g.config.LiveStats.SyncBytes(g.writer.Stats())
-				// Compute projected final size from temp DB measurement.
-				var projected uint64
-				if lastTempSize > 0 {
-					ms, err := dirSize(g.config.DBPath)
-					if err == nil {
-						projected = lastTempSize*3/2 + ms
-					}
-				}
-				g.config.LiveStats.SetTrieEntries(preambleEntries+contractEntries, projected)
+				g.config.LiveStats.SetTrieEntries(preambleEntries+contractEntries, projectedFinalSize())
 			}
 		}
 		if len(stats.SampleContracts) < 3 {
@@ -1083,79 +1093,21 @@ func (g *Generator) generateStreamingBinary() (retStats *Stats, retErr error) {
 		contractIdx++
 		logProgress("Contract", contractIdx, g.config.NumContracts, int64(stats.StorageSlotsCreated))
 
-		// Check whether we've generated enough data to reach target size.
-		//
-		// In bintrie mode, Phase 1 writes trie entries to a temp Pebble DB
-		// and only code blobs to the main DB. The main DB stays tiny until
-		// Phase 2 writes stem blobs + trie nodes. We therefore measure the
-		// temp DB (where the data actually lives) and project the final size.
-		//
-		// Three tiers, checked in order:
-		//  1. Temp DB size × projection factor (real measurement, most accurate)
-		//  2. Entry count vs TargetEntries (constant-based estimate, fallback)
-		//  3. Main DB size (works for MPT; useless for bintrie Phase 1)
-		if g.config.TargetSize > 0 && contractIdx%targetCheckInterval == 0 {
-			shouldStop := false
-
-			// Tier 1: measure temp DB + main DB, project final size.
-			// Temp entries become stem blobs + trie nodes in Phase 2.
-			// Empirically the final DB is ~1.2-1.5× the temp DB size for
-			// bintrie (stem blobs are more compact than raw entries, but
-			// trie nodes add overhead). Use 1.5× as conservative estimate.
-			// Add main DB (code blobs) since that's already written.
-			tempSize, tempErr := dirSize(tempDir)
-			if tempErr == nil {
-				lastTempSize = tempSize // cache for logProgress
-			}
-			mainDBSize, mainErr := dirSize(g.config.DBPath)
-			if tempErr == nil && mainErr == nil {
-				// temp entries (64 raw bytes each) compress to ~50-70% in Pebble.
-				// Final DB: stem blobs ≈ 0.8× temp (grouping saves space) + trie
-				// nodes ≈ 0.5× temp (binary tree interior overhead) + main DB.
-				projectedFinal := tempSize*3/2 + mainDBSize
-				if projectedFinal >= g.config.TargetSize {
-					if g.config.Verbose {
-						log.Printf("Target size reached (temp-based): temp %s × 1.5 + main %s = %s (target: %s)",
-							formatBytesInternal(tempSize),
-							formatBytesInternal(mainDBSize),
-							formatBytesInternal(projectedFinal),
-							formatBytesInternal(g.config.TargetSize))
-					}
-					shouldStop = true
-				}
-			}
-
-			// Tier 2: entry-count estimate (no disk I/O, always available).
-			// Uses contractEntries only — preamble (genesis/inject/EOA) entries
-			// are excluded so small targets with nontrivial genesis alloc don't
-			// trip the check before the contract loop has produced anything.
-			if !shouldStop && g.config.TargetEntries > 0 && uint64(contractEntries) >= g.config.TargetEntries {
+		// Single in-memory byte estimator: the raw entries written so far,
+		// amplified by FinalSizeFactor, plus code already in the main DB. No
+		// disk I/O. Runs every contract so worst-case overshoot is bounded
+		// by one contract's worth of entries (not by a 500-contract window).
+		if g.config.TargetSize > 0 && g.config.FinalSizeFactor > 0 {
+			projected := projectedFinalSize()
+			if projected >= g.config.TargetSize {
 				if g.config.Verbose {
-					log.Printf("Target entries reached: %d / %d contract entries (target: %s)",
-						contractEntries, g.config.TargetEntries,
+					log.Printf("Target reached: %s projected (raw %s × %.2f + code %s, target %s)",
+						formatBytesInternal(projected),
+						formatBytesInternal(uint64(rawEntryBytes)),
+						g.config.FinalSizeFactor,
+						formatBytesInternal(uint64(g.writer.Stats().CodeBytes)),
 						formatBytesInternal(g.config.TargetSize))
 				}
-				shouldStop = true
-			}
-
-			// Tier 3: main DB only (works for MPT where snapshots are in main DB).
-			if !shouldStop && mainErr == nil {
-				projected := mainDBSize
-				if g.config.WriteTrieNodes {
-					projected = mainDBSize * 5 / 2
-				}
-				if projected >= g.config.TargetSize {
-					if g.config.Verbose {
-						log.Printf("Target size reached (main DB): %s × 2.5 = %s (target: %s)",
-							formatBytesInternal(mainDBSize),
-							formatBytesInternal(projected),
-							formatBytesInternal(g.config.TargetSize))
-					}
-					shouldStop = true
-				}
-			}
-
-			if shouldStop {
 				targetReached = true
 				close(done)
 				break
