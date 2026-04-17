@@ -425,8 +425,18 @@ func main() {
 		// Operators can pass the factor to a subsequent run via
 		// --final-size-factor to tighten --target-size accuracy for their
 		// specific workload.
-		if stats.RawEntryBytes > 0 && stats.TrieEntries > 0 {
-			actualFactor := float64(dbSize) / float64(stats.RawEntryBytes)
+		//
+		// The factor must match the stop-condition projection formula
+		// (projected = rawBytes × factor + codeBytes), so we subtract
+		// codeBytes from the disk total before dividing. The headline
+		// bytes-per-entry number keeps the full on-disk total as its
+		// numerator — that's the figure operators care about.
+		if stats.RawEntryBytes > 0 && dbSize > 0 && stats.TrieEntries > 0 {
+			nonCodeSize := dbSize
+			if stats.CodeBytes < dbSize {
+				nonCodeSize = dbSize - stats.CodeBytes
+			}
+			actualFactor := float64(nonCodeSize) / float64(stats.RawEntryBytes)
 			actualBPE := float64(dbSize) / float64(stats.TrieEntries)
 			fmt.Printf("Calibration:       %.1f bytes/entry, size factor %.3f\n",
 				actualBPE, actualFactor)
