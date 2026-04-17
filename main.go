@@ -54,7 +54,8 @@ var (
 	deepBranchKnownSlots = flag.Int("deep-branch-known-slots", 1, "Legitimate storage slots with known preimages per deep-branch account")
 
 	// Target size
-	targetSize = flag.String("target-size", "", "Target total DB size on disk (e.g. '5GB', '500MB'). Stops generating when estimated size is reached.")
+	targetSize       = flag.String("target-size", "", "Target total DB size on disk (e.g. '5GB', '500MB'). Stops generating when estimated size is reached.")
+	finalSizeFactor  = flag.Float64("final-size-factor", 0, "Ratio of on-disk final-DB bytes to raw trie-entry bytes; 0 = auto (2.03 for bintrie). Tune with the Calibration line printed after a run.")
 
 	// Genesis integration
 	genesisPath    = flag.String("genesis", "", "Path to genesis.json file (optional)")
@@ -145,7 +146,18 @@ func main() {
 	// Contracts is the derived "solver" variable that reconciles both.
 	// Explicit flags always override auto-computed values.
 	if parsedTargetSize > 0 {
-		const bytesPerEntry uint64 = 80 // empirical after Pebble compression
+		// Bytes-per-entry derivation: each raw bintrie entry is 64 B
+		// (32-byte key + 32-byte value); final on-disk bytes = raw × factor.
+		// Default factor 2.03 matches the generator's built-in default
+		// (observed 22.4M entries → 2.9 GB). --final-size-factor overrides.
+		factor := *finalSizeFactor
+		if factor == 0 {
+			factor = 2.03
+		}
+		bytesPerEntry := uint64(64.0 * factor)
+		if bytesPerEntry == 0 {
+			bytesPerEntry = 1 // avoid divide-by-zero for pathological factors
+		}
 		totalEntries := parsedTargetSize / bytesPerEntry
 		chunksPerContract := uint64(((*codeSize) + 30) / 31)
 
@@ -272,6 +284,7 @@ func main() {
 		InjectAddresses: injectAddrs,
 		TargetSize:      parsedTargetSize,
 		TargetEntries:   parsedTargetEntries,
+		FinalSizeFactor: *finalSizeFactor,
 		OutputFormat:    generator.ParseOutputFormat(*outputFormat),
 		DeepBranch: generator.DeepBranchConfig{
 			NumAccounts: *deepBranchAccounts,
