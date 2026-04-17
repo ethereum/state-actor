@@ -1,15 +1,18 @@
 package generator
 
 import (
+	"fmt"
 	"math/bits"
 	"os"
 	"path/filepath"
 	"testing"
 
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/ethdb/pebble"
 	"github.com/ethereum/go-ethereum/rlp"
+	"github.com/holiman/uint256"
 )
 
 func TestGenerateSmallState(t *testing.T) {
@@ -892,6 +895,236 @@ func TestTargetSizeStopsEarly(t *testing.T) {
 	// The target run should still produce a valid state root.
 	if statsTarget.StateRoot == (common.Hash{}) {
 		t.Error("Target run produced empty state root")
+	}
+	// NB: this legacy test only asserts "stops before full run"; it does NOT
+	// assert the final DB size is near 500 KB (it isn't — Pebble WAL/memtable
+	// overhead dominates at this target size, producing ~10+ MB). The
+	// accuracy regression fence lives in TestTargetSizeStopsAccurately_Bintrie
+	// at a larger target where noise is negligible.
+}
+
+// assertDBSizeWithin fails the test if the on-disk size of dbPath differs
+// from target by more than tolerance (a fraction, e.g. 0.35 for ±35%).
+// Uses the same filesystem walk that main.go:408 uses for its post-run report,
+// so the assertion reflects what an operator would see after the run.
+func assertDBSizeWithin(t *testing.T, dbPath string, target uint64, tolerance float64) {
+	t.Helper()
+	actual, err := dirSize(dbPath)
+	if err != nil {
+		t.Fatalf("dirSize(%q): %v", dbPath, err)
+	}
+	diff := float64(actual) - float64(target)
+	if diff < 0 {
+		diff = -diff
+	}
+	ratio := diff / float64(target)
+	t.Logf("DB size check: actual=%d target=%d diff=%.1f%% tolerance=%.1f%%",
+		actual, target, ratio*100, tolerance*100)
+	if ratio > tolerance {
+		t.Errorf("DB size %.1f%% off target (%d vs %d), tolerance %.1f%%",
+			ratio*100, actual, target, tolerance*100)
+	}
+}
+
+// TestTargetSizeStopsAccurately_Bintrie is the regression fence for the
+// bintrie stop-condition refactor. With the committed 3-tier heuristic and
+// bytesPerEntry=80 (vs observed ~130), a 10 MB target overshoots by ~35-60%.
+// This test fails on the currently-committed code and passes after the single
+// in-memory-counter estimator (commit C3) lands with FinalSizeFactor=2.03.
+func TestTargetSizeStopsAccurately_Bintrie(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping long target-size test in -short mode")
+	}
+	const target uint64 = 10 * 1024 * 1024 // 10 MB
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "testdb")
+
+	config := Config{
+		DBPath:       dbPath,
+		NumAccounts:  20,
+		NumContracts: 1_000_000, // large upper bound so TargetSize governs
+		MaxSlots:     100,
+		MinSlots:     10,
+		Distribution: PowerLaw,
+		Seed:         42,
+		BatchSize:    1000,
+		Workers:      1,
+		CodeSize:     256,
+		TrieMode:     TrieModeBinary,
+		TargetSize:   target,
+	}
+
+	gen, err := New(config)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	stats, err := gen.Generate()
+	if err != nil {
+		gen.Close()
+		t.Fatalf("Generate: %v", err)
+	}
+	gen.Close()
+
+	t.Logf("bintrie target=%s: %d contracts, %d slots, root=%s",
+		fmtBytes(target), stats.ContractsCreated, stats.StorageSlotsCreated,
+		stats.StateRoot.Hex())
+	assertDBSizeWithin(t, dbPath, target, 0.35)
+}
+
+// TestTargetSizeStopsAccurately_MPT is the sanity check for the MPT path.
+// MPT overshoot is bounded by the memtable+WAL slack (~128 MB worst case),
+// so a 10 MB target with a loose 0.5 tolerance should pass on both the
+// current code and after C6 if/when MPT is migrated to the same estimator.
+func TestTargetSizeStopsAccurately_MPT(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping long target-size test in -short mode")
+	}
+	const target uint64 = 10 * 1024 * 1024
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "testdb")
+
+	config := Config{
+		DBPath:       dbPath,
+		NumAccounts:  20,
+		NumContracts: 1_000_000,
+		MaxSlots:     100,
+		MinSlots:     10,
+		Distribution: PowerLaw,
+		Seed:         43,
+		BatchSize:    1000,
+		Workers:      1,
+		CodeSize:     256,
+		TrieMode:     TrieModeMPT,
+		TargetSize:   target,
+	}
+
+	gen, err := New(config)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	stats, err := gen.Generate()
+	if err != nil {
+		gen.Close()
+		t.Fatalf("Generate: %v", err)
+	}
+	gen.Close()
+
+	t.Logf("MPT target=%s: %d contracts, %d slots", fmtBytes(target), stats.ContractsCreated, stats.StorageSlotsCreated)
+	assertDBSizeWithin(t, dbPath, target, 0.5)
+}
+
+// TestTargetSizeStopsPreambleIndependence verifies that the stop condition is
+// driven by contract-loop entries only, not by preamble (genesis/inject/EOA)
+// entries. The currently-committed code increments a shared entryCount in
+// writeEntries for all four call sites, so tier 2 trips earlier when the
+// preamble is large — producing fewer contracts than an equivalent run
+// without preamble. After C2 (preamble counter split), the contract count
+// should be within 15% regardless of preamble size.
+//
+// The test explicitly sets TargetEntries to engage tier 2 on the current
+// 3-tier design; after C3 (single estimator), TargetEntries becomes a
+// no-op field and this test still passes because the contract-level byte
+// counter is the authoritative signal.
+func TestTargetSizeStopsPreambleIndependence(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping preamble-independence test in -short mode")
+	}
+
+	baseConfig := func(dbPath string) Config {
+		return Config{
+			DBPath:        dbPath,
+			NumAccounts:   0,
+			NumContracts:  200, // low so targetCheckInterval = 40
+			MaxSlots:      10,
+			MinSlots:      2,
+			Distribution:  PowerLaw,
+			Seed:          44,
+			BatchSize:     1000,
+			Workers:       1,
+			CodeSize:      256,
+			TrieMode:      TrieModeBinary,
+			TargetSize:    1 * 1024 * 1024, // 1 MB (any > 0 engages the check)
+			TargetEntries: 1200,            // engages tier 2 on current code
+		}
+	}
+
+	// Baseline — no genesis preamble.
+	tmpA := t.TempDir()
+	cfgA := baseConfig(filepath.Join(tmpA, "a"))
+	gA, err := New(cfgA)
+	if err != nil {
+		t.Fatalf("baseline New: %v", err)
+	}
+	statsA, err := gA.Generate()
+	if err != nil {
+		gA.Close()
+		t.Fatalf("baseline Generate: %v", err)
+	}
+	gA.Close()
+
+	// With genesis preamble — 500 accounts + 3 storage slots each ≈ 1500
+	// preamble entries, enough to exceed TargetEntries=1200 before any
+	// contract is processed. Under the bug, this makes tier 2 fire at the
+	// first checkpoint (contractIdx=40) with far fewer contracts generated
+	// than in the baseline run.
+	// Preamble accounts are EOAs (no storage, no code) so they do NOT
+	// increment stats.ContractsCreated — keeping the comparison apples-to-apples.
+	// Each still calls writeEntries once (account-header entry), which primes
+	// the shared entryCount sufficiently to trip tier 2 under the D3 bug.
+	genesisAccts := make(map[common.Address]*types.StateAccount, 1500)
+	for i := 0; i < 1500; i++ {
+		var addr common.Address
+		addr[19] = byte(i)
+		addr[18] = byte(i >> 8)
+		genesisAccts[addr] = &types.StateAccount{
+			Balance:  uint256.NewInt(uint64(i + 1)),
+			Nonce:    uint64(i),
+			Root:     types.EmptyRootHash,
+			CodeHash: types.EmptyCodeHash.Bytes(),
+		}
+	}
+
+	tmpB := t.TempDir()
+	cfgB := baseConfig(filepath.Join(tmpB, "b"))
+	cfgB.GenesisAccounts = genesisAccts
+	gB, err := New(cfgB)
+	if err != nil {
+		t.Fatalf("with-preamble New: %v", err)
+	}
+	statsB, err := gB.Generate()
+	if err != nil {
+		gB.Close()
+		t.Fatalf("with-preamble Generate: %v", err)
+	}
+	gB.Close()
+
+	t.Logf("baseline: %d contracts; with-preamble: %d contracts",
+		statsA.ContractsCreated, statsB.ContractsCreated)
+
+	if statsA.ContractsCreated == 0 {
+		t.Fatalf("baseline produced zero contracts; test setup is wrong")
+	}
+	ratio := float64(statsA.ContractsCreated-statsB.ContractsCreated) / float64(statsA.ContractsCreated)
+	if ratio < 0 {
+		ratio = -ratio
+	}
+	if ratio > 0.15 {
+		t.Errorf("preamble changed contract count by %.1f%% (baseline=%d, with-preamble=%d); stop condition is polluted by preamble entries",
+			ratio*100, statsA.ContractsCreated, statsB.ContractsCreated)
+	}
+}
+
+// fmtBytes formats a byte count for test logs.
+func fmtBytes(n uint64) string {
+	switch {
+	case n >= 1<<30:
+		return fmt.Sprintf("%.2f GB", float64(n)/(1<<30))
+	case n >= 1<<20:
+		return fmt.Sprintf("%.2f MB", float64(n)/(1<<20))
+	case n >= 1<<10:
+		return fmt.Sprintf("%.2f KB", float64(n)/(1<<10))
+	default:
+		return fmt.Sprintf("%d B", n)
 	}
 }
 
