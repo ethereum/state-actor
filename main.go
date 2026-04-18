@@ -80,6 +80,14 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Reject Erigon explicitly. The MDBX/PlainState backend has been
+	// removed (see follow-up commits); scripts passing
+	// --output-format erigon need a clear error rather than silently
+	// falling through to the default geth path.
+	if *outputFormat != "" && *outputFormat != "geth" {
+		log.Fatalf("--output-format %q is no longer supported; Erigon was removed. Only geth output is available.", *outputFormat)
+	}
+
 	if *workers == 0 {
 		*workers = runtime.NumCPU()
 	}
