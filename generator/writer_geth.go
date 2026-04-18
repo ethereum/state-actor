@@ -16,23 +16,6 @@ import (
 	"github.com/nerolation/state-actor/genesis"
 )
 
-// OutputFormat specifies the database format to generate.
-// Retained as a vestigial type while Config.OutputFormat still exists;
-// OutputGeth is the only legal value. Removed together with the Config
-// field in a follow-up commit.
-type OutputFormat string
-
-const (
-	// OutputGeth generates a geth-compatible Pebble database (snapshot layer).
-	OutputGeth OutputFormat = "geth"
-)
-
-// ParseOutputFormat parses an output format string. Always returns
-// OutputGeth — Erigon support was removed.
-func ParseOutputFormat(s string) OutputFormat {
-	return OutputGeth
-}
-
 // WriterStats holds cumulative byte counts from state writes.
 type WriterStats struct {
 	AccountBytes uint64

@@ -120,10 +120,6 @@ type Config struct {
 	// NumContracts serves as a safety upper bound. 0 means no size limit.
 	TargetSize uint64
 
-	// OutputFormat specifies the database format to generate.
-	// Defaults to OutputGeth if empty.
-	OutputFormat OutputFormat
-
 	// DeepBranch configures deep-branch account generation. When enabled,
 	// additional contract accounts are created with storage tries that have
 	// maximally deep chains of branch nodes (no extension nodes along the

@@ -43,10 +43,6 @@ func New(config Config) (*Generator, error) {
 		return nil, fmt.Errorf("unsupported trie mode: %q", config.TrieMode)
 	}
 
-	// geth is the only output format. OutputFormat is retained on Config
-	// as a vestigial field until the follow-up commit removes it.
-	config.OutputFormat = OutputGeth
-
 	gethWriter, err := NewGethWriter(config.DBPath, config.BatchSize, config.Workers)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create geth writer: %w", err)
@@ -1087,11 +1083,11 @@ func (g *Generator) generateStreamingBinary() (retStats *Stats, retErr error) {
 	// stoppableIterator + afterStem callback can plug into the Phase 2
 	// pipeline (C4 of the factor-free target-size refactor).
 	var tnw *trieNodeWriter
-	if g.config.WriteTrieNodes && g.config.OutputFormat == OutputGeth && g.db != nil {
+	if g.config.WriteTrieNodes && g.db != nil {
 		tnw = &trieNodeWriter{batch: g.db.NewBatch(), db: g.db}
 	}
 	var sbw *stemBlobWriter
-	if g.config.OutputFormat == OutputGeth && g.db != nil {
+	if g.db != nil {
 		sbw = &stemBlobWriter{batch: g.db.NewBatch(), db: g.db}
 	}
 
@@ -1101,7 +1097,7 @@ func (g *Generator) generateStreamingBinary() (retStats *Stats, retErr error) {
 	// in the temp DB and only becomes main-DB bytes via stem blobs and trie
 	// nodes emitted here in Phase 2.
 	var tracker *SizeTracker
-	if g.config.TargetSize > 0 && g.config.OutputFormat == OutputGeth && g.db != nil {
+	if g.config.TargetSize > 0 && g.db != nil {
 		tracker = NewSizeTracker(g.config.DBPath, g.config.TargetSize, func() int64 {
 			var logical int64
 			if sbw != nil {

@@ -60,9 +60,6 @@ var (
 	injectAccounts = flag.String("inject-accounts", "", "Comma-separated hex addresses to inject with 999999999 ETH (e.g. 0xf39F...2266)")
 	chainID        = flag.Int64("chain-id", 0, "Override genesis chainId (0 = use value from genesis.json)")
 
-	// Output format
-	outputFormat = flag.String("output-format", "geth", "Output database format: 'geth' (Pebble) or 'erigon' (MDBX)")
-
 	// Binary trie group depth
 	groupDepth      = flag.Int("group-depth", 8, "Binary trie group depth (1-8, default 8). Controls serialization unit size.")
 	pebbleBlockSize = flag.Int("pebble-block-size", 4096, "PebbleDB SSTable block size in bytes (default 4096)")
@@ -78,14 +75,6 @@ func main() {
 		fmt.Fprintln(os.Stderr, "Error: -db flag is required")
 		flag.Usage()
 		os.Exit(1)
-	}
-
-	// Reject Erigon explicitly. The MDBX/PlainState backend has been
-	// removed (see follow-up commits); scripts passing
-	// --output-format erigon need a clear error rather than silently
-	// falling through to the default geth path.
-	if *outputFormat != "" && *outputFormat != "geth" {
-		log.Fatalf("--output-format %q is no longer supported; Erigon was removed. Only geth output is available.", *outputFormat)
 	}
 
 	if *workers == 0 {
@@ -132,7 +121,7 @@ func main() {
 	if *statsPort > 0 {
 		statsServer = generator.NewStatsServer(*statsPort)
 		liveStats = statsServer.Stats()
-		liveStats.SetConfig(*accounts, *contracts, *outputFormat, *distribution, *seed)
+		liveStats.SetConfig(*accounts, *contracts, *distribution, *seed)
 		if *deepBranchAccounts > 0 {
 			liveStats.SetDeepBranch(*deepBranchAccounts, *deepBranchDepth, *deepBranchKnownSlots)
 		}
@@ -151,14 +140,6 @@ func main() {
 	// Contracts is the derived "solver" variable that reconciles both.
 	// Explicit flags always override auto-computed values.
 	if parsedTargetSize > 0 {
-		// Reject --target-size with --output-format erigon at parse time.
-		// ErigonWriter buffers all writes in in-memory maps until Flush(),
-		// so dirSize(mainDB) is meaningless during generation and there is
-		// no safe stop signal. A silent run would loop until OOM.
-		if generator.ParseOutputFormat(*outputFormat) == generator.OutputErigon {
-			log.Fatalf("--target-size is not supported with --output-format erigon " +
-				"(Erigon buffers writes in memory until close; direct on-disk sizing is impossible)")
-		}
 		// bytesPerEntry is used only by auto-scaling to shape
 		// --accounts/--contracts/--slots defaults; the actual stop
 		// condition is driven by the Phase 1/2 SizeTracker or dirSize check,
@@ -264,9 +245,6 @@ func main() {
 
 	// Validate deep-branch flags
 	if *deepBranchAccounts > 0 {
-		if *outputFormat == "erigon" {
-			log.Fatalf("--deep-branch-accounts is not supported with --output-format erigon")
-		}
 		if *deepBranchDepth < 1 || *deepBranchDepth > 64 {
 			log.Fatalf("--deep-branch-depth must be 1-64, got %d", *deepBranchDepth)
 		}
@@ -292,7 +270,6 @@ func main() {
 		WriteTrieNodes:  true, // Always write trie nodes — DB is unusable without them
 		InjectAddresses: injectAddrs,
 		TargetSize:      parsedTargetSize,
-		OutputFormat:    generator.ParseOutputFormat(*outputFormat),
 		DeepBranch: generator.DeepBranchConfig{
 			NumAccounts: *deepBranchAccounts,
 			Depth:       *deepBranchDepth,
@@ -331,7 +308,6 @@ func main() {
 	if *verbose {
 		log.Printf("Configuration:")
 		log.Printf("  Database:     %s", config.DBPath)
-		log.Printf("  Output Format: %s", config.OutputFormat)
 		log.Printf("  Accounts:     %d", config.NumAccounts)
 		if parsedTargetSize > 0 {
 			log.Printf("  Contracts:    %d (Phase 1 safety cap, target-size stops earlier)", config.NumContracts)

@@ -15,7 +15,6 @@ type LiveStats struct {
 	// Config
 	TargetAccounts  int    `json:"targetAccounts"`
 	TargetContracts int    `json:"targetContracts"`
-	OutputFormat    string `json:"outputFormat"`
 	Distribution    string `json:"distribution"`
 	Seed            int64  `json:"seed"`
 
@@ -124,12 +123,11 @@ func (ss *StatsServer) handleDashboard(w http.ResponseWriter, r *http.Request) {
 
 // Update methods for LiveStats
 
-func (ls *LiveStats) SetConfig(accounts, contracts int, format, dist string, seed int64) {
+func (ls *LiveStats) SetConfig(accounts, contracts int, dist string, seed int64) {
 	ls.mu.Lock()
 	defer ls.mu.Unlock()
 	ls.TargetAccounts = accounts
 	ls.TargetContracts = contracts
-	ls.OutputFormat = format
 	ls.Distribution = dist
 	ls.Seed = seed
 }
@@ -495,7 +493,7 @@ const dashboardHTML = `<!DOCTYPE html>
             const avgSlots = s.contractsCreated > 0 ? (s.storageSlotsCreated / s.contractsCreated).toFixed(1) : '0';
 
             document.getElementById('config').innerHTML = 
-                '<span>seed</span> ' + s.seed + ' · <span>dist</span> ' + s.distribution + ' · <span>format</span> ' + s.outputFormat;
+                '<span>seed</span> ' + s.seed + ' · <span>dist</span> ' + s.distribution;
 
             document.getElementById('dashboard').innerHTML = 
                 '<div class="card">' +
