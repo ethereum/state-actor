@@ -254,9 +254,7 @@ state-actor/
 │   ├── config.go              # Configuration types
 │   ├── generator.go           # Core generation logic
 │   ├── deep_branch.go         # Deep-branch phantom key construction
-│   ├── writer.go              # StateWriter interface
 │   ├── writer_geth.go         # Geth/Pebble snapshot writer
-│   ├── writer_erigon.go       # Erigon/MDBX PlainState writer
 │   └── generator_test.go      # Unit tests
 ├── genesis/
 │   ├── genesis.go             # Genesis loading and writing

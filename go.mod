@@ -5,7 +5,6 @@ go 1.24.0
 toolchain go1.24.12
 
 require (
-	github.com/erigontech/mdbx-go v0.38.4
 	github.com/ethereum/go-ethereum v1.17.2-0.20260323171428-745b0a8c09ad
 	github.com/holiman/uint256 v1.3.2
 )
@@ -35,7 +34,6 @@ require (
 	github.com/gogo/protobuf v1.3.2 // indirect
 	github.com/golang/protobuf v1.5.4 // indirect
 	github.com/golang/snappy v1.0.0 // indirect
-	github.com/ianlancetaylor/cgosymbolizer v0.0.0-20240503222823-736c933a666d // indirect
 	github.com/klauspost/compress v1.17.8 // indirect
 	github.com/klauspost/cpuid/v2 v2.0.9 // indirect
 	github.com/kr/pretty v0.3.1 // indirect
