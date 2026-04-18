@@ -43,44 +43,16 @@ func New(config Config) (*Generator, error) {
 		return nil, fmt.Errorf("unsupported trie mode: %q", config.TrieMode)
 	}
 
-	// Default to geth format
-	if config.OutputFormat == "" {
-		config.OutputFormat = OutputGeth
+	// geth is the only output format. OutputFormat is retained on Config
+	// as a vestigial field until the follow-up commit removes it.
+	config.OutputFormat = OutputGeth
+
+	gethWriter, err := NewGethWriter(config.DBPath, config.BatchSize, config.Workers)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create geth writer: %w", err)
 	}
-
-	var db ethdb.KeyValueStore
-	var writer StateWriter
-	var err error
-
-	switch config.OutputFormat {
-	case OutputErigon:
-		// For Erigon, we still need a Pebble DB for binary trie temp storage
-		// and for trie node writes if WriteTrieNodes is enabled
-		if config.TrieMode == TrieModeBinary || config.WriteTrieNodes {
-			db, err = pebble.New(config.DBPath+".geth-temp", 512, 256, "stategen/", false)
-			if err != nil {
-				return nil, fmt.Errorf("failed to open temp database: %w", err)
-			}
-		}
-		writer, err = NewErigonWriter(config.DBPath)
-		if err != nil {
-			if db != nil {
-				db.Close()
-			}
-			return nil, fmt.Errorf("failed to create erigon writer: %w", err)
-		}
-
-	case OutputGeth:
-		fallthrough
-	default:
-		// Geth format: use GethWriter which wraps Pebble
-		gethWriter, err := NewGethWriter(config.DBPath, config.BatchSize, config.Workers)
-		if err != nil {
-			return nil, fmt.Errorf("failed to create geth writer: %w", err)
-		}
-		writer = gethWriter
-		db = gethWriter.DB() // Share the underlying DB for genesis/trie operations
-	}
+	writer := StateWriter(gethWriter)
+	db := gethWriter.DB() // Shared for genesis / trie operations.
 
 	return &Generator{
 		config: config,
@@ -90,25 +62,14 @@ func New(config Config) (*Generator, error) {
 	}, nil
 }
 
-// Close closes the generator and its database.
+// Close closes the generator and its database. GethWriter.Close already
+// closes the underlying Pebble DB; g.db shares that instance.
 func (g *Generator) Close() error {
-	var errs []error
-
-	if g.writer != nil {
-		if err := g.writer.Close(); err != nil {
-			errs = append(errs, fmt.Errorf("close writer: %w", err))
-		}
+	if g.writer == nil {
+		return nil
 	}
-
-	// For Erigon format, db may be a separate temp DB
-	if g.db != nil && g.config.OutputFormat == OutputErigon {
-		if err := g.db.Close(); err != nil {
-			errs = append(errs, fmt.Errorf("close temp db: %w", err))
-		}
-	}
-
-	if len(errs) > 0 {
-		return errs[0]
+	if err := g.writer.Close(); err != nil {
+		return fmt.Errorf("close writer: %w", err)
 	}
 	return nil
 }

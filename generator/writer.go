@@ -12,19 +12,13 @@ type OutputFormat string
 const (
 	// OutputGeth generates a geth-compatible Pebble database (snapshot layer).
 	OutputGeth OutputFormat = "geth"
-
-	// OutputErigon generates an Erigon-compatible MDBX database (PlainState).
-	OutputErigon OutputFormat = "erigon"
 )
 
 // ParseOutputFormat parses an output format string.
+// Retained as a vestigial shim while the OutputFormat type still exists
+// (removed in a follow-up commit). Unknown values fall through to geth.
 func ParseOutputFormat(s string) OutputFormat {
-	switch s {
-	case "erigon":
-		return OutputErigon
-	default:
-		return OutputGeth
-	}
+	return OutputGeth
 }
 
 // StateWriter abstracts database writes for different client formats.
@@ -34,8 +28,9 @@ type StateWriter interface {
 	WriteAccount(addr common.Address, addrHash common.Hash, acc *types.StateAccount, incarnation uint64) error
 
 	// WriteStorage writes a storage slot for an account.
-	// addr and slot are raw keys; addrHash and slotHash are pre-computed keccak256
-	// hashes to avoid redundant hashing in geth format. Erigon uses raw keys.
+	// addrHash and slotHash are pre-computed keccak256 hashes so the writer
+	// doesn't hash redundantly; addr and slot are retained for external
+	// tooling that reads the raw keys.
 	WriteStorage(addr common.Address, addrHash common.Hash, slot common.Hash, slotHash common.Hash, value common.Hash) error
 
 	// WriteStorageRLP writes a storage slot with pre-encoded RLP value.
