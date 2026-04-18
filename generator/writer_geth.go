@@ -12,10 +12,33 @@ import (
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/ethdb"
 	"github.com/ethereum/go-ethereum/ethdb/pebble"
-	"github.com/ethereum/go-ethereum/params"
 	"github.com/ethereum/go-ethereum/rlp"
 	"github.com/nerolation/state-actor/genesis"
 )
+
+// OutputFormat specifies the database format to generate.
+// Retained as a vestigial type while Config.OutputFormat still exists;
+// OutputGeth is the only legal value. Removed together with the Config
+// field in a follow-up commit.
+type OutputFormat string
+
+const (
+	// OutputGeth generates a geth-compatible Pebble database (snapshot layer).
+	OutputGeth OutputFormat = "geth"
+)
+
+// ParseOutputFormat parses an output format string. Always returns
+// OutputGeth — Erigon support was removed.
+func ParseOutputFormat(s string) OutputFormat {
+	return OutputGeth
+}
+
+// WriterStats holds cumulative byte counts from state writes.
+type WriterStats struct {
+	AccountBytes uint64
+	StorageBytes uint64
+	CodeBytes    uint64
+}
 
 // GethWriter writes state to a geth-compatible Pebble database.
 // It uses the snapshot layer format with hashed keys.
@@ -118,13 +141,6 @@ func (w *GethWriter) SetStateRoot(root common.Hash) error {
 	if err := genesis.WriteCompletedSnapshotGenerator(w.db); err != nil {
 		return fmt.Errorf("write snapshot generator: %w", err)
 	}
-	return nil
-}
-
-// WriteGenesisBlock writes the genesis block using the genesis package.
-func (w *GethWriter) WriteGenesisBlock(config *params.ChainConfig, stateRoot common.Hash) error {
-	// This requires the genesis config to be passed through
-	// For now, return nil - the caller handles this via genesis.WriteGenesisBlock
 	return nil
 }
 

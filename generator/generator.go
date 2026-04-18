@@ -29,7 +29,7 @@ import (
 type Generator struct {
 	config Config
 	db     ethdb.KeyValueStore // Pebble DB for geth format or temp operations
-	writer StateWriter         // Abstracted writer for output format
+	writer *GethWriter         // Geth Pebble writer (only format supported)
 	rng    *mrand.Rand
 }
 
@@ -51,13 +51,11 @@ func New(config Config) (*Generator, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to create geth writer: %w", err)
 	}
-	writer := StateWriter(gethWriter)
-	db := gethWriter.DB() // Shared for genesis / trie operations.
 
 	return &Generator{
 		config: config,
-		db:     db,
-		writer: writer,
+		db:     gethWriter.DB(), // Shared for genesis / trie operations.
+		writer: gethWriter,
 		rng:    mrand.New(mrand.NewSource(config.Seed)),
 	}, nil
 }
@@ -553,10 +551,8 @@ func (g *Generator) generateStreamingMPT() (*Stats, error) {
 			if nodeWriter != nil {
 				nodeWriter.flush()
 			}
-			if gw, ok := g.writer.(*GethWriter); ok {
-				if err := gw.FlushBatch(); err != nil {
-					return nil, fmt.Errorf("MPT target-size flush: %w", err)
-				}
+			if err := g.writer.FlushBatch(); err != nil {
+				return nil, fmt.Errorf("MPT target-size flush: %w", err)
 			}
 			ms, err := dirSize(g.config.DBPath)
 			if err == nil && ms >= g.config.TargetSize {
