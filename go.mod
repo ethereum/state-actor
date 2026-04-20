@@ -10,6 +10,8 @@ require (
 	github.com/holiman/uint256 v1.3.2
 )
 
+replace github.com/ethereum/go-ethereum => ../go-ethereum
+
 require (
 	github.com/DataDog/zstd v1.4.5 // indirect
 	github.com/ProjectZKM/Ziren/crates/go-runtime/zkvm_runtime v0.0.0-20251001021608-1fe7b43fc4d6 // indirect

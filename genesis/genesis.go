@@ -156,7 +156,7 @@ func WriteGenesisBlock(db ethdb.KeyValueStore, genesis *Genesis, stateRoot commo
 	chainCfg := genesis.Config
 	if binaryTrie {
 		cfgCopy := *genesis.Config
-		cfgCopy.EnableVerkleAtGenesis = true
+		cfgCopy.EnableUBTAtGenesis = true
 		chainCfg = &cfgCopy
 	}
 

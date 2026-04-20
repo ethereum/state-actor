@@ -7,11 +7,11 @@ import (
 	"encoding/binary"
 	"fmt"
 	"log"
-	"time"
 	"math/bits"
 	"runtime"
 	"sort"
 	"sync"
+	"time"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
@@ -20,8 +20,8 @@ import (
 )
 
 const (
-	stemSize      = bintrie.StemSize     // 31
-	hashSize      = bintrie.HashSize     // 32
+	stemSize      = bintrie.StemSize      // 31
+	hashSize      = bintrie.HashSize      // 32
 	stemNodeWidth = bintrie.StemNodeWidth // 256
 
 	// Node type markers matching bintrie/binary_node.go
@@ -67,8 +67,9 @@ type groupChild struct {
 }
 
 // trieNodeWriter batches serialized trie node writes to Pebble.
-// Each node is written at key "vA" + path, where path is one byte per
-// tree level (0x00=left, 0x01=right). Flushes when batch exceeds 256MB.
+// Each node is written at key "vA" + path, where path is the bit-packed
+// encoding of the trie path (top N bits right-justified in ceil(N/8)
+// bytes). Flushes when batch exceeds 256MB.
 type trieNodeWriter struct {
 	batch  ethdb.Batch
 	db     ethdb.KeyValueStore
@@ -455,11 +456,11 @@ func commonPrefixLenBits(a, b []byte) int {
 // group's bottom-layer boundary. This eliminates the need for a post-hoc
 // regroupTrieNodes pass. Memory overhead: O(groupDepth) per group.
 type streamingBuilder struct {
-	stack    [maxDepth]common.Hash      // pending child hash at each depth
-	occupied [maxDepth]bool             // whether stack[d] is valid
-	isRight  [maxDepth]bool             // true if stack[d] is a right child
-	stemBits [maxDepth][stemSize]byte   // stem that placed each pending hash
-	w        *trieNodeWriter            // optional: writes serialized nodes to DB
+	stack    [maxDepth]common.Hash    // pending child hash at each depth
+	occupied [maxDepth]bool           // whether stack[d] is valid
+	isRight  [maxDepth]bool           // true if stack[d] is a right child
+	stemBits [maxDepth][stemSize]byte // stem that placed each pending hash
+	w        *trieNodeWriter          // optional: writes serialized nodes to DB
 
 	// Grouped emission: when groupDepth > 0, internal nodes are written in
 	// grouped format at boundary depths. groupBuf collects bottom-layer
@@ -480,14 +481,17 @@ func stemBitAt(stem []byte, depth int) byte {
 	return (stem[depth/8] >> uint(7-(depth%8))) & 1
 }
 
-// makePath builds the bit-path from root to `depth` for the given stem.
-// Each byte is 0x00 (left) or 0x01 (right). Used for trie node DB keys.
+// makePath builds a bit-packed path from root to `depth` for the given
+// stem using BitArray, matching go-ethereum's PathDB node key format.
 func makePath(stem []byte, depth int) []byte {
-	path := make([]byte, depth)
-	for i := 0; i < depth; i++ {
-		path[i] = stemBitAt(stem, i)
+	if depth <= 0 {
+		return nil
 	}
-	return path
+	var ba bintrie.BitArray
+	ba.SetBytes(uint8(len(stem)*8), stem)
+	var path bintrie.BitArray
+	path.MSBs(&ba, uint8(depth))
+	return path.ActiveBytes()
 }
 
 // recordGroupChild records a hash at a boundary depth as a bottom-layer
@@ -829,7 +833,6 @@ func computeBinaryRootStreaming(iter ethdb.Iterator, db ethdb.KeyValueStore, gro
 	return root, tnStats
 }
 
-
 // parallelStorageThreshold is the minimum number of storage slots needed
 // to justify worker pool overhead for parallel key derivation.
 const parallelStorageThreshold = 64
@@ -866,7 +869,6 @@ func collectAccountEntriesParallel(
 
 	return entries
 }
-
 
 // --- Parallel Phase 2 pipeline ---
 
@@ -912,10 +914,10 @@ func computeBinaryRootStreamingParallel(
 
 	// Channels
 	const maxInFlight = 64
-	sem := make(chan struct{}, maxInFlight)           // bounds total in-flight stems
-	workCh := make(chan *stemWork, 2*numWorkers)      // reader -> workers
-	resultCh := make(chan *stemResult, 2*numWorkers)  // workers -> resequencer
-	builderCh := make(chan *stemResult, 128)           // resequencer -> builder
+	sem := make(chan struct{}, maxInFlight)          // bounds total in-flight stems
+	workCh := make(chan *stemWork, 2*numWorkers)     // reader -> workers
+	resultCh := make(chan *stemResult, 2*numWorkers) // workers -> resequencer
+	builderCh := make(chan *stemResult, 128)         // resequencer -> builder
 
 	// Error collection
 	errCh := make(chan error, numWorkers+3) // enough for all goroutines

@@ -18,21 +18,21 @@ import (
 // sampleGenesis creates a minimal genesis configuration for testing.
 func sampleGenesis() *Genesis {
 	chainConfig := &params.ChainConfig{
-		ChainID:             big.NewInt(1337),
-		HomesteadBlock:      big.NewInt(0),
-		EIP150Block:         big.NewInt(0),
-		EIP155Block:         big.NewInt(0),
-		EIP158Block:         big.NewInt(0),
-		ByzantiumBlock:      big.NewInt(0),
-		ConstantinopleBlock: big.NewInt(0),
-		PetersburgBlock:     big.NewInt(0),
-		IstanbulBlock:       big.NewInt(0),
-		MuirGlacierBlock:    big.NewInt(0),
-		BerlinBlock:         big.NewInt(0),
-		LondonBlock:         big.NewInt(0),
-		MergeNetsplitBlock:  big.NewInt(0),
-		ShanghaiTime:        new(uint64),
-		CancunTime:          new(uint64),
+		ChainID:                 big.NewInt(1337),
+		HomesteadBlock:          big.NewInt(0),
+		EIP150Block:             big.NewInt(0),
+		EIP155Block:             big.NewInt(0),
+		EIP158Block:             big.NewInt(0),
+		ByzantiumBlock:          big.NewInt(0),
+		ConstantinopleBlock:     big.NewInt(0),
+		PetersburgBlock:         big.NewInt(0),
+		IstanbulBlock:           big.NewInt(0),
+		MuirGlacierBlock:        big.NewInt(0),
+		BerlinBlock:             big.NewInt(0),
+		LondonBlock:             big.NewInt(0),
+		MergeNetsplitBlock:      big.NewInt(0),
+		ShanghaiTime:            new(uint64),
+		CancunTime:              new(uint64),
 		TerminalTotalDifficulty: big.NewInt(0),
 	}
 
@@ -224,8 +224,8 @@ func TestWriteGenesisBlock(t *testing.T) {
 		if chainConfig.ChainID.Cmp(big.NewInt(1337)) != 0 {
 			t.Errorf("Chain ID mismatch: got %s, want 1337", chainConfig.ChainID)
 		}
-		if chainConfig.EnableVerkleAtGenesis {
-			t.Error("EnableVerkleAtGenesis should be false when binaryTrie=false")
+		if chainConfig.EnableUBTAtGenesis {
+			t.Error("EnableUBTAtGenesis should be false when binaryTrie=false")
 		}
 	}
 
@@ -304,13 +304,13 @@ func TestWriteGenesisBlockBinaryTrie(t *testing.T) {
 		t.Fatalf("Failed to write genesis block: %v", err)
 	}
 
-	// Verify chain config was persisted with EnableVerkleAtGenesis
+	// Verify chain config was persisted with EnableUBTAtGenesis
 	chainConfig := rawdb.ReadChainConfig(db, block.Hash())
 	if chainConfig == nil {
 		t.Fatal("Chain config not found in database")
 	}
-	if !chainConfig.EnableVerkleAtGenesis {
-		t.Error("EnableVerkleAtGenesis should be true for binary trie mode")
+	if !chainConfig.EnableUBTAtGenesis {
+		t.Error("EnableUBTAtGenesis should be true for binary trie mode")
 	}
 
 	// Verify block is readable
@@ -329,7 +329,7 @@ func TestWriteGenesisBlockBinaryTrieNoMutation(t *testing.T) {
 
 	gen := sampleGenesis()
 	origConfig := gen.Config
-	origVerkle := gen.Config.EnableVerkleAtGenesis
+	origVerkle := gen.Config.EnableUBTAtGenesis
 
 	stateRoot := common.HexToHash("0xabcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890")
 
@@ -343,9 +343,9 @@ func TestWriteGenesisBlockBinaryTrieNoMutation(t *testing.T) {
 		t.Error("WriteGenesisBlock replaced caller's genesis.Config pointer")
 	}
 	// The original ChainConfig must not have been mutated
-	if gen.Config.EnableVerkleAtGenesis != origVerkle {
-		t.Errorf("WriteGenesisBlock mutated caller's EnableVerkleAtGenesis: got %v, want %v",
-			gen.Config.EnableVerkleAtGenesis, origVerkle)
+	if gen.Config.EnableUBTAtGenesis != origVerkle {
+		t.Errorf("WriteGenesisBlock mutated caller's EnableUBTAtGenesis: got %v, want %v",
+			gen.Config.EnableUBTAtGenesis, origVerkle)
 	}
 }
 

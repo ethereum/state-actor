@@ -9,20 +9,22 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/ethdb"
+	"github.com/ethereum/go-ethereum/trie/bintrie"
 )
 
 // regroupTrieNodes reads all individual internal nodes written by the streaming
-// builder (old format) and rewrites them in the grouped format expected by
-// geth PR #33658.
+// builder and rewrites them in the grouped format.
 //
-// Old format (per node): [type=2][leftHash(32)][rightHash(32)] at full bit-path
+// Old format (per node): [type=2][leftHash(32)][rightHash(32)] at bit-packed path
 // New format (per group): [type=2][groupDepth][bitmap][present hashes...] at group boundary
 //
 // Algorithm:
-// 1. Read all trie nodes from DB into an in-memory map: path -> blob
-// 2. For each group boundary, traverse groupDepth levels down via DFS,
-//    collecting bottom-layer child hashes and building the bitmap
-// 3. Serialize in new format, write at group boundary, delete old keys
+//  1. Read all trie nodes from DB into an in-memory map: path -> blob
+//  2. DFS from root to assign each node its depth (bit-packed paths are
+//     ambiguous for depth, so we recover it from the tree structure)
+//  3. For each group boundary, traverse groupDepth levels down via DFS,
+//     collecting bottom-layer child hashes and building the bitmap
+//  4. Serialize in new format, write at group boundary, delete old keys
 func regroupTrieNodes(db ethdb.KeyValueStore, groupDepth int, verbose bool) error {
 	if groupDepth < 1 || groupDepth > maxGroupDepth {
 		return fmt.Errorf("groupDepth must be 1-%d, got %d", maxGroupDepth, groupDepth)
@@ -30,12 +32,12 @@ func regroupTrieNodes(db ethdb.KeyValueStore, groupDepth int, verbose bool) erro
 
 	prefix := verkleTrieNodeKeyPrefix // "vA"
 
-	// Step 1: Read all trie nodes into memory
-	type nodeInfo struct {
+	// Step 1: Read all trie nodes into memory, keyed by bit-packed path.
+	type nodeBlob struct {
 		blob     []byte
-		nodeType byte // 1=stem, 2=internal
+		nodeType byte
 	}
-	nodes := make(map[string]nodeInfo)
+	rawNodes := make(map[string]nodeBlob)
 
 	iter := db.NewIterator(prefix, nil)
 	for iter.Next() {
@@ -43,56 +45,133 @@ func regroupTrieNodes(db ethdb.KeyValueStore, groupDepth int, verbose bool) erro
 		if !bytes.HasPrefix(key, prefix) {
 			break
 		}
-		path := string(key[len(prefix):])
+		pathStr := string(key[len(prefix):])
 		blob := make([]byte, len(iter.Value()))
 		copy(blob, iter.Value())
-		nodes[path] = nodeInfo{
+		rawNodes[pathStr] = nodeBlob{
 			blob:     blob,
 			nodeType: blob[0],
 		}
 	}
 	iter.Release()
 
-	if len(nodes) == 0 {
+	if len(rawNodes) == 0 {
 		return nil
+	}
+
+	// Step 2: DFS from root to assign depths. The root (depth 0) may or
+	// may not be in the DB; we probe both children at depth 1 regardless.
+	type depthNode struct {
+		path     bintrie.BitArray
+		depth    int
+		pathStr  string
+		blob     []byte
+		nodeType byte
+	}
+	var allNodes []depthNode
+
+	type dfsItem struct {
+		path  bintrie.BitArray
+		depth int
+	}
+
+	// Seed the DFS. If the root exists (empty path), start there;
+	// otherwise start with both depth-1 children.
+	var dfsStack []dfsItem
+	if _, ok := rawNodes[""]; ok {
+		dfsStack = append(dfsStack, dfsItem{depth: 0})
+	} else {
+		var left, right bintrie.BitArray
+		var root bintrie.BitArray
+		left.AppendBit(&root, 0)
+		right.AppendBit(&root, 1)
+		dfsStack = append(dfsStack, dfsItem{path: right, depth: 1})
+		dfsStack = append(dfsStack, dfsItem{path: left, depth: 1})
+	}
+
+	for len(dfsStack) > 0 {
+		item := dfsStack[len(dfsStack)-1]
+		dfsStack = dfsStack[:len(dfsStack)-1]
+
+		pathStr := string(item.path.ActiveBytes())
+		n, exists := rawNodes[pathStr]
+		if !exists {
+			continue
+		}
+
+		allNodes = append(allNodes, depthNode{
+			path:     item.path,
+			depth:    item.depth,
+			pathStr:  pathStr,
+			blob:     n.blob,
+			nodeType: n.nodeType,
+		})
+
+		// Recurse into children of ungrouped internal nodes (65 bytes).
+		if n.nodeType == nodeTypeInternal && len(n.blob) == 65 {
+			var left, right bintrie.BitArray
+			left.AppendBit(&item.path, 0)
+			right.AppendBit(&item.path, 1)
+			dfsStack = append(dfsStack,
+				dfsItem{path: right, depth: item.depth + 1})
+			dfsStack = append(dfsStack,
+				dfsItem{path: left, depth: item.depth + 1})
+		}
 	}
 
 	if verbose {
 		var internalCount, stemCount int
-		for _, n := range nodes {
-			if n.nodeType == nodeTypeInternal {
+		for _, dn := range allNodes {
+			if dn.nodeType == nodeTypeInternal {
 				internalCount++
 			} else {
 				stemCount++
 			}
 		}
-		log.Printf("Regrouping: %d internal nodes + %d stem nodes, groupDepth=%d",
+		log.Printf("Regrouping: %d internal + %d stem nodes, groupDepth=%d",
 			internalCount, stemCount, groupDepth)
+	}
+
+	// Build a lookup by (depth, pathStr) for the DFS within each group.
+	type nodeKey struct {
+		depth   int
+		pathStr string
+	}
+	nodeIndex := make(map[nodeKey]depthNode, len(allNodes))
+	for _, dn := range allNodes {
+		nodeIndex[nodeKey{dn.depth, dn.pathStr}] = dn
 	}
 
 	batch := db.NewBatch()
 
-	// Step 2: Find all internal node paths at group boundaries
-	// (depths that are multiples of groupDepth).
-	var boundaryPaths []string
-	for path, n := range nodes {
-		depth := len(path)
-		if n.nodeType == nodeTypeInternal && depth%groupDepth == 0 {
-			boundaryPaths = append(boundaryPaths, path)
+	// Step 3: Find boundary internal nodes (depth % groupDepth == 0).
+	type boundaryInfo struct {
+		path  bintrie.BitArray
+		depth int
+	}
+	var boundaries []boundaryInfo
+	for _, dn := range allNodes {
+		if dn.nodeType == nodeTypeInternal && dn.depth%groupDepth == 0 {
+			boundaries = append(boundaries, boundaryInfo{
+				path:  dn.path,
+				depth: dn.depth,
+			})
 		}
 	}
-	// Sort boundaries from deepest to shallowest for consistent processing
-	sort.Slice(boundaryPaths, func(i, j int) bool {
-		return len(boundaryPaths[i]) > len(boundaryPaths[j])
+	// Process deepest first.
+	sort.Slice(boundaries, func(i, j int) bool {
+		return boundaries[i].depth > boundaries[j].depth
 	})
 
-	// Step 3: For each group boundary, collect bottom-layer children via DFS
-	for _, bPath := range boundaryPaths {
+	// Step 4: For each boundary, DFS groupDepth levels to collect
+	// bottom-layer children.
+	for _, b := range boundaries {
 		bitmapSize := bitmapSizeForDepth(groupDepth)
 		bitmap := make([]byte, bitmapSize)
 
-		type stackEntry struct {
-			path     string
+		type groupStackEntry struct {
+			path     bintrie.BitArray
+			absDepth int
 			relDepth int
 			position int
 		}
@@ -102,65 +181,78 @@ func regroupTrieNodes(db ethdb.KeyValueStore, groupDepth int, verbose bool) erro
 		}
 		var collected []posHash
 
-		stack := []stackEntry{{path: bPath, relDepth: 0, position: 0}}
+		gStack := []groupStackEntry{{
+			path:     b.path,
+			absDepth: b.depth,
+			relDepth: 0,
+			position: 0,
+		}}
 
-		for len(stack) > 0 {
-			top := stack[len(stack)-1]
-			stack = stack[:len(stack)-1]
+		for len(gStack) > 0 {
+			top := gStack[len(gStack)-1]
+			gStack = gStack[:len(gStack)-1]
 
 			if top.relDepth == groupDepth {
 				// Bottom layer of this group.
-				n, exists := nodes[top.path]
+				ps := string(top.path.ActiveBytes())
+				dn, exists := nodeIndex[nodeKey{top.absDepth, ps}]
 				if exists {
-					h := computeNodeHashFromBlob(n.blob)
-					collected = append(collected, posHash{position: top.position, hash: h})
+					h := computeNodeHashFromBlob(dn.blob)
+					collected = append(collected, posHash{
+						position: top.position, hash: h,
+					})
 				}
 				continue
 			}
 
-			n, exists := nodes[top.path]
+			ps := string(top.path.ActiveBytes())
+			dn, exists := nodeIndex[nodeKey{top.absDepth, ps}]
 			if !exists {
 				continue
 			}
 
-			if n.nodeType == nodeTypeStem {
-				// Stem node at intermediate depth — terminates early.
-				// Extend position using the stem actual key bits so that
-				// GetValuesAtStem traversal (which follows key bits) reaches it.
-				remainingDepth := groupDepth - top.relDepth
-				absDepth := len(bPath) + top.relDepth
-				stemBytes := n.blob[1 : 1+stemSize] // stem is 31 bytes after type byte
+			if dn.nodeType == nodeTypeStem {
+				// Stem at intermediate depth. Extend position using
+				// the stem's actual key bits to reach the bottom layer.
+				remaining := groupDepth - top.relDepth
+				stemBytes := dn.blob[1 : 1+stemSize]
 				leafPos := top.position
-				for d := 0; d < remainingDepth; d++ {
-					bitIdx := absDepth + d
-					bit := int(stemBytes[bitIdx/8] >> (7 - (bitIdx % 8)) & 1)
+				for d := range remaining {
+					bitIdx := top.absDepth + d
+					bit := int(stemBytes[bitIdx/8]>>(7-(bitIdx%8))) & 1
 					leafPos = leafPos*2 + bit
 				}
-				h := computeNodeHashFromBlob(n.blob)
-				collected = append(collected, posHash{position: leafPos, hash: h})
+				h := computeNodeHashFromBlob(dn.blob)
+				collected = append(collected, posHash{
+					position: leafPos, hash: h,
+				})
 				continue
 			}
 
 			// Internal node — recurse into children.
-			leftPath := top.path + string([]byte{0x00})
-			stack = append(stack, stackEntry{
-				path:     leftPath,
-				relDepth: top.relDepth + 1,
-				position: top.position * 2,
-			})
-			rightPath := top.path + string([]byte{0x01})
-			stack = append(stack, stackEntry{
-				path:     rightPath,
-				relDepth: top.relDepth + 1,
-				position: top.position*2 + 1,
-			})
+			var left, right bintrie.BitArray
+			left.AppendBit(&top.path, 0)
+			right.AppendBit(&top.path, 1)
+			gStack = append(gStack,
+				groupStackEntry{
+					path:     left,
+					absDepth: top.absDepth + 1,
+					relDepth: top.relDepth + 1,
+					position: top.position * 2,
+				},
+				groupStackEntry{
+					path:     right,
+					absDepth: top.absDepth + 1,
+					relDepth: top.relDepth + 1,
+					position: top.position*2 + 1,
+				},
+			)
 		}
 
 		if len(collected) == 0 {
 			continue
 		}
 
-		// Sort by position to ensure hashes are in bitmap order.
 		sort.Slice(collected, func(i, j int) bool {
 			return collected[i].position < collected[j].position
 		})
@@ -186,64 +278,70 @@ func regroupTrieNodes(db ethdb.KeyValueStore, groupDepth int, verbose bool) erro
 			offset += hashSize
 		}
 
-		// Write at group boundary path.
-		key := make([]byte, len(prefix)+len(bPath))
+		// Write grouped node at the boundary path.
+		pathBytes := b.path.ActiveBytes()
+		key := make([]byte, len(prefix)+len(pathBytes))
 		copy(key, prefix)
-		copy(key[len(prefix):], bPath)
+		copy(key[len(prefix):], pathBytes)
 		if err := batch.Put(key, buf); err != nil {
 			return fmt.Errorf("failed to write regrouped node: %w", err)
 		}
 	}
 
-	// Step 4: Delete intermediate internal nodes (not at group boundaries).
-	for path, n := range nodes {
-		if n.nodeType != nodeTypeInternal {
+	// Step 5: Delete intermediate internal nodes (not at boundaries).
+	for _, dn := range allNodes {
+		if dn.nodeType != nodeTypeInternal {
 			continue
 		}
-		depth := len(path)
-		if depth%groupDepth != 0 {
-			key := make([]byte, len(prefix)+len(path))
+		if dn.depth%groupDepth != 0 {
+			key := make([]byte, len(prefix)+len(dn.pathStr))
 			copy(key, prefix)
-			copy(key[len(prefix):], path)
+			copy(key[len(prefix):], dn.pathStr)
 			if err := batch.Delete(key); err != nil {
 				return fmt.Errorf("failed to delete intermediate node: %w", err)
 			}
 		}
 	}
 
-	// Step 4b: Move stems within groups to their extended paths.
-	// A stem at depth D within a group (boundary B, boundary+groupDepth) must be
-	// stored at path length boundary+groupDepth, extended with the stem actual key bits.
-	for path, n := range nodes {
-		if n.nodeType != nodeTypeStem {
+	// Step 6: Move stems within groups to their extended paths.
+	// Collect all moves first, then apply deletes before puts to avoid
+	// collisions: with bit-packed paths, a stem's extended key at depth
+	// D+G can equal another stem's original key at depth D.
+	type stemMove struct {
+		oldKey []byte
+		newKey []byte
+		blob   []byte
+	}
+	var moves []stemMove
+	for _, dn := range allNodes {
+		if dn.nodeType != nodeTypeStem {
 			continue
 		}
-		depth := len(path)
-		groupBoundary := (depth / groupDepth) * groupDepth
+		groupBoundary := (dn.depth / groupDepth) * groupDepth
 		nextBoundary := groupBoundary + groupDepth
-		if depth >= nextBoundary || depth == groupBoundary {
-			// Stem is at or past group boundary — no extension needed.
+		if dn.depth >= nextBoundary || dn.depth == groupBoundary {
 			continue
 		}
-		stemBytes := n.blob[1 : 1+stemSize]
-		extendedPath := make([]byte, nextBoundary)
-		copy(extendedPath, path)
-		for i := depth; i < nextBoundary; i++ {
-			extendedPath[i] = stemBytes[i/8] >> (7 - (i % 8)) & 1
-		}
+		stemBytes := dn.blob[1 : 1+stemSize]
+		extendedPath := makePath(stemBytes, nextBoundary)
 
-		oldKey := make([]byte, len(prefix)+len(path))
+		oldKey := make([]byte, len(prefix)+len(dn.pathStr))
 		copy(oldKey, prefix)
-		copy(oldKey[len(prefix):], path)
+		copy(oldKey[len(prefix):], dn.pathStr)
 
 		newKey := make([]byte, len(prefix)+len(extendedPath))
 		copy(newKey, prefix)
 		copy(newKey[len(prefix):], extendedPath)
 
-		if err := batch.Delete(oldKey); err != nil {
+		moves = append(moves, stemMove{oldKey, newKey, dn.blob})
+	}
+	for _, m := range moves {
+		if err := batch.Delete(m.oldKey); err != nil {
 			return fmt.Errorf("failed to delete old stem path: %w", err)
 		}
-		if err := batch.Put(newKey, n.blob); err != nil {
+	}
+	for _, m := range moves {
+		if err := batch.Put(m.newKey, m.blob); err != nil {
 			return fmt.Errorf("failed to write extended stem path: %w", err)
 		}
 	}
@@ -255,7 +353,8 @@ func regroupTrieNodes(db ethdb.KeyValueStore, groupDepth int, verbose bool) erro
 	}
 
 	if verbose {
-		log.Printf("Regrouping complete: %d group boundary nodes written", len(boundaryPaths))
+		log.Printf("Regrouping complete: %d boundaries written",
+			len(boundaries))
 	}
 
 	return nil
@@ -289,7 +388,7 @@ func computeNodeHashFromBlob(blob []byte) common.Hash {
 		var data [stemNodeWidth]common.Hash
 		var zeroHash common.Hash
 		valueOffset := 1 + stemSize + hashSize
-		for i := 0; i < stemNodeWidth; i++ {
+		for i := range stemNodeWidth {
 			if bitmapBytes[i/8]&(1<<(7-(i%8))) != 0 {
 				if valueOffset+hashSize <= len(blob) {
 					var val [hashSize]byte
@@ -304,7 +403,7 @@ func computeNodeHashFromBlob(blob []byte) common.Hash {
 		var buf [64]byte
 		for level := 1; level <= 8; level++ {
 			count := stemNodeWidth / (1 << level)
-			for i := 0; i < count; i++ {
+			for i := range count {
 				if data[i*2] == zeroHash && data[i*2+1] == zeroHash {
 					data[i] = zeroHash
 					continue

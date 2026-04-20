@@ -691,7 +691,7 @@ func TestBinaryTrieStateRootValue(t *testing.T) {
 		t.Fatalf("Failed to generate state: %v", err)
 	}
 
-	expected := common.HexToHash("0xee656cf3921d8cbd1aa003a881128846feed2f2c670fa9110cac78f6f8e9d263")
+	expected := common.HexToHash("0x4aa03e3a6f1cbafe5879f67088aca4ea6cbbcfcfff61251752017d3c859294a8")
 	if stats.StateRoot != expected {
 		t.Errorf("Binary trie state root mismatch:\n  got:  %s\n  want: %s\nThis may indicate an upstream bintrie API change.",
 			stats.StateRoot.Hex(), expected.Hex())
@@ -810,7 +810,7 @@ func TestBinaryTrieCommitIntervalGoldenHash(t *testing.T) {
 	}
 
 	// Must match the same golden hash as TestBinaryTrieStateRootValue.
-	expected := common.HexToHash("0xee656cf3921d8cbd1aa003a881128846feed2f2c670fa9110cac78f6f8e9d263")
+	expected := common.HexToHash("0x4aa03e3a6f1cbafe5879f67088aca4ea6cbbcfcfff61251752017d3c859294a8")
 	if stats.StateRoot != expected {
 		t.Errorf("CommitInterval golden hash mismatch:\n  got:  %s\n  want: %s",
 			stats.StateRoot.Hex(), expected.Hex())
