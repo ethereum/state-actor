@@ -370,15 +370,14 @@ func TestCollectAccountEntriesParallelEquivalence(t *testing.T) {
 	}
 }
 
-
 // TestParallelStreamingEquivalence verifies that the parallel pipeline
 // produces the exact same root hash as the serial implementation.
 func TestParallelStreamingEquivalence(t *testing.T) {
 	tests := []struct {
-		name       string
+		name        string
 		numAccounts int
-		groupDepth int
-		writeNodes bool
+		groupDepth  int
+		writeNodes  bool
 	}{
 		{"gd0_no_write", 50, 0, false},
 		{"gd0_with_write", 50, 0, true},
@@ -567,6 +566,13 @@ func TestGroupedEmissionRootGroupCompleteness(t *testing.T) {
 	if root == (common.Hash{}) {
 		t.Fatal("root is zero")
 	}
+	// Pinned so an unintended hash drift (e.g. a subtle rebalancing
+	// change to stem placement or combine ordering) is caught even if
+	// the bitmap assertions below still succeed.
+	wantRoot := common.HexToHash("0x07b7cfc5d084c25927977209dbfd2b06906456f67ef2554dc5a812f6d894b99b")
+	if root != wantRoot {
+		t.Errorf("root hash drift: got %s, want %s", root.Hex(), wantRoot.Hex())
+	}
 
 	// Read the root group blob at key "vA" (verkleTrieNodeKeyPrefix + empty path).
 	blob, err := db.Get(verkleTrieNodeKeyPrefix)
@@ -596,3 +602,82 @@ func TestGroupedEmissionRootGroupCompleteness(t *testing.T) {
 	}
 }
 
+// TestGroupedEmissionParallelRootGroupCompleteness is the parallel-builder
+// counterpart of TestGroupedEmissionRootGroupCompleteness. The parallel
+// builder (computeBinaryRootStreamingParallel) runs feedStem inside a
+// dedicated builder goroutine; it initializes groupStemAtBoundary at a
+// separate init site and exercises the same flushCompletedGroupsAbove
+// path. TestParallelStreamingEquivalence only compares total node counts
+// and root hashes — it would not catch a bitmap truncation regression if
+// both serial and parallel regressed identically.
+func TestGroupedEmissionParallelRootGroupCompleteness(t *testing.T) {
+	const gd = 5
+	const expectedSlots = 1 << gd
+
+	var entries []trieEntry
+	for slot := 0; slot < expectedSlots; slot++ {
+		var e trieEntry
+		for i := 0; i < gd; i++ {
+			if slot&(1<<(gd-1-i)) != 0 {
+				e.Key[i/8] |= 1 << (7 - (i % 8))
+			}
+		}
+		tail := sha256.Sum256([]byte{byte(slot), 0xAA})
+		copy(e.Key[5:stemSize], tail[5:])
+		e.Key[stemSize] = 0
+		e.Value = sha256.Sum256([]byte{byte(slot), 0xBB})
+		entries = append(entries, e)
+	}
+	sort.Slice(entries, func(i, j int) bool {
+		return bytes.Compare(entries[i].Key[:], entries[j].Key[:]) < 0
+	})
+
+	// The parallel builder reads entries via an ethdb.Iterator, so stage
+	// the entries in a temp Pebble DB and iterate over it.
+	tempDir := t.TempDir()
+	tempDB, err := pebble.New(tempDir, 16, 8, "test/", false)
+	if err != nil {
+		t.Fatalf("pebble.New: %v", err)
+	}
+	defer tempDB.Close()
+	batch := tempDB.NewBatch()
+	for _, e := range entries {
+		if err := batch.Put(e.Key[:], e.Value[:]); err != nil {
+			t.Fatalf("batch.Put: %v", err)
+		}
+	}
+	if err := batch.Write(); err != nil {
+		t.Fatalf("batch.Write: %v", err)
+	}
+
+	outDB := memorydb.New()
+	tnw := &trieNodeWriter{batch: outDB.NewBatch(), db: outDB}
+	iter := tempDB.NewIterator(nil, nil)
+	root, _, _, pErr := computeBinaryRootStreamingParallel(
+		context.Background(), iter, tnw, nil, gd, 4, nil,
+	)
+	if pErr != nil {
+		t.Fatalf("computeBinaryRootStreamingParallel: %v", pErr)
+	}
+	if root == (common.Hash{}) {
+		t.Fatal("root is zero")
+	}
+
+	blob, err := outDB.Get(verkleTrieNodeKeyPrefix)
+	if err != nil {
+		t.Fatalf("root group missing: %v", err)
+	}
+	bitmapSize := bitmapSizeForDepth(gd)
+	expectedLen := 1 + 1 + bitmapSize + expectedSlots*hashSize
+	if len(blob) != expectedLen {
+		t.Errorf("parallel root group blob is %d bytes (=%d children); want %d bytes (=%d children)",
+			len(blob), (len(blob)-2-bitmapSize)/hashSize, expectedLen, expectedSlots)
+	}
+	for slot := 0; slot < expectedSlots; slot++ {
+		byteIdx := 2 + slot/8
+		bitInByte := uint(7 - slot%8)
+		if blob[byteIdx]&(1<<bitInByte) == 0 {
+			t.Errorf("parallel bitmap slot %d NOT set", slot)
+		}
+	}
+}
