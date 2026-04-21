@@ -131,6 +131,13 @@ func TestGroupedEmissionSingleEntry(t *testing.T) {
 
 // TestGroupedEmissionNodeCounts verifies that grouping reduces the number
 // of nodes written (internal nodes at non-boundary depths are eliminated).
+//
+// The gd>=1 check is also a regression test for the root-group overwrite
+// bug: pre-fix at gd=1 every depth is a boundary, and the multi-fire
+// writeGroupedNode path produced 121 Put calls (= ungrouped count) because
+// each overwrite counted as a separate write even though duplicates
+// collapsed in the DB. Post-fix each boundary writes at most once, so
+// gd=1 strictly beats ungrouped (121 → 118 for the 50-entry fixture).
 func TestGroupedEmissionNodeCounts(t *testing.T) {
 	entries := generateTestEntries(t, 50)
 
@@ -142,7 +149,7 @@ func TestGroupedEmissionNodeCounts(t *testing.T) {
 			db := memorydb.New()
 			_, stats := computeBinaryRootStreamingFromSlice(entries, db, gd)
 
-			if gd > 1 && stats.Nodes >= stats0.Nodes {
+			if stats.Nodes >= stats0.Nodes {
 				t.Errorf("grouped (gd=%d) should have fewer nodes: grouped=%d, ungrouped=%d",
 					gd, stats.Nodes, stats0.Nodes)
 			}
@@ -516,3 +523,76 @@ func generateDeterministicEntries(t *testing.T, numAccounts int) []trieEntry {
 
 	return entries
 }
+
+// TestGroupedEmissionRootGroupCompleteness is an invariant check for the
+// root group's bitmap: after building with 32 stems — one per possible
+// root-group slot at groupDepth=5 — the root blob at key "vA" must have
+// ALL 32 slots populated and be 1030 bytes (2 header + 4 bitmap + 32×32
+// hashes). Bug symptom observed in production: "vA" blob was 390 bytes
+// with slot 25 unset, causing geth GetValuesAtStem to fail with "missing
+// trie node" for any stem under the unpopulated root subtree.
+//
+// Note: the 32-stem input alone does not trigger the multi-fire overwrite
+// that produced the production symptom (the final writeGroupedNode(0, ...)
+// happens to capture all children). TestGroupedEmissionNodeCounts at gd=1
+// is the mechanical pre-fix-failing regression test; this test is the
+// end-state correctness check.
+func TestGroupedEmissionRootGroupCompleteness(t *testing.T) {
+	const gd = 5
+	const expectedSlots = 1 << gd // 32
+
+	var entries []trieEntry
+	for slot := 0; slot < expectedSlots; slot++ {
+		var e trieEntry
+		// Set bits 0..4 of the stem to encode `slot` as a 5-bit number
+		// (MSB first: bit 0 is the most significant of the 5-bit slot).
+		for i := 0; i < gd; i++ {
+			if slot&(1<<(gd-1-i)) != 0 {
+				e.Key[i/8] |= 1 << (7 - (i % 8))
+			}
+		}
+		// Fill remaining bits deterministically so each stem is distinct.
+		tail := sha256.Sum256([]byte{byte(slot), 0xAA})
+		copy(e.Key[5:stemSize], tail[5:])
+		e.Key[stemSize] = 0
+		e.Value = sha256.Sum256([]byte{byte(slot), 0xBB})
+		entries = append(entries, e)
+	}
+	sort.Slice(entries, func(i, j int) bool {
+		return bytes.Compare(entries[i].Key[:], entries[j].Key[:]) < 0
+	})
+
+	db := memorydb.New()
+	root, _ := computeBinaryRootStreamingFromSlice(entries, db, gd)
+	if root == (common.Hash{}) {
+		t.Fatal("root is zero")
+	}
+
+	// Read the root group blob at key "vA" (verkleTrieNodeKeyPrefix + empty path).
+	blob, err := db.Get(verkleTrieNodeKeyPrefix)
+	if err != nil {
+		t.Fatalf("root group missing at key %q: %v", verkleTrieNodeKeyPrefix, err)
+	}
+	if len(blob) < 6 {
+		t.Fatalf("root group blob too short: %d bytes", len(blob))
+	}
+
+	// Expected layout: [type=2][groupDepth][bitmap(4 bytes)][N*32 hashes].
+	// With all 32 slots populated: 1 + 1 + 4 + 32*32 = 1030 bytes.
+	bitmapSize := bitmapSizeForDepth(gd)
+	expectedLen := 1 + 1 + bitmapSize + expectedSlots*hashSize
+	if len(blob) != expectedLen {
+		t.Errorf("root group blob is %d bytes (=%d children); want %d bytes (=%d children)",
+			len(blob), (len(blob)-2-bitmapSize)/hashSize, expectedLen, expectedSlots)
+	}
+
+	// Assert every bitmap slot is set.
+	for slot := 0; slot < expectedSlots; slot++ {
+		byteIdx := 2 + slot/8
+		bitInByte := uint(7 - slot%8)
+		if blob[byteIdx]&(1<<bitInByte) == 0 {
+			t.Errorf("bitmap slot %d (bits %05b) NOT set — likely overwritten by a later partial write", slot, slot)
+		}
+	}
+}
+

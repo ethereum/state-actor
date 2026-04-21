@@ -483,8 +483,19 @@ type streamingBuilder struct {
 	// Grouped emission: when groupDepth > 0, internal nodes are written in
 	// grouped format at boundary depths. groupBuf collects bottom-layer
 	// children for each active group boundary.
-	groupDepth int
-	groupBuf   map[int][]groupChild // boundary depth -> bottom-layer children
+	//
+	// Writes are deferred until the subtree rooted at a boundary is known
+	// complete (either the next stem's CPL drops below that boundary, or
+	// finish() is called). Writing mid-stream produces duplicate writes to
+	// the same DB key — same boundary, same prefix path — and each write
+	// overwrites the previous with a partial bitmap, silently dropping
+	// slots recorded but not yet written. groupStemAtBoundary remembers a
+	// stem per boundary so the deferred flush can derive the DB path.
+	// All children recorded at a boundary share bits 0..boundary-1, so any
+	// one of their stems suffices.
+	groupDepth          int
+	groupBuf            map[int][]groupChild    // boundary depth -> bottom-layer children
+	groupStemAtBoundary map[int][stemSize]byte  // boundary depth -> stem for DB path
 
 	// Deferred stem: waiting for right-neighbor CPL before placement.
 	hasPrev     bool
@@ -512,7 +523,18 @@ func makePath(stem []byte, depth int) []byte {
 // recordGroupChild records a hash at a boundary depth as a bottom-layer
 // child of the parent group. The slot (0 to 2^groupDepth - 1) is computed
 // from the stem bits between the parent boundary and the child depth.
+//
+// Also records the stem at the parent boundary so the deferred flush in
+// flushCompletedGroupsAbove can derive the correct DB path. All children
+// recorded at a given boundary during one subtree-lifetime share bits
+// 0..boundary-1, so any one of their stems produces the right path —
+// last-writer-wins is safe.
 func (sb *streamingBuilder) recordGroupChild(childDepth int, hash common.Hash, stem []byte) {
+	// groupBuf is a DB-write concern; in hash-only mode (sb.w == nil) no
+	// flush ever runs, so skip the append to avoid unbounded growth.
+	if sb.w == nil {
+		return
+	}
 	parentBoundary := childDepth - sb.groupDepth
 	if parentBoundary < 0 {
 		return
@@ -523,6 +545,9 @@ func (sb *streamingBuilder) recordGroupChild(childDepth int, hash common.Hash, s
 		slot = (slot << 1) | int(stemBitAt(stem, parentBoundary+i))
 	}
 	sb.groupBuf[parentBoundary] = append(sb.groupBuf[parentBoundary], groupChild{slot: slot, hash: hash})
+	var stemCopy [stemSize]byte
+	copy(stemCopy[:], stem[:stemSize])
+	sb.groupStemAtBoundary[parentBoundary] = stemCopy
 }
 
 // writeGroupedNode serializes and writes a grouped InternalNode at the
@@ -542,6 +567,52 @@ func (sb *streamingBuilder) writeGroupedNode(boundary int, stem []byte) {
 	sb.groupBuf[boundary] = children[:0]
 }
 
+// flushCompletedGroupsAbove writes any buffered grouped-node data for
+// boundaries b > completionDepth, using each boundary's recorded stem to
+// derive its DB path. Called from feedStem at subtree transitions (where
+// completionDepth = rightCPL) and once from finish at the end (where
+// completionDepth = -1 to flush every boundary including the root group).
+//
+// Why this exists: previously, writeGroupedNode was called inline from
+// propagateUp's combine and bit==1 branches and from unwindTo's body.
+// When multiple stems' propagateUp chains crossed the same boundary pd=b
+// within one subtree's lifetime, writeGroupedNode(b, ...) could fire more
+// than once at the SAME DB key makePath(stem, b) — each call writing only
+// the children currently in groupBuf[b] (since writeGroupedNode resets
+// the slice after writing). Each write thus overwrote prior writes with
+// a partial bitmap, silently dropping slots. This manifested as missing
+// grouped internal nodes in the DB even though the root hash (computed
+// in memory from stack/occupied/isRight) was correct.
+//
+// Deferring all grouped writes to subtree-completion events guarantees
+// exactly one write per (boundary, prefix) and preserves every recorded
+// slot.
+func (sb *streamingBuilder) flushCompletedGroupsAbove(completionDepth int) {
+	if sb.w == nil || sb.groupDepth == 0 {
+		return
+	}
+	boundaries := make([]int, 0, len(sb.groupBuf))
+	for b, children := range sb.groupBuf {
+		if b > completionDepth && len(children) > 0 {
+			boundaries = append(boundaries, b)
+		}
+	}
+	// Flush deep-to-shallow so children are persisted before parents.
+	sort.Sort(sort.Reverse(sort.IntSlice(boundaries)))
+	for _, b := range boundaries {
+		stem, ok := sb.groupStemAtBoundary[b]
+		if !ok {
+			// recordGroupChild co-writes groupBuf[b] and groupStemAtBoundary[b];
+			// reaching this branch means that invariant broke. Silently dropping
+			// the write would regress the exact bug this code fixes, so crash
+			// loudly and let the caller investigate.
+			log.Fatalf("flushCompletedGroupsAbove: invariant violated — groupBuf[%d] has %d children but no recorded stem", b, len(sb.groupBuf[b]))
+		}
+		sb.writeGroupedNode(b, stem[:])
+		delete(sb.groupStemAtBoundary, b)
+	}
+}
+
 // feedStem is called for each completed stem group (consecutive entries
 // sharing the same stem). It flushes the previously deferred stem and
 // defers the current one.
@@ -550,6 +621,10 @@ func (sb *streamingBuilder) feedStem(stem []byte, hash common.Hash, entries []tr
 	if sb.hasPrev {
 		rightCPL = commonPrefixLenBits(sb.prevStem[:], stem)
 		sb.flushDeferred(rightCPL)
+		// Any subtrees at boundaries strictly greater than rightCPL are now
+		// complete — no future stem can share bits 0..b-1 with the previous
+		// stem for b > rightCPL. Flush them using their recorded stems.
+		sb.flushCompletedGroupsAbove(rightCPL)
 	}
 
 	sb.hasPrev = true
@@ -616,17 +691,13 @@ func (sb *streamingBuilder) unwindTo(minDepth int) {
 		copy(buf[32:], right[:])
 		combined := sha256.Sum256(buf[:])
 
-		if sb.w != nil {
-			if sb.groupDepth > 0 {
-				// At group boundaries: write grouped node using collected children.
-				// At non-boundary depths: skip write (hash still propagates).
-				if d%sb.groupDepth == 0 {
-					sb.writeGroupedNode(d, sb.stemBits[d][:])
-				}
-			} else {
-				// Path derived from the stem that placed this pending hash.
-				sb.w.writeNode(makePath(sb.stemBits[d][:], d), serializeInternalNode(left, right))
-			}
+		// In ungrouped mode, each internal node is written here at its placement
+		// depth. In grouped mode, writes are deferred to flushCompletedGroupsAbove
+		// (via feedStem and finish) to avoid duplicate writes that overwrite
+		// each other at the same (boundary, prefix) DB key — see the comment
+		// on groupStemAtBoundary for the mechanism.
+		if sb.w != nil && sb.groupDepth == 0 {
+			sb.w.writeNode(makePath(sb.stemBits[d][:], d), serializeInternalNode(left, right))
 		}
 		// Propagate upward using the stem that originally placed this hash.
 		stem := sb.stemBits[d]
@@ -640,8 +711,12 @@ func (sb *streamingBuilder) unwindTo(minDepth int) {
 // When the hash is right and no left exists, it combines with zero immediately.
 //
 // When groupDepth > 0, at each group boundary depth the hash is recorded as
-// a bottom-layer child of the parent group. DB writes are only emitted at
-// boundary depths (grouped format); non-boundary writes are skipped.
+// a bottom-layer child of the parent group via recordGroupChild. Grouped-node
+// DB writes are NOT emitted inline here — they are deferred to
+// flushCompletedGroupsAbove (called from feedStem at subtree transitions and
+// from finish at the very end). This avoids duplicate writes to the same
+// (boundary, prefix) DB key, which would overwrite each other with partial
+// bitmaps and silently drop slots recorded but not yet written.
 func (sb *streamingBuilder) propagateUp(hash common.Hash, fromDepth int, stem []byte) {
 	for d := fromDepth; d > 0; d-- {
 		pd := d - 1
@@ -672,15 +747,11 @@ func (sb *streamingBuilder) propagateUp(hash common.Hash, fromDepth int, stem []
 			copy(buf[32:], right[:])
 			hash = sha256.Sum256(buf[:])
 
-			if sb.w != nil {
-				if sb.groupDepth > 0 {
-					if pd%sb.groupDepth == 0 {
-						sb.writeGroupedNode(pd, stem)
-					}
-				} else {
-					// Path derived from stem — both children share bits 0..pd-1.
-					sb.w.writeNode(makePath(stem, pd), serializeInternalNode(left, right))
-				}
+			// Ungrouped mode writes the internal node here; grouped mode defers
+			// to flushCompletedGroupsAbove (see groupStemAtBoundary comment).
+			if sb.w != nil && sb.groupDepth == 0 {
+				// Path derived from stem — both children share bits 0..pd-1.
+				sb.w.writeNode(makePath(stem, pd), serializeInternalNode(left, right))
 			}
 			sb.occupied[pd] = false
 		} else if bit == 1 {
@@ -692,14 +763,10 @@ func (sb *streamingBuilder) propagateUp(hash common.Hash, fromDepth int, stem []
 			copy(buf[32:], right[:])
 			hash = sha256.Sum256(buf[:])
 
-			if sb.w != nil {
-				if sb.groupDepth > 0 {
-					if pd%sb.groupDepth == 0 {
-						sb.writeGroupedNode(pd, stem)
-					}
-				} else {
-					sb.w.writeNode(makePath(stem, pd), serializeInternalNode(common.Hash{}, right))
-				}
+			// Ungrouped mode writes the internal node here; grouped mode defers
+			// to flushCompletedGroupsAbove (see groupStemAtBoundary comment).
+			if sb.w != nil && sb.groupDepth == 0 {
+				sb.w.writeNode(makePath(stem, pd), serializeInternalNode(common.Hash{}, right))
 			}
 			// Continue propagating upward — don't store.
 		} else {
@@ -715,13 +782,28 @@ func (sb *streamingBuilder) propagateUp(hash common.Hash, fromDepth int, stem []
 }
 
 // finish flushes the last deferred stem and unwinds all remaining pending
-// child hashes to produce the final root hash.
+// child hashes to produce the final root hash. In grouped mode, also flushes
+// every remaining group buffer (including the root group at boundary 0) and
+// asserts no child slots were dropped on the floor.
 func (sb *streamingBuilder) finish() common.Hash {
 	if !sb.hasPrev {
 		return common.Hash{} // empty trie
 	}
 	sb.flushDeferred(-1) // last stem has no right neighbor
 	sb.unwindTo(0)       // resolve everything remaining
+	// All subtrees are now complete; flush every remaining grouped boundary.
+	// Passing -1 so the boundary at depth 0 (root group) is included.
+	sb.flushCompletedGroupsAbove(-1)
+	// Invariant guard: a future refactor that reorders finish or introduces
+	// a post-unwindTo recordGroupChild path would otherwise silently drop
+	// children (the exact bug this commit fixes).
+	if sb.w != nil && sb.groupDepth > 0 {
+		for b, children := range sb.groupBuf {
+			if len(children) > 0 {
+				log.Fatalf("streamingBuilder.finish: invariant violated — groupBuf[%d] has %d unflushed children after final flush", b, len(children))
+			}
+		}
+	}
 	return sb.stack[0]
 }
 
@@ -748,6 +830,7 @@ func computeBinaryRootStreamingFromSlice(entries []trieEntry, db ethdb.KeyValueS
 	}
 	if groupDepth > 0 {
 		sb.groupBuf = make(map[int][]groupChild)
+		sb.groupStemAtBoundary = make(map[int][stemSize]byte)
 	}
 	if db != nil {
 		sb.w = &trieNodeWriter{batch: db.NewBatch(), db: db}
@@ -795,6 +878,7 @@ func computeBinaryRootStreaming(iter ethdb.Iterator, db ethdb.KeyValueStore, gro
 	}
 	if groupDepth > 0 {
 		sb.groupBuf = make(map[int][]groupChild)
+		sb.groupStemAtBoundary = make(map[int][stemSize]byte)
 	}
 	if db != nil {
 		sb.w = &trieNodeWriter{batch: db.NewBatch(), db: db}
@@ -957,6 +1041,7 @@ func computeBinaryRootStreamingParallel(
 		}
 		if groupDepth > 0 {
 			sb.groupBuf = make(map[int][]groupChild)
+			sb.groupStemAtBoundary = make(map[int][stemSize]byte)
 		}
 		// Use caller-provided writer so the SizeTracker (or any other
 		// observer) can reference the same instance for live byte counts.
