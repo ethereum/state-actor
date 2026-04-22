@@ -602,6 +602,280 @@ func TestGroupedEmissionRootGroupCompleteness(t *testing.T) {
 	}
 }
 
+func TestGroupedEmissionDeepGroupCompleteness(t *testing.T) {
+	const gd = 5
+	const expectedSlots = 1 << gd
+	const sharedPrefixBits = 35
+
+	var prefix [stemSize]byte
+	prefix[0] = 0xA5
+	prefix[1] = 0x3C
+	prefix[2] = 0xF0
+	prefix[3] = 0x55
+
+	var entries []trieEntry
+	for slot := 0; slot < expectedSlots; slot++ {
+		var e trieEntry
+		copy(e.Key[:4], prefix[:4])
+		e.Key[4] = 0xC0 | byte(slot&0x1F)
+		tail := sha256.Sum256([]byte{byte(slot), 0xDE, 0xAD})
+		copy(e.Key[5:stemSize], tail[5:])
+		e.Key[stemSize] = 0
+		e.Value = sha256.Sum256([]byte{byte(slot), 0xBE, 0xEF})
+		entries = append(entries, e)
+	}
+	sort.Slice(entries, func(i, j int) bool {
+		return bytes.Compare(entries[i].Key[:], entries[j].Key[:]) < 0
+	})
+
+	db := memorydb.New()
+	root, _ := computeBinaryRootStreamingFromSlice(entries, db, gd)
+	if root == (common.Hash{}) {
+		t.Fatal("root is zero")
+	}
+
+	depthPath := makePath(entries[0].Key[:stemSize], sharedPrefixBits)
+	key := append(append([]byte{}, verkleTrieNodeKeyPrefix...), depthPath...)
+
+	blob, err := db.Get(key)
+	if err != nil {
+		t.Fatalf("group internal at boundary %d missing. key=%x err=%v", sharedPrefixBits, key, err)
+	}
+
+	bitmapSize := bitmapSizeForDepth(gd)
+	expectedLen := 1 + 1 + bitmapSize + expectedSlots*hashSize
+	if len(blob) != expectedLen {
+		t.Errorf("deep group blob is %d bytes (=%d children); want %d bytes (=%d children)",
+			len(blob), (len(blob)-2-bitmapSize)/hashSize, expectedLen, expectedSlots)
+	}
+
+	for slot := 0; slot < expectedSlots; slot++ {
+		byteIdx := 2 + slot/8
+		bitInByte := uint(7 - slot%8)
+		if blob[byteIdx]&(1<<bitInByte) == 0 {
+			t.Errorf("deep-group bitmap slot %d NOT set at boundary %d", slot, sharedPrefixBits)
+		}
+	}
+}
+
+func TestGroupedEmissionDeepGroupCompletenessParallel(t *testing.T) {
+	const gd = 5
+	const expectedSlots = 1 << gd
+	const sharedPrefixBits = 35
+
+	var entries []trieEntry
+	for slot := 0; slot < expectedSlots; slot++ {
+		var e trieEntry
+		e.Key[0] = 0xA5
+		e.Key[1] = 0x3C
+		e.Key[2] = 0xF0
+		e.Key[3] = 0x55
+		e.Key[4] = 0xC0 | byte(slot&0x1F)
+		tail := sha256.Sum256([]byte{byte(slot), 0xDE, 0xAD})
+		copy(e.Key[5:stemSize], tail[5:])
+		e.Key[stemSize] = 0
+		e.Value = sha256.Sum256([]byte{byte(slot), 0xBE, 0xEF})
+		entries = append(entries, e)
+	}
+	sort.Slice(entries, func(i, j int) bool {
+		return bytes.Compare(entries[i].Key[:], entries[j].Key[:]) < 0
+	})
+
+	tempDir := t.TempDir()
+	tempDB, err := pebble.New(tempDir, 16, 8, "test/", false)
+	if err != nil {
+		t.Fatalf("pebble.New: %v", err)
+	}
+	defer tempDB.Close()
+	batch := tempDB.NewBatch()
+	for _, e := range entries {
+		if err := batch.Put(e.Key[:], e.Value[:]); err != nil {
+			t.Fatalf("batch.Put: %v", err)
+		}
+	}
+	if err := batch.Write(); err != nil {
+		t.Fatalf("batch.Write: %v", err)
+	}
+
+	outDB := memorydb.New()
+	tnw := &trieNodeWriter{batch: outDB.NewBatch(), db: outDB}
+	iter := tempDB.NewIterator(nil, nil)
+	root, _, _, pErr := computeBinaryRootStreamingParallel(
+		context.Background(), iter, tnw, nil, gd, 4, nil,
+	)
+	if pErr != nil {
+		t.Fatalf("computeBinaryRootStreamingParallel: %v", pErr)
+	}
+	if root == (common.Hash{}) {
+		t.Fatal("root is zero")
+	}
+
+	depthPath := makePath(entries[0].Key[:stemSize], sharedPrefixBits)
+	key := append(append([]byte{}, verkleTrieNodeKeyPrefix...), depthPath...)
+	blob, err := outDB.Get(key)
+	if err != nil {
+		t.Fatalf("parallel: group internal at boundary %d missing. key=%x err=%v", sharedPrefixBits, key, err)
+	}
+	bitmapSize := bitmapSizeForDepth(gd)
+	expectedLen := 1 + 1 + bitmapSize + expectedSlots*hashSize
+	if len(blob) != expectedLen {
+		t.Errorf("parallel deep group blob is %d bytes; want %d", len(blob), expectedLen)
+	}
+	for slot := 0; slot < expectedSlots; slot++ {
+		byteIdx := 2 + slot/8
+		bitInByte := uint(7 - slot%8)
+		if blob[byteIdx]&(1<<bitInByte) == 0 {
+			t.Errorf("parallel deep-group bitmap slot %d NOT set", slot)
+		}
+	}
+}
+
+func TestGroupedEmissionAllBoundariesPopulated(t *testing.T) {
+	const gd = 5
+	const numStems = 256
+
+	rng := mrand.New(mrand.NewSource(0xCAFE))
+	seen := make(map[[stemSize]byte]bool)
+	var entries []trieEntry
+	for len(entries) < numStems {
+		var e trieEntry
+		rng.Read(e.Key[:stemSize])
+		var k [stemSize]byte
+		copy(k[:], e.Key[:stemSize])
+		if seen[k] {
+			continue
+		}
+		seen[k] = true
+		e.Key[stemSize] = 0
+		rng.Read(e.Value[:])
+		entries = append(entries, e)
+	}
+	sort.Slice(entries, func(i, j int) bool {
+		return bytes.Compare(entries[i].Key[:], entries[j].Key[:]) < 0
+	})
+
+	db := memorydb.New()
+	root, _ := computeBinaryRootStreamingFromSlice(entries, db, gd)
+	if root == (common.Hash{}) {
+		t.Fatal("root is zero")
+	}
+
+	iter := db.NewIterator(verkleTrieNodeKeyPrefix, nil)
+	defer iter.Release()
+	bitmapSize := bitmapSizeForDepth(gd)
+	groupedNodesByDepth := make(map[int]int)
+	truncated := 0
+	for iter.Next() {
+		key := iter.Key()
+		path := key[len(verkleTrieNodeKeyPrefix):]
+		depth := len(path)
+		if depth%gd != 0 || depth == 0 {
+			continue
+		}
+		blob := iter.Value()
+		if len(blob) < 2 {
+			t.Errorf("blob at depth %d too short: %d bytes", depth, len(blob))
+			continue
+		}
+		if blob[0] != 2 {
+			continue
+		}
+		groupedNodesByDepth[depth]++
+		expectedFull := 1 + 1 + bitmapSize + (1<<gd)*hashSize
+		if len(blob) < 1+1+bitmapSize {
+			t.Errorf("blob at depth %d under-sized header: %d bytes", depth, len(blob))
+			continue
+		}
+		nChildren := (len(blob) - 2 - bitmapSize) / hashSize
+		bitsSet := 0
+		for slot := 0; slot < (1 << gd); slot++ {
+			byteIdx := 2 + slot/8
+			bitInByte := uint(7 - slot%8)
+			if blob[byteIdx]&(1<<bitInByte) != 0 {
+				bitsSet++
+			}
+		}
+		if bitsSet != nChildren {
+			t.Errorf("depth %d path=%x: bitmap says %d slots set but blob carries %d hashes (full would be %d bytes)",
+				depth, path, bitsSet, nChildren, expectedFull)
+			truncated++
+		}
+	}
+	t.Logf("examined grouped nodes by depth: %v", groupedNodesByDepth)
+	if truncated > 0 {
+		t.Errorf("%d grouped nodes had bitmap/hash-count mismatch (partial-overwrite symptom)", truncated)
+	}
+}
+
+func TestGroupedEmissionDeepBoundarySlotCollision(t *testing.T) {
+	const gd = 5
+	const sharedPrefixBits = 35
+	const slotBoundary = 40
+
+	mkStem := func(prefix40 [5]byte, tail byte) [stemSize]byte {
+		var s [stemSize]byte
+		copy(s[:5], prefix40[:])
+		t := sha256.Sum256([]byte{tail, 0xAA})
+		copy(s[5:], t[5:])
+		return s
+	}
+
+	prefix40 := [5]byte{0xA5, 0x3C, 0xF0, 0x55, 0xC0}
+	prefix40Other := [5]byte{0xA5, 0x3C, 0xF0, 0x55, 0xE0}
+
+	stems := [][stemSize]byte{
+		mkStem(prefix40, 0x01),
+		mkStem(prefix40, 0x02),
+		mkStem(prefix40Other, 0x03),
+	}
+
+	var entries []trieEntry
+	for i, s := range stems {
+		var e trieEntry
+		copy(e.Key[:stemSize], s[:])
+		e.Key[stemSize] = 0
+		e.Value = sha256.Sum256([]byte{byte(i), 0xBE, 0xEF})
+		entries = append(entries, e)
+	}
+	sort.Slice(entries, func(i, j int) bool {
+		return bytes.Compare(entries[i].Key[:], entries[j].Key[:]) < 0
+	})
+
+	db := memorydb.New()
+	root, _ := computeBinaryRootStreamingFromSlice(entries, db, gd)
+	if root == (common.Hash{}) {
+		t.Fatal("root is zero")
+	}
+
+	depthPath := makePath(stems[0][:], sharedPrefixBits)
+	key := append(append([]byte{}, verkleTrieNodeKeyPrefix...), depthPath...)
+	blob, err := db.Get(key)
+	if err != nil {
+		t.Fatalf("group at boundary %d missing: %v", sharedPrefixBits, err)
+	}
+
+	bitmapSize := bitmapSizeForDepth(gd)
+	if len(blob) < 2+bitmapSize {
+		t.Fatalf("blob too short: %d", len(blob))
+	}
+	nHashes := (len(blob) - 2 - bitmapSize) / hashSize
+	bitsSet := 0
+	for slot := 0; slot < (1 << gd); slot++ {
+		byteIdx := 2 + slot/8
+		bitInByte := uint(7 - slot%8)
+		if blob[byteIdx]&(1<<bitInByte) != 0 {
+			bitsSet++
+		}
+	}
+
+	t.Logf("blob len=%d nHashes=%d bitsSet=%d (slot at b=%d derived from bits %d..%d)",
+		len(blob), nHashes, bitsSet, sharedPrefixBits, sharedPrefixBits, slotBoundary-1)
+	if bitsSet != nHashes {
+		t.Errorf("CONFIRMED BUG: bitmap claims %d slots but blob carries %d hashes — recordGroupChild appended duplicates without dedup",
+			bitsSet, nHashes)
+	}
+}
+
 // TestGroupedEmissionParallelRootGroupCompleteness is the parallel-builder
 // counterpart of TestGroupedEmissionRootGroupCompleteness. The parallel
 // builder (computeBinaryRootStreamingParallel) runs feedStem inside a
