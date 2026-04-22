@@ -731,10 +731,15 @@ func TestGroupedEmissionDeepGroupCompletenessParallel(t *testing.T) {
 }
 
 func TestGroupedEmissionAllBoundariesPopulated(t *testing.T) {
-	const gd = 5
-	const numStems = 256
+	for _, gd := range []int{1, 2, 3, 4, 5, 6, 7, 8} {
+		t.Run(fmt.Sprintf("gd%d", gd), func(t *testing.T) {
+			runAllBoundariesPopulated(t, gd, 4096, int64(0xCAFE+gd))
+		})
+	}
+}
 
-	rng := mrand.New(mrand.NewSource(0xCAFE))
+func runAllBoundariesPopulated(t *testing.T, gd int, numStems int, seed int64) {
+	rng := mrand.New(mrand.NewSource(seed))
 	seen := make(map[[stemSize]byte]bool)
 	var entries []trieEntry
 	for len(entries) < numStems {
