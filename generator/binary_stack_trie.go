@@ -502,8 +502,19 @@ type streamingBuilder struct {
 	// allocating a fresh []int per flush on the hot path.
 	groupDepth          int
 	groupBuf            map[int]map[int]common.Hash // boundary depth -> slot -> latest hash
+	groupBufSealed      map[int]map[int]struct{}    // boundary depth -> slots whose value was cascaded (immutable)
 	groupStemAtBoundary map[int][stemSize]byte      // boundary depth -> stem for DB path
-	boundariesBuf       []int                       // reused scratch for flushCompletedGroupsAbove
+	flushedPaths        map[string]struct{}         // set of DB paths already written; blocks re-recording at the same (boundary, prefix) after flush
+	boundariesBuf       []int                       // reused scratch (unused after the cascade refactor; kept to avoid allocator churn if reintroduced)
+
+	// Set by flushCompletedGroupsAbove when the root group (boundary 0) is
+	// flushed. This is the canonical trie root — the recursive hash of the
+	// root grouped Internal blob, which is what geth's bintrie reader will
+	// compute on read. finish() prefers this over sb.stack[0]; the latter
+	// is only used in degenerate cases where no root group blob exists
+	// (e.g., a single stem placed at depth 0).
+	rootGroupHash    common.Hash
+	rootGroupHashSet bool
 
 	// Deferred stem: waiting for right-neighbor CPL before placement.
 	hasPrev     bool
@@ -512,6 +523,10 @@ type streamingBuilder struct {
 	prevLeftCPL int         // CPL with left neighbor (-1 if first stem)
 	prevEntries []trieEntry // kept only when w != nil (for serialization)
 }
+
+// debugGroupCascade controls verbose logging of flush/cascade events.
+// Flip to true locally when investigating parent/child hash mismatches.
+const debugGroupCascade = false
 
 // stemBitAt returns the bit value (0 or 1) at the given depth in a stem.
 func stemBitAt(stem []byte, depth int) byte {
@@ -552,13 +567,39 @@ func (sb *streamingBuilder) recordGroupChild(childDepth int, hash common.Hash, s
 	for i := 0; i < gd; i++ {
 		slot = (slot << 1) | int(stemBitAt(stem, parentBoundary+i))
 	}
-	// Upsert by slot: when multiple stems share bits parentBoundary..childDepth-1
-	// (slot collision), each one's propagateUp may pass through childDepth and
-	// record at the same slot. The LAST recording is the most-combined hash
-	// (later stems' propagations have absorbed earlier ones via the stack/
-	// combine path). Keeping a slice would let serializeGroupedInternalNode
-	// emit multiple hashes for one bitmap bit, producing an inconsistent blob
-	// (popcount(bitmap) < hash count) and missing-trie-node panics in geth.
+	// Skip if this (boundary, prefix) has already been flushed. A late
+	// recordGroupChild typically comes from unwindTo's propagateUp re-traversing
+	// a stale stack entry whose original stem matches a prefix we've finalized.
+	// Without this guard, the late recording would open a "ghost" subtree-
+	// lifetime at the same path: a second writeGroupedNode would later overwrite
+	// the original blob with a different children set (also breaking parent/child
+	// hash chain since the parent already cascaded the original).
+	if sb.flushedPaths != nil {
+		pathKey := string(makePath(stem, parentBoundary))
+		if _, flushed := sb.flushedPaths[pathKey]; flushed {
+			if debugGroupCascade {
+				log.Printf("RECORD-SKIP-FLUSHED b=%d slot=%d propHash=%x", parentBoundary, slot, hash[:8])
+			}
+			return
+		}
+	}
+	// Upsert by slot. Skip slots that have already been "sealed" by a deeper
+	// group's flush cascade — those carry the canonical recursive hash of the
+	// child blob and must not be overwritten by propagateUp's intermediate
+	// stack-combine result, which can differ for the same depth-(parentBoundary
+	// +groupDepth) subtree.
+	if sealed, ok := sb.groupBufSealed[parentBoundary]; ok {
+		if _, isSealed := sealed[slot]; isSealed {
+			if debugGroupCascade {
+				log.Printf("RECORD-SKIP-SEALED b=%d slot=%d propHash=%x", parentBoundary, slot, hash[:8])
+			}
+			return
+		}
+	}
+	if debugGroupCascade {
+		existing, _ := sb.groupBuf[parentBoundary][slot]
+		log.Printf("RECORD b=%d slot=%d hash=%x (was=%x) stem.bits[0..%d]=%v", parentBoundary, slot, hash[:8], existing[:8], parentBoundary+gd, makePath(stem, parentBoundary+gd))
+	}
 	bucket, ok := sb.groupBuf[parentBoundary]
 	if !ok {
 		bucket = make(map[int]common.Hash)
@@ -571,11 +612,15 @@ func (sb *streamingBuilder) recordGroupChild(childDepth int, hash common.Hash, s
 }
 
 // writeGroupedNode serializes and writes a grouped InternalNode at the
-// given boundary depth using collected bottom-layer children.
-func (sb *streamingBuilder) writeGroupedNode(boundary int, stem []byte) {
+// given boundary depth using collected bottom-layer children, and returns
+// the recursive hash of the gd-deep subtree the blob represents (computed
+// the way geth's bintrie reader will compute it on read). The returned
+// hash is what the parent's bitmap slot must store for parent and child
+// blobs to be hash-consistent.
+func (sb *streamingBuilder) writeGroupedNode(boundary int, stem []byte) common.Hash {
 	bucket := sb.groupBuf[boundary]
 	if len(bucket) == 0 {
-		return
+		return common.Hash{}
 	}
 	// Materialize the slot->hash map into a slice sorted by slot so the
 	// serialized bitmap and hash order line up.
@@ -587,9 +632,56 @@ func (sb *streamingBuilder) writeGroupedNode(boundary int, stem []byte) {
 		return children[i].slot < children[j].slot
 	})
 	blob := serializeGroupedInternalNode(sb.groupDepth, children)
-	sb.w.writeNode(makePath(stem, boundary), blob)
-	// Drop the bucket so a future subtree at this boundary starts clean.
+	path := makePath(stem, boundary)
+	sb.w.writeNode(path, blob)
+	// Mark this (boundary, prefix) as flushed so any later recordGroupChild
+	// for the same path (typically from unwindTo's stale-stack re-traversal)
+	// is dropped instead of opening a ghost subtree-lifetime that would
+	// overwrite the blob with different children.
+	if sb.flushedPaths == nil {
+		sb.flushedPaths = make(map[string]struct{})
+	}
+	sb.flushedPaths[string(path)] = struct{}{}
+	// Drop the bucket and any sealed marks so a future subtree at this
+	// boundary (different prefix) starts clean. Sealed entries are per
+	// (boundary, slot) within one subtree-lifetime; once the subtree closes,
+	// a fresh prefix may land on the same slot positions and must be free
+	// to record.
 	delete(sb.groupBuf, boundary)
+	delete(sb.groupBufSealed, boundary)
+	return groupedRecursiveHash(sb.groupDepth, children)
+}
+
+// groupedRecursiveHash mirrors geth's bintrie deserializeSubtree+Hash() for
+// a grouped Internal: build the gd-deep binary subtree where unset slots
+// are Empty (hash=0), pair-of-Empty collapses to Empty (hash=0), and any
+// pair with at least one non-zero child hashes via sha256(left || right).
+// This MUST match trie/bintrie/binary_node.go's deserializeSubtree exactly
+// — divergence here re-introduces the parent/child hash mismatch that
+// caused geth to panic with "missing trie node" on first state access.
+func groupedRecursiveHash(gd int, children []groupChild) common.Hash {
+	nSlots := 1 << gd
+	leaves := make([]common.Hash, nSlots)
+	for _, c := range children {
+		leaves[c.slot] = c.hash
+	}
+	level := leaves
+	var zero common.Hash
+	for len(level) > 1 {
+		next := make([]common.Hash, len(level)/2)
+		for i := 0; i < len(next); i++ {
+			l, r := level[2*i], level[2*i+1]
+			if l == zero && r == zero {
+				continue // both empty -> Empty (hash=0); leave next[i] at zero
+			}
+			var buf [64]byte
+			copy(buf[:32], l[:])
+			copy(buf[32:], r[:])
+			next[i] = sha256.Sum256(buf[:])
+		}
+		level = next
+	}
+	return level[0]
 }
 
 // flushCompletedGroupsAbove writes any buffered grouped-node data for
@@ -616,25 +708,89 @@ func (sb *streamingBuilder) flushCompletedGroupsAbove(completionDepth int) {
 	if sb.w == nil || sb.groupDepth == 0 {
 		return
 	}
-	sb.boundariesBuf = sb.boundariesBuf[:0]
-	for b, bucket := range sb.groupBuf {
-		if b > completionDepth && len(bucket) > 0 {
-			sb.boundariesBuf = append(sb.boundariesBuf, b)
+	gd := sb.groupDepth
+	// Iterate every boundary deep-to-shallow up to maxDepth so a child flush
+	// that cascades a recursive hash into an initially-empty parent bucket
+	// still gets the parent flushed in this same call. Building boundariesBuf
+	// once before the loop (the previous approach) skipped parents that only
+	// became non-empty mid-loop, leaving them with stale propagation hashes.
+	maxB := ((maxDepth - 1) / gd) * gd
+	for b := maxB; b >= 0; b -= gd {
+		if b <= completionDepth {
+			break // shallower boundaries still belong to an open subtree
 		}
-	}
-	// Flush deep-to-shallow so children are persisted before parents.
-	sort.Sort(sort.Reverse(sort.IntSlice(sb.boundariesBuf)))
-	for _, b := range sb.boundariesBuf {
+		bucket := sb.groupBuf[b]
+		if len(bucket) == 0 {
+			continue
+		}
 		stem, ok := sb.groupStemAtBoundary[b]
 		if !ok {
-			// recordGroupChild co-writes groupBuf[b] and groupStemAtBoundary[b];
-			// reaching this branch means that invariant broke. Silently dropping
-			// the write would regress the exact bug this code fixes, so crash
-			// loudly and let the caller investigate.
-			log.Fatalf("flushCompletedGroupsAbove: invariant violated — groupBuf[%d] has %d children but no recorded stem", b, len(sb.groupBuf[b]))
+			// recordGroupChild co-writes groupBuf[b] and groupStemAtBoundary[b],
+			// and the cascade below also keeps them in sync. Reaching this
+			// branch means an invariant broke; crash loudly.
+			log.Fatalf("flushCompletedGroupsAbove: invariant violated — groupBuf[%d] has %d children but no recorded stem", b, len(bucket))
 		}
-		sb.writeGroupedNode(b, stem[:])
+		if debugGroupCascade && b == 0 {
+			keys := make([]int, 0, len(sb.groupBuf[b]))
+			for k := range sb.groupBuf[b] {
+				keys = append(keys, k)
+			}
+			sort.Ints(keys)
+			log.Printf("PRE-FLUSH b=0 bucket has %d slots:", len(keys))
+			for _, k := range keys {
+				h := sb.groupBuf[b][k]
+				log.Printf("  slot=%d hash=%x", k, h[:8])
+			}
+		}
+		groupHash := sb.writeGroupedNode(b, stem[:])
 		delete(sb.groupStemAtBoundary, b)
+
+		if debugGroupCascade {
+			log.Printf("FLUSH b=%d stem.bits[0..%d]=%v groupHash=%x", b, b, makePath(stem[:], b), groupHash[:8])
+		}
+
+		// Cascade the canonical recursive hash into the parent's slot,
+		// overwriting whatever propagateUp left there. Without this the
+		// parent's bitmap stores propagateUp's intermediate stack-combine
+		// result, which can differ from the recursive hash of the child
+		// blob and breaks geth's hash chain.
+		if b == 0 {
+			sb.rootGroupHash = groupHash
+			sb.rootGroupHashSet = true
+			continue
+		}
+		parentBoundary := b - gd
+		parentSlot := 0
+		for i := 0; i < gd; i++ {
+			parentSlot = (parentSlot << 1) | int(stemBitAt(stem[:], parentBoundary+i))
+		}
+		parentBucket, exists := sb.groupBuf[parentBoundary]
+		if !exists {
+			parentBucket = make(map[int]common.Hash)
+			sb.groupBuf[parentBoundary] = parentBucket
+		}
+		parentBucket[parentSlot] = groupHash
+		// Seal the slot so subsequent recordGroupChild calls (from later
+		// unwindTo + propagateUp re-traversals over stale stack entries)
+		// can't replace this canonical hash with an intermediate stack-
+		// combine result. Without sealing, a deferred propagation that
+		// passes through depth (parentBoundary + groupDepth) carrying the
+		// same slot-bit prefix would happily overwrite groupBuf and break
+		// the parent/child hash chain again.
+		sealed, ok := sb.groupBufSealed[parentBoundary]
+		if !ok {
+			sealed = make(map[int]struct{})
+			sb.groupBufSealed[parentBoundary] = sealed
+		}
+		sealed[parentSlot] = struct{}{}
+		// Use the child's stem as the parent's stem too: bits 0..parentBoundary-1
+		// match by construction (subtrees nest), so makePath(stem, parentBoundary)
+		// is the correct parent key regardless of which contributing stem we pick.
+		sb.groupStemAtBoundary[parentBoundary] = stem
+
+		if debugGroupCascade {
+			log.Printf("  CASCADE b=%d -> b=%d slot=%d groupHash=%x", b, parentBoundary, parentSlot, groupHash[:8])
+		}
 	}
 }
 
@@ -822,7 +978,18 @@ func (sb *streamingBuilder) finish() common.Hash {
 				log.Fatalf("streamingBuilder.finish: invariant violated — groupBuf[%d] has %d unflushed children after final flush", b, len(bucket))
 			}
 		}
+		// When the root group blob was written, its recursive hash IS the
+		// trie root (it's what geth's bintrie reader will compute). Prefer
+		// it over stack[0], which carries propagateUp's intermediate
+		// stack-combine result and may diverge from the recursive hash for
+		// some stem patterns.
+		if sb.rootGroupHashSet {
+			return sb.rootGroupHash
+		}
 	}
+	// Fallback: hash-only mode (sb.w == nil), groupDepth == 0, or degenerate
+	// cases where no root group blob was emitted (e.g., a single stem placed
+	// at depth 0 — the StemNode itself is the root).
 	return sb.stack[0]
 }
 
@@ -849,6 +1016,7 @@ func computeBinaryRootStreamingFromSlice(entries []trieEntry, db ethdb.KeyValueS
 	}
 	if groupDepth > 0 {
 		sb.groupBuf = make(map[int]map[int]common.Hash)
+		sb.groupBufSealed = make(map[int]map[int]struct{})
 		sb.groupStemAtBoundary = make(map[int][stemSize]byte)
 	}
 	if db != nil {
@@ -897,6 +1065,7 @@ func computeBinaryRootStreaming(iter ethdb.Iterator, db ethdb.KeyValueStore, gro
 	}
 	if groupDepth > 0 {
 		sb.groupBuf = make(map[int]map[int]common.Hash)
+		sb.groupBufSealed = make(map[int]map[int]struct{})
 		sb.groupStemAtBoundary = make(map[int][stemSize]byte)
 	}
 	if db != nil {
@@ -1058,6 +1227,7 @@ func computeBinaryRootStreamingParallel(
 		}
 		if groupDepth > 0 {
 			sb.groupBuf = make(map[int]map[int]common.Hash)
+			sb.groupBufSealed = make(map[int]map[int]struct{})
 			sb.groupStemAtBoundary = make(map[int][stemSize]byte)
 		}
 		// Use caller-provided writer so the SizeTracker (or any other

@@ -149,7 +149,18 @@ func TestGroupedEmissionNodeCounts(t *testing.T) {
 			db := memorydb.New()
 			_, stats := computeBinaryRootStreamingFromSlice(entries, db, gd)
 
-			if stats.Nodes >= stats0.Nodes {
+			// gd=1 collapses each binary internal into a 1-deep grouped
+			// blob, so node counts match ungrouped — the saving is in
+			// bytes (bitmap is more compact than two 32-byte hashes for
+			// sparse internals). For gd>=2 the savings are in node count.
+			if gd == 1 {
+				if stats.Nodes != stats0.Nodes {
+					t.Errorf("grouped (gd=1) node count should equal ungrouped: grouped=%d, ungrouped=%d", stats.Nodes, stats0.Nodes)
+				}
+				if stats.Bytes >= stats0.Bytes {
+					t.Errorf("grouped (gd=1) bytes should be smaller than ungrouped: grouped=%d, ungrouped=%d", stats.Bytes, stats0.Bytes)
+				}
+			} else if stats.Nodes >= stats0.Nodes {
 				t.Errorf("grouped (gd=%d) should have fewer nodes: grouped=%d, ungrouped=%d",
 					gd, stats.Nodes, stats0.Nodes)
 			}
@@ -878,6 +889,122 @@ func TestGroupedEmissionDeepBoundarySlotCollision(t *testing.T) {
 	if bitsSet != nHashes {
 		t.Errorf("CONFIRMED BUG: bitmap claims %d slots but blob carries %d hashes — recordGroupChild appended duplicates without dedup",
 			bitsSet, nHashes)
+	}
+}
+
+func gethStyleHash(blob []byte, gd int) common.Hash {
+	bitmapSize := bitmapSizeForDepth(gd)
+	bitmap := blob[2 : 2+bitmapSize]
+	hashes := blob[2+bitmapSize:]
+	nSlots := 1 << gd
+	leaves := make([]common.Hash, nSlots)
+	rank := 0
+	for slot := 0; slot < nSlots; slot++ {
+		if bitmap[slot/8]&(1<<(7-slot%8)) != 0 {
+			off := rank * hashSize
+			copy(leaves[slot][:], hashes[off:off+hashSize])
+			rank++
+		}
+	}
+	level := leaves
+	var zero common.Hash
+	for len(level) > 1 {
+		next := make([]common.Hash, len(level)/2)
+		for i := 0; i < len(next); i++ {
+			l, r := level[2*i], level[2*i+1]
+			if l == zero && r == zero {
+				continue
+			}
+			var buf [64]byte
+			copy(buf[:32], l[:])
+			copy(buf[32:], r[:])
+			next[i] = sha256.Sum256(buf[:])
+		}
+		level = next
+	}
+	return level[0]
+}
+
+func childSlotInGrouped(blob []byte, gd int, fullPath []byte, parentDepth int) []byte {
+	bitmapSize := bitmapSizeForDepth(gd)
+	slot := 0
+	for i := 0; i < gd; i++ {
+		slot = (slot << 1) | int(fullPath[parentDepth+i]&1)
+	}
+	bitmap := blob[2 : 2+bitmapSize]
+	if bitmap[slot/8]&(1<<(7-slot%8)) == 0 {
+		return nil
+	}
+	rank := 0
+	for i := 0; i < slot; i++ {
+		if bitmap[i/8]&(1<<(7-i%8)) != 0 {
+			rank++
+		}
+	}
+	off := 2 + bitmapSize + rank*hashSize
+	return blob[off : off+hashSize]
+}
+
+func TestParentChildHashConsistencyAcrossGd(t *testing.T) {
+	for _, gd := range []int{1, 2, 3, 4, 5, 6, 7, 8} {
+		t.Run(fmt.Sprintf("gd%d", gd), func(t *testing.T) {
+			rng := mrand.New(mrand.NewSource(int64(0xCAFE + gd)))
+			seen := make(map[[stemSize]byte]bool)
+			var entries []trieEntry
+			for len(entries) < 1024 {
+				var e trieEntry
+				rng.Read(e.Key[:stemSize])
+				var k [stemSize]byte
+				copy(k[:], e.Key[:stemSize])
+				if seen[k] {
+					continue
+				}
+				seen[k] = true
+				e.Key[stemSize] = 0
+				rng.Read(e.Value[:])
+				entries = append(entries, e)
+			}
+			sort.Slice(entries, func(i, j int) bool {
+				return bytes.Compare(entries[i].Key[:], entries[j].Key[:]) < 0
+			})
+
+			db := memorydb.New()
+			computeBinaryRootStreamingFromSlice(entries, db, gd)
+
+			iter := db.NewIterator(verkleTrieNodeKeyPrefix, nil)
+			defer iter.Release()
+			mismatch := 0
+			checked := 0
+			for iter.Next() {
+				path := iter.Key()[len(verkleTrieNodeKeyPrefix):]
+				if len(path) == 0 || len(path)%gd != 0 {
+					continue
+				}
+				blob := iter.Value()
+				if len(blob) < 2 || blob[0] != 2 {
+					continue
+				}
+				selfHash := gethStyleHash(blob, gd)
+				parentDepth := len(path) - gd
+				parentBlob, err := db.Get(append(append([]byte{}, verkleTrieNodeKeyPrefix...), path[:parentDepth]...))
+				if err != nil || len(parentBlob) < 2 || parentBlob[0] != 2 {
+					continue
+				}
+				stored := childSlotInGrouped(parentBlob, gd, path, parentDepth)
+				if stored == nil {
+					continue
+				}
+				checked++
+				if !bytes.Equal(stored, selfHash[:]) {
+					mismatch++
+					if mismatch <= 2 {
+						t.Errorf("gd=%d depth=%d path=%x:\n  parent stored:    %x\n  child geth-style: %x",
+							gd, len(path), path, stored, selfHash)
+					}
+				}
+			}
+			t.Logf("gd=%d checked=%d mismatches=%d", gd, checked, mismatch)
+		})
 	}
 }
 
