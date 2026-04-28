@@ -83,8 +83,18 @@ func runImpl(ctx context.Context, cfg generator.Config, opts Options) (*generato
 	}
 	if ChainIDOverride != 0 {
 		chainID = ChainIDOverride
+		// state-actor writes nothing that carries chainID: the genesis
+		// header has no chainID field, the state trie hashes are
+		// chainID-blind, and the genesis block has zero txs (so no
+		// EIP-155 fingerprints). chainID lives entirely in the
+		// chainspec Nethermind reads on boot — same DB can be served
+		// under any chainID without regeneration. Surface the
+		// no-effect-here behavior so users don't expect otherwise.
+		log.Printf("nethermind: --chain-id=%d is parsed but not embedded in the produced DB "+
+			"(chainID lives in the chainspec at boot time; the same DB serves any chainID). "+
+			"Set the chainID in your Nethermind chainspec/config instead.", chainID)
 	}
-	_ = chainID // Phase A: chainID lives in the chainspec, not the header
+	_ = chainID
 
 	dbs, err := openNethDBs(cfg.DBPath)
 	if err != nil {
