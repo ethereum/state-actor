@@ -268,9 +268,8 @@ gen, err := generator.NewWithWriter(cfg, geth.NewWriterFactory())
 ```
 
 Today's client adapters: `client/geth/` (the original, geth-format Pebble)
-and `client/nethermind/` (cgo+grocksdb, direct RocksDB write — see
-`docs/superpowers/specs/2026-04-28-nethermind-implementation-notes.md`).
-A `client/reth/` adapter exists on a parallel branch and follows the same
+and `client/nethermind/` (cgo+grocksdb, direct RocksDB write). A
+`client/reth/` adapter exists on a parallel branch and follows the same
 shape: a `Writer` implementing `generator.Writer`, plus a `NewWriterFactory()`
 and an init() registration.
 
