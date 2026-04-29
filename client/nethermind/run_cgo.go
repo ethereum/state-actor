@@ -1,17 +1,24 @@
 //go:build cgo_neth
 
 // Real Run implementation behind the cgo_neth build tag. Only compiled
-// inside the Dockerfile.nethermind build context where librocksdb-dev
-// and grocksdb are available.
+// inside the Dockerfile.nethermind build context where librocksdb and
+// grocksdb are available.
 //
-// Phase A (this commit): empty-alloc genesis only. State and Code DBs
-// stay empty; the 5 metadata DBs (blocks, headers, blockNumbers,
-// blockInfos, receipts) get block 0 entries with WasProcessed=true so
-// Nethermind's BlockTree boot detection skips its own loader.
+// runImpl drives three writer paths off generator.Config:
 //
-// Phase B (next commit on this branch): wire entitygen.Source
-// → internal/neth/trie.Builder → grocksdb writes for State/Code DBs so
-// the writer scales to a multi-million-account devnet.
+//   - Empty alloc (no --accounts/--contracts, no --genesis with non-zero
+//     alloc): the seven RocksDBs get a block-0 row each with
+//     WasProcessed=true so Nethermind's BlockTree boot detection skips its
+//     own loader. State/Code stay empty (state root = EmptyTreeHash).
+//   - Genesis-alloc only (--genesis JSON with alloc, no synthetic
+//     accounts): writeGenesisAllocAccounts walks the alloc, writes
+//     accounts + storage tries + code, returns the computed state root.
+//   - Synthetic + optional genesis-alloc (--accounts/--contracts > 0):
+//     writeSyntheticAccounts streams entitygen-generated entities through
+//     a temp Pebble for sorted-by-addrHash account-trie build. Storage
+//     trees for genesis-alloc accounts are not yet threaded into this
+//     path; runImpl fails loud if the user combines them. Tracked at
+//     https://github.com/nerolation/state-actor/issues/22.
 
 package nethermind
 
@@ -31,15 +38,22 @@ import (
 
 // runImpl orchestrates a Nethermind RocksDB write.
 //
-// Phase A pipeline:
-//  1. Resolve genesis fields (chain ID, gasLimit, extraData, timestamp)
-//     from cfg.* / --genesis path.
-//  2. Open 7 grocksdb instances directly under cfg.DBPath/.
-//  3. Build the empty-alloc genesis header (state root = EmptyTreeHash).
-//  4. Write the genesis row across blocks/, headers/, blockNumbers/,
-//     blockInfos/ (with WasProcessed=true), receipts/Blocks CF.
-//  5. Close cleanly. Return Stats with the computed state root and the
-//     genesis block hash for visibility.
+// Pipeline:
+//  1. Resolve genesis fields (gasLimit, extraData, timestamp, …) from
+//     cfg.* / --genesis path.
+//  2. Open 7 grocksdb instances directly under cfg.DBPath/ via openNethDBs
+//     (which enforces the fresh-dir precondition).
+//  3. Dispatch to writeSyntheticAccounts / writeGenesisAllocAccounts /
+//     empty-alloc to populate the State + Code DBs and compute the state
+//     root.
+//  4. Build the genesis header with the computed state root.
+//  5. writeGenesisBlockToDBs assembles the 5 metadata DBs at block 0
+//     (headers/blocks/blockNumbers/receipts, blockInfos LAST as the boot
+//     gate; see genesis_cgo.go for the failure-window discipline).
+//  6. Close cleanly and return Stats.
+//
+// ctx and opts are reserved for future cancellation / boot-validation
+// wiring; runImpl's body runs synchronously today.
 func runImpl(ctx context.Context, cfg generator.Config, opts Options) (*generator.Stats, error) {
 	_ = ctx
 	_ = opts

@@ -20,8 +20,8 @@ import (
 )
 
 // stateDBSink writes state-trie nodes to the State DB using HalfPath keys.
-// This is the bridge between B4's trie.Builder (which emits OnTrieNode
-// callbacks) and the State RocksDB Nethermind reads on boot.
+// This is the bridge between internal/neth/trie.Builder (which emits
+// OnTrieNode callbacks) and the State RocksDB Nethermind reads on boot.
 //
 // Writes are buffered into a grocksdb WriteBatch and flushed when the
 // pending size hits stateBatchFlushBytes — synchronous Put-per-node went
@@ -108,8 +108,9 @@ func (s *stateDBSink) SetStorageNode(addrHash [32]byte, path []byte, pathLen int
 // what the StackTrie inside Builder requires. We sort them up-front, and
 // per-account slot keys get sorted by keccak(slotKey) the same way.
 //
-// `storages` may be nil for the no-storage case; the legacy callers
-// (genesis-alloc dev wallets) pass nil and pay no overhead.
+// `storages` may be nil or empty when the alloc carries no contract
+// storage; the per-account storage-trie path is skipped and only the
+// account-trie is built.
 func writeGenesisAllocAccounts(
 	dbs *nethDBs,
 	accounts map[common.Address]*types.StateAccount,

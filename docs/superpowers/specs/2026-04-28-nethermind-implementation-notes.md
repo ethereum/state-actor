@@ -40,7 +40,7 @@ The pivot happened because of the chainspec-deserialization scaling cliff. state
 
 ### 1. `blockNumbers` value is fixed-width 8 bytes BE — NOT no-leading-zeros
 
-Both the deep-feature-planning CCD and the code comments inside `client/nethermind/genesis_cgo.go` mirrored `Int64Extensions.ToBigEndianSpanWithoutLeadingZeros` (1 byte for genesis). That's the **key** format for `blockInfos/`, but the `blockNumbers/` **value** is 8-byte fixed-width.
+An earlier revision of `client/nethermind/genesis_cgo.go` (and the deep-feature-planning CCD it was based on) mirrored `Int64Extensions.ToBigEndianSpanWithoutLeadingZeros` (1 byte for genesis). That's the **key** format for `blockInfos/`, but the `blockNumbers/` **value** is 8-byte fixed-width.
 
 Source: `Nethermind.Blockchain.Headers.HeaderStore.GetBlockNumberFromBlockNumberDb` at upstream/master:09bd5a2d, line 103:
 
@@ -53,7 +53,7 @@ if (numberSpan.Length != 8)
 
 Symptom of getting this wrong: Nethermind's BlockTree initializer throws `InvalidDataException("Unexpected number span length: 1")` and falls back to chainspec genesis, silently ignoring the on-disk DB.
 
-Fix in `genesis_cgo.go` writes 8-byte BE for the blockNumbers value while keeping the no-leading-zeros encoding for the blockInfos key.
+**Fixed in commit `6508dad`**: `genesis_cgo.go` now writes 8-byte BE for the blockNumbers value while keeping the no-leading-zeros encoding for the blockInfos key.
 
 ### 2. `BaseDbPath` is the data root — NOT a parent of the data root
 
@@ -114,7 +114,7 @@ Fix: implement `SetStorageNode` to write at the HalfPath storage key (`section=2
               header.Root = stateRoot
                           │
                           ▼
-              writeGenesisBlockToDBs (the existing Phase A pipeline)
+              writeGenesisBlockToDBs (metadata-DB writes; blockInfos LAST)
                           ├── headers/      composite key → RLP(header)
                           ├── blocks/       composite key → RLP(block)
                           ├── blockNumbers/ hash(32)      → 8-byte BE  ← FIXED
@@ -128,15 +128,17 @@ Memory: `O(max_slots_per_contract)`. Total entity count is bounded only by the t
 
 ## Smoke-test evidence
 
-**Phase A (empty alloc):**
+These were the milestones we hit during implementation; the labels (Phase A / Phase B genesis-alloc / Phase B synthetic) are commit-history landmarks, not currently-tracked work items.
+
+**Empty alloc:**
 - `state-actor --client=nethermind --db=/data --accounts=0 --contracts=0` → 7-DB datadir.
 - Boot `nethermind/nethermind:1.37.0` → genesis hash matches state-actor's reported hash.
 
-**Phase B genesis-alloc + 100 txs:**
+**Genesis-alloc + 100 txs:**
 - 3 dev wallets pre-funded via `genesis-funded.json`.
 - All 100 dev-mode txs land; chain reaches block 100.
 
-**Phase B synthetic accounts:**
+**Synthetic accounts:**
 - 100 EOAs + 10 contracts: state root deterministic across re-runs (same `--seed`).
 - 100K EOAs + 10K contracts: state root reported by state-actor byte-equals what Nethermind reports for `eth_getBlockByNumber("0x0").stateRoot`.
 - 1M EOAs + 100K contracts (max-slots=2048, power-law): 67s generation, 835 MB datadir.

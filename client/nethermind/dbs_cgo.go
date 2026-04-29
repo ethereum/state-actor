@@ -62,7 +62,7 @@ type nethDBs struct {
 //
 // **Fresh-dir precondition.** Before opening anything, this function
 // fails loud if any of the 7 DB directories already exist. The genesis
-// writer makes 5+ separate `Put` calls across 5 separate grocksdb
+// writer makes 5 separate `Put` calls across 5 separate grocksdb
 // instances (no cross-DB transactions exist), so a re-run on top of a
 // half-finished previous run could silently mix the old and new genesis
 // hashes — on-disk you'd have headers/blocks/blockNumbers/receipts from
