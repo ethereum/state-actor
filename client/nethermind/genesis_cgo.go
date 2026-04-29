@@ -79,6 +79,24 @@ func blockNumKeyWithoutLeadingZeros(n uint64) []byte {
 // The WasProcessed=true flag in BlockInfos[0] is the boot gate per
 // BlockTree.cs:152-171 — without it, Nethermind's LoadGenesisBlock step
 // re-runs its own loader and ignores our DB.
+//
+// # Failure-window discipline
+//
+// grocksdb has no cross-DB transactions, so the five Put calls below
+// can never be atomic across the five DBs. We minimize the damage by:
+//
+//  1. Encoding everything before any Put, so failures during encoding
+//     can't leave any DB partially written.
+//  2. Writing blockInfos LAST. blockInfos[0].WasProcessed=true is the
+//     boot gate — until that row lands, Nethermind on next boot doesn't
+//     see this datadir as "loaded" and falls back to its own chainspec
+//     genesis. So if any non-blockInfos Put fails, the orphan rows we
+//     leave in headers/blocks/blockNumbers/receipts simply sit on disk
+//     unreferenced; they don't trick Nethermind into thinking the
+//     wrong genesis is canonical.
+//
+// openNethDBs's fresh-dir precondition (dbs_cgo.go) further ensures
+// orphan rows can't accumulate across re-runs.
 func writeGenesisBlockToDBs(dbs *nethDBs, header *types.Header) (common.Hash, error) {
 	wo := grocksdb.NewDefaultWriteOptions()
 	defer wo.Destroy()
@@ -98,33 +116,18 @@ func writeGenesisBlockToDBs(dbs *nethDBs, header *types.Header) (common.Hash, er
 	var numBE8 [8]byte
 	binary.BigEndian.PutUint64(numBE8[:], blockNumber)
 
-	// 1. headers/ — composite key → RLP(header)
+	// Encode every payload up-front so any encoder error fails before we
+	// touch the DBs (no orphan rows from a mid-flight encode panic).
 	headerRLP, err := nethrlp.EncodeHeader(header)
 	if err != nil {
 		return common.Hash{}, fmt.Errorf("encode header: %w", err)
 	}
-	if err := dbs.headers.Put(wo, compositeKey, headerRLP); err != nil {
-		return common.Hash{}, fmt.Errorf("write headers/: %w", err)
-	}
-
-	// 2. blocks/ — composite key → RLP(block) (header + empty body)
 	body := &types.Body{}
 	block := types.NewBlockWithHeader(header).WithBody(*body)
 	blockRLP, err := nethrlp.EncodeBlock(block)
 	if err != nil {
 		return common.Hash{}, fmt.Errorf("encode block: %w", err)
 	}
-	if err := dbs.blocks.Put(wo, compositeKey, blockRLP); err != nil {
-		return common.Hash{}, fmt.Errorf("write blocks/: %w", err)
-	}
-
-	// 3. blockNumbers/ — hash(32) → numBE(8) fixed
-	if err := dbs.blockNumbers.Put(wo, headerHash[:], numBE8[:]); err != nil {
-		return common.Hash{}, fmt.Errorf("write blockNumbers/: %w", err)
-	}
-
-	// 4. blockInfos/ — numBE → RLP(ChainLevelInfo) with WasProcessed=true.
-	//    This is the boot gate.
 	td := header.Difficulty
 	if td == nil {
 		td = new(big.Int)
@@ -141,15 +144,36 @@ func writeGenesisBlockToDBs(dbs *nethDBs, header *types.Header) (common.Hash, er
 		},
 	}
 	cliRLP := nethrlp.EncodeChainLevelInfo(cli)
-	if err := dbs.blockInfos.Put(wo, numKey, cliRLP); err != nil {
-		return common.Hash{}, fmt.Errorf("write blockInfos/: %w", err)
+	emptyReceipts := nethrlp.EncodeReceipts(nil)
+
+	// 1. headers/ — composite key → RLP(header)
+	if err := dbs.headers.Put(wo, compositeKey, headerRLP); err != nil {
+		return common.Hash{}, fmt.Errorf("write headers/: %w", err)
 	}
 
-	// 5. receipts/Blocks CF — composite key → 0xc0 (empty list).
+	// 2. blocks/ — composite key → RLP(block) (header + empty body)
+	if err := dbs.blocks.Put(wo, compositeKey, blockRLP); err != nil {
+		return common.Hash{}, fmt.Errorf("write blocks/: %w", err)
+	}
+
+	// 3. blockNumbers/ — hash(32) → numBE(8) fixed
+	if err := dbs.blockNumbers.Put(wo, headerHash[:], numBE8[:]); err != nil {
+		return common.Hash{}, fmt.Errorf("write blockNumbers/: %w", err)
+	}
+
+	// 4. receipts/Blocks CF — composite key → 0xc0 (empty list).
 	//    Nethermind expects an entry to exist even for transaction-free blocks.
-	emptyReceipts := nethrlp.EncodeReceipts(nil)
 	if err := dbs.receipts.PutCF(wo, dbs.receiptsBlocksCF, compositeKey, emptyReceipts); err != nil {
 		return common.Hash{}, fmt.Errorf("write receipts/Blocks: %w", err)
+	}
+
+	// 5. blockInfos/ — the boot gate, written LAST. If any prior Put
+	//    failed, control already returned with an error and Nethermind
+	//    on next boot won't see WasProcessed=true (because we never
+	//    reached this line), so it falls back to chainspec genesis
+	//    rather than treating the half-written datadir as authoritative.
+	if err := dbs.blockInfos.Put(wo, numKey, cliRLP); err != nil {
+		return common.Hash{}, fmt.Errorf("write blockInfos/: %w", err)
 	}
 
 	return headerHash, nil

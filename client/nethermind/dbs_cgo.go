@@ -60,10 +60,43 @@ type nethDBs struct {
 // because Nethermind opened freshly-created empty DBs at dataDir/<name>/
 // and ignored the populated ones at dataDir/db/<name>/.)
 //
+// **Fresh-dir precondition.** Before opening anything, this function
+// fails loud if any of the 7 DB directories already exist. The genesis
+// writer makes 5+ separate `Put` calls across 5 separate grocksdb
+// instances (no cross-DB transactions exist), so a re-run on top of a
+// half-finished previous run could silently mix the old and new genesis
+// hashes — on-disk you'd have headers/blocks/blockNumbers/receipts from
+// run A AND a fresh blockInfos from run B, with Nethermind keying its
+// genesis off run B's blockInfos but joining run A's data via that
+// hash. Forcing a clean dataDir keeps the partial-state hazard reduced
+// to "all-or-nothing within a single run".
+//
 // On any error, partially-opened DBs are closed before returning so
 // callers don't have to handle a half-initialized struct.
 func openNethDBs(dataDir string) (*nethDBs, error) {
 	dbRoot := dataDir
+
+	// Precondition: refuse to write into a non-fresh dataDir. We check
+	// EACH DB subdir individually (rather than "is dataDir empty?") so
+	// callers can put unrelated files in dataDir without surprise; only
+	// our reserved names are off-limits.
+	for _, name := range []string{
+		dbNameState, dbNameCode, dbNameBlocks, dbNameHeaders,
+		dbNameBlockNumbers, dbNameBlockInfos, dbNameReceipts,
+	} {
+		path := filepath.Join(dbRoot, name)
+		if _, err := os.Stat(path); err == nil {
+			return nil, fmt.Errorf(
+				"--db=%s already contains a Nethermind DB at %s/. "+
+					"Refusing to write into it: a partial previous run could leave the seven "+
+					"DBs in inconsistent states because grocksdb has no cross-DB transactions. "+
+					"Pass --db= to a fresh path, or `rm -rf %s` first.",
+				dataDir, name, dataDir,
+			)
+		} else if !os.IsNotExist(err) {
+			return nil, fmt.Errorf("stat %s: %w", path, err)
+		}
+	}
 
 	// grocksdb's CreateIfMissing only creates the leaf directory, not its
 	// parents. Pre-create the per-DB subdirs so the open call succeeds on
