@@ -64,7 +64,7 @@ func TestDifferentialOracle(t *testing.T) {
 				t.Fatalf("load %s: %v", tc.fixtureFile, err)
 			}
 
-			accounts, codes, storages := paritySpecToStateAccounts(spec)
+			accounts, codes, storages := paritySpecToStateAccounts(t, spec)
 			t.Logf("%s: %d allocations → %d state entries (after EIP-161 filter), %d with storage",
 				tc.name, len(spec.Accounts), len(accounts), len(storages))
 
@@ -83,10 +83,7 @@ func TestDifferentialOracle(t *testing.T) {
 				}
 			}
 
-			header, err := buildHeaderFromParitySpec(spec, stateRoot)
-			if err != nil {
-				t.Fatalf("build header: %v", err)
-			}
+			header := buildHeaderFromParitySpec(t, spec, stateRoot)
 
 			got := header.Hash().Hex()
 			if !strings.EqualFold(got, tc.wantGenesisHash) {
@@ -149,58 +146,103 @@ func loadParityChainspec(path string) (*parityChainspec, error) {
 }
 
 // parseHexU64 parses a "0x..." string into a uint64, tolerating leading
-// zero digits (which go-ethereum's hexutil.Uint64 rejects).
-func parseHexU64(s string) (uint64, error) {
+// zero digits (which go-ethereum's hexutil.Uint64 rejects). Empty input
+// returns 0. Anything malformed (bad hex digit, overflow) is a fixture
+// bug — fail the test loud rather than silently zeroing.
+//
+// `field` is a human-readable name used in the failure message; pass the
+// JSON path of the field being parsed (e.g. "genesis.gasLimit").
+func parseHexU64(t *testing.T, field, s string) uint64 {
+	t.Helper()
 	if s == "" {
-		return 0, nil
+		return 0
 	}
-	s = strings.TrimPrefix(strings.TrimPrefix(s, "0x"), "0X")
-	if s == "" {
-		return 0, nil
+	stripped := strings.TrimPrefix(strings.TrimPrefix(s, "0x"), "0X")
+	if stripped == "" {
+		return 0
 	}
 	v := new(big.Int)
-	if _, ok := v.SetString(s, 16); !ok {
-		return 0, fmt.Errorf("not hex: %q", s)
+	if _, ok := v.SetString(stripped, 16); !ok {
+		t.Fatalf("oracle: parse %s: not hex: %q", field, s)
 	}
 	if !v.IsUint64() {
-		return 0, fmt.Errorf("hex value overflows uint64: %q", s)
+		t.Fatalf("oracle: parse %s: value overflows uint64: %q", field, s)
 	}
-	return v.Uint64(), nil
+	return v.Uint64()
 }
 
 // parseHexBig parses a "0x..." string into a big.Int, tolerating leading
-// zeros and the empty string (returns 0).
-func parseHexBig(s string) *big.Int {
+// zeros. Empty input returns 0. Bad hex fails the test (silently zeroing
+// would mask malformed fixtures behind a wrong-genesis-hash failure).
+func parseHexBig(t *testing.T, field, s string) *big.Int {
+	t.Helper()
 	v := new(big.Int)
 	if s == "" {
 		return v
 	}
-	s = strings.TrimPrefix(strings.TrimPrefix(s, "0x"), "0X")
-	if s == "" {
+	stripped := strings.TrimPrefix(strings.TrimPrefix(s, "0x"), "0X")
+	if stripped == "" {
 		return v
 	}
-	v.SetString(s, 16)
+	if _, ok := v.SetString(stripped, 16); !ok {
+		t.Fatalf("oracle: parse %s: not hex: %q", field, s)
+	}
 	return v
 }
 
-// parseHexBytes parses a "0x..."-prefixed hex string into bytes. Returns
-// nil for the empty string or "0x".
-func parseHexBytes(s string) []byte {
+// parseHexBytes parses a "0x..."-prefixed hex string into bytes. Empty
+// input or "0x" returns nil; bad hex fails the test.
+func parseHexBytes(t *testing.T, field, s string) []byte {
+	t.Helper()
 	if s == "" {
 		return nil
 	}
-	s = strings.TrimPrefix(strings.TrimPrefix(s, "0x"), "0X")
-	if s == "" {
+	stripped := strings.TrimPrefix(strings.TrimPrefix(s, "0x"), "0X")
+	if stripped == "" {
 		return nil
 	}
-	if len(s)%2 == 1 {
-		s = "0" + s
+	if len(stripped)%2 == 1 {
+		stripped = "0" + stripped
 	}
-	b, err := hex.DecodeString(s)
+	b, err := hex.DecodeString(stripped)
 	if err != nil {
-		return nil
+		t.Fatalf("oracle: parse %s: %v (input %q)", field, err, s)
 	}
 	return b
+}
+
+// parseHexHash parses a 32-byte common.Hash. Returns the zero hash for
+// empty input; fails the test if the input is non-empty but doesn't
+// decode to exactly 32 bytes (common.HexToHash silently zeros these).
+func parseHexHash(t *testing.T, field, s string) common.Hash {
+	t.Helper()
+	if s == "" || s == "0x" {
+		return common.Hash{}
+	}
+	b := parseHexBytes(t, field, s)
+	if len(b) != common.HashLength {
+		t.Fatalf("oracle: parse %s: expected %d bytes, got %d (%q)", field, common.HashLength, len(b), s)
+	}
+	var h common.Hash
+	copy(h[:], b)
+	return h
+}
+
+// parseHexAddress parses a 20-byte common.Address. Returns the zero
+// address for empty input; fails the test on length mismatch (common's
+// HexToAddress silently truncates/zeros otherwise).
+func parseHexAddress(t *testing.T, field, s string) common.Address {
+	t.Helper()
+	if s == "" || s == "0x" {
+		return common.Address{}
+	}
+	b := parseHexBytes(t, field, s)
+	if len(b) != common.AddressLength {
+		t.Fatalf("oracle: parse %s: expected %d bytes, got %d (%q)", field, common.AddressLength, len(b), s)
+	}
+	var a common.Address
+	copy(a[:], b)
+	return a
 }
 
 // paritySpecToStateAccounts converts Parity allocations into the
@@ -209,19 +251,25 @@ func parseHexBytes(s string) []byte {
 // storage) and `builtin`-only entries (precompile gas-pricing
 // pseudoaccounts) are dropped — Nethermind's GenesisBuilder skips them at
 // genesis time and the state root we compute has to match.
-func paritySpecToStateAccounts(spec *parityChainspec) (
+//
+// Any field that fails to parse `t.Fatalf`s loud through the helper
+// pipeline; we never silently zero a malformed fixture field.
+func paritySpecToStateAccounts(t *testing.T, spec *parityChainspec) (
 	map[common.Address]*types.StateAccount,
 	map[common.Address][]byte,
 	map[common.Address]map[common.Hash]common.Hash,
 ) {
+	t.Helper()
 	accounts := make(map[common.Address]*types.StateAccount)
 	codes := make(map[common.Address][]byte)
 	storages := make(map[common.Address]map[common.Hash]common.Hash)
 
 	for addrStr, acc := range spec.Accounts {
-		balance := parseHexBig(acc.Balance)
-		nonce, _ := parseHexU64(acc.Nonce)
-		code := parseHexBytes(acc.Code)
+		field := func(suffix string) string { return "accounts[" + addrStr + "]." + suffix }
+
+		balance := parseHexBig(t, field("balance"), acc.Balance)
+		nonce := parseHexU64(t, field("nonce"), acc.Nonce)
+		code := parseHexBytes(t, field("code"), acc.Code)
 
 		// Nethermind's GenesisBuilder treats `balance` PRESENCE as the
 		// keep/drop signal, not its value: `hive_zero_balance_test.json`
@@ -252,8 +300,11 @@ func paritySpecToStateAccounts(spec *parityChainspec) (
 			continue
 		}
 
-		addr := common.HexToAddress(addrStr)
-		bal256, _ := uint256.FromBig(balance)
+		addr := parseHexAddress(t, "accounts."+addrStr+" key", addrStr)
+		bal256, overflow := uint256.FromBig(balance)
+		if overflow {
+			t.Fatalf("oracle: parse %s: balance overflows uint256: %s", field("balance"), balance.String())
+		}
 		sa := &types.StateAccount{
 			Nonce:    nonce,
 			Balance:  bal256,
@@ -266,6 +317,17 @@ func paritySpecToStateAccounts(spec *parityChainspec) (
 		if len(acc.Storage) > 0 {
 			normalized := make(map[common.Hash]common.Hash, len(acc.Storage))
 			for k, v := range acc.Storage {
+				// Storage keys/values may be non-canonical lengths in
+				// Parity fixtures (e.g. "0x0" for slot 0). Pad through
+				// common.HexToHash, which left-pads short input to 32
+				// bytes — that matches Nethermind's parser. Anything
+				// LONGER than 32 bytes is a fixture bug; surface it.
+				if hb := parseHexBytes(t, field("storage["+k+"] key"), k); len(hb) > common.HashLength {
+					t.Fatalf("oracle: storage key for %s too long: %d bytes (%q)", addrStr, len(hb), k)
+				}
+				if vb := parseHexBytes(t, field("storage["+k+"] value"), v); len(vb) > common.HashLength {
+					t.Fatalf("oracle: storage value for %s too long: %d bytes (%q)", addrStr, len(vb), v)
+				}
 				kh := common.HexToHash(k)
 				vh := common.HexToHash(v)
 				if vh == (common.Hash{}) {
@@ -310,38 +372,33 @@ func paritySpecToStateAccounts(spec *parityChainspec) (
 // three vendored fixtures all target Berlin or earlier (the test class
 // uses `Berlin.Instance` as ISpecProvider), so no `baseFeePerGas` or
 // `withdrawalsRoot` are emitted in the genesis header.
-func buildHeaderFromParitySpec(spec *parityChainspec, stateRoot common.Hash) (*types.Header, error) {
-	gasLimit, err := parseHexU64(spec.Genesis.GasLimit)
-	if err != nil {
-		return nil, fmt.Errorf("gasLimit: %w", err)
-	}
-	timestamp, err := parseHexU64(spec.Genesis.Timestamp)
-	if err != nil {
-		return nil, fmt.Errorf("timestamp: %w", err)
-	}
+func buildHeaderFromParitySpec(t *testing.T, spec *parityChainspec, stateRoot common.Hash) *types.Header {
+	t.Helper()
+	gasLimit := parseHexU64(t, "genesis.gasLimit", spec.Genesis.GasLimit)
+	timestamp := parseHexU64(t, "genesis.timestamp", spec.Genesis.Timestamp)
 
 	var nonce types.BlockNonce
-	nb := parseHexBytes(spec.Genesis.Seal.Ethereum.Nonce)
+	nb := parseHexBytes(t, "genesis.seal.ethereum.nonce", spec.Genesis.Seal.Ethereum.Nonce)
 	if len(nb) > 8 {
-		return nil, fmt.Errorf("nonce too long: %d bytes", len(nb))
+		t.Fatalf("oracle: parse genesis.seal.ethereum.nonce: %d bytes, max 8", len(nb))
 	}
 	copy(nonce[8-len(nb):], nb)
 
 	return &types.Header{
-		ParentHash:  common.HexToHash(spec.Genesis.ParentHash),
+		ParentHash:  parseHexHash(t, "genesis.parentHash", spec.Genesis.ParentHash),
 		UncleHash:   types.EmptyUncleHash,
-		Coinbase:    common.HexToAddress(spec.Genesis.Author),
+		Coinbase:    parseHexAddress(t, "genesis.author", spec.Genesis.Author),
 		Root:        stateRoot,
 		TxHash:      types.EmptyTxsHash,
 		ReceiptHash: types.EmptyReceiptsHash,
 		Bloom:       types.Bloom{},
-		Difficulty:  parseHexBig(spec.Genesis.Difficulty),
+		Difficulty:  parseHexBig(t, "genesis.difficulty", spec.Genesis.Difficulty),
 		Number:      new(big.Int),
 		GasLimit:    gasLimit,
 		GasUsed:     0,
 		Time:        timestamp,
-		Extra:       parseHexBytes(spec.Genesis.ExtraData),
-		MixDigest:   common.HexToHash(spec.Genesis.Seal.Ethereum.MixHash),
+		Extra:       parseHexBytes(t, "genesis.extraData", spec.Genesis.ExtraData),
+		MixDigest:   parseHexHash(t, "genesis.seal.ethereum.mixHash", spec.Genesis.Seal.Ethereum.MixHash),
 		Nonce:       nonce,
-	}, nil
+	}
 }
