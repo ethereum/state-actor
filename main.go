@@ -38,23 +38,21 @@ import (
 )
 
 var (
-	dbPath         = flag.String("db", "", "Path to the database directory (required)")
-	accounts       = flag.Int("accounts", 1000, "Number of EOA accounts to create")
-	contracts      = flag.Int("contracts", 100, "Number of contracts to create")
-	maxSlots       = flag.Int("max-slots", 10000, "Maximum storage slots per contract")
-	minSlots       = flag.Int("min-slots", 1, "Minimum storage slots per contract")
-	distribution   = flag.String("distribution", "power-law", "Storage distribution: 'power-law', 'uniform', or 'exponential'")
-	seed           = flag.Int64("seed", 0, "Random seed (0 = use current time)")
-	batchSize      = flag.Int("batch-size", 100000, "Database batch size. For --client=reth: per-batch generation size in the streaming Phase 4 (each batch is generated, written to MDBX, RLP-keyed by AddrHash into a temp Pebble sorter, then dropped — Phase 4 RAM stays bounded by one batch + Pebble's 64 MiB buffer regardless of total N).")
-	workers        = flag.Int("workers", 0, "Number of parallel workers (0 = NumCPU)")
-	codeSize       = flag.Int("code-size", 1024, "Average contract code size in bytes")
-	verbose        = flag.Bool("verbose", false, "Verbose output")
-	benchmark      = flag.Bool("benchmark", false, "Run in benchmark mode (print detailed stats)")
-	binaryTrie     = flag.Bool("binary-trie", false, "Generate state for binary trie mode (EIP-7864)")
-	commitInterval = flag.Int("commit-interval", 500000, "Binary trie: commit to disk every N trie insertions (default 500K, 0 = all in-memory)")
+	dbPath       = flag.String("db", "", "Path to the database directory (required)")
+	accounts     = flag.Int("accounts", 1000, "Number of EOA accounts to create")
+	contracts    = flag.Int("contracts", 100, "Number of contracts to create")
+	maxSlots     = flag.Int("max-slots", 10000, "Maximum storage slots per contract")
+	minSlots     = flag.Int("min-slots", 1, "Minimum storage slots per contract")
+	distribution = flag.String("distribution", "power-law", "Storage distribution: 'power-law', 'uniform', or 'exponential'")
+	seed         = flag.Int64("seed", 1, "Random seed (deterministic; default 1). Pass --seed=0 to use the current wall-clock time (NON-reproducible).")
+	batchSize    = flag.Int("batch-size", 100000, "Database batch size. For --client=reth: per-batch generation size in the streaming Phase 4 (each batch is generated, written to MDBX, RLP-keyed by AddrHash into a temp Pebble sorter, then dropped — Phase 4 RAM stays bounded by one batch + Pebble's 64 MiB buffer regardless of total N).")
+	codeSize     = flag.Int("code-size", 1024, "Average contract code size in bytes")
+	verbose      = flag.Bool("verbose", false, "Verbose output")
+	benchmark    = flag.Bool("benchmark", false, "Run in benchmark mode (print detailed stats)")
+	binaryTrie   = flag.Bool("binary-trie", false, "Generate state for binary trie mode (EIP-7864)")
 
 	// Target size
-	targetSize = flag.String("target-size", "", "Target total DB size on disk (e.g. '5GB', '500MB'). Stops generating when estimated size is reached.")
+	targetSize = flag.String("target-size", "", "Target total DB size on disk (e.g. '5GB', '500MB'). Stop condition only — set --accounts/--contracts/--min-slots/--max-slots explicitly. Honored by geth and besu; ignored by nethermind; rejected by reth.")
 
 	// Genesis integration
 	genesisPath    = flag.String("genesis", "", "Path to genesis.json file (optional)")
@@ -62,8 +60,7 @@ var (
 	chainID        = flag.Int64("chain-id", 0, "Override genesis chainId (0 = use value from genesis.json)")
 
 	// Binary trie group depth
-	groupDepth      = flag.Int("group-depth", 8, "Binary trie group depth (1-8, default 8). Controls serialization unit size.")
-	pebbleBlockSize = flag.Int("pebble-block-size", 4096, "PebbleDB SSTable block size in bytes (default 4096)")
+	groupDepth = flag.Int("group-depth", 8, "Binary trie group depth (1-8, default 8). Controls serialization unit size.")
 
 	// Stats server
 	statsPort = flag.Int("stats-port", 0, "Port for live stats HTTP server (0 = disabled)")
@@ -80,10 +77,6 @@ func main() {
 		fmt.Fprintln(os.Stderr, "Error: -db flag is required")
 		flag.Usage()
 		os.Exit(1)
-	}
-
-	if *workers == 0 {
-		*workers = runtime.NumCPU()
 	}
 
 	if *seed == 0 {
@@ -103,8 +96,8 @@ func main() {
 	}
 	if *client == "nethermind" {
 		// Nethermind doesn't implement EIP-7864 (binary trie) and the
-		// commit-interval / group-depth / pebble-block-size flags are all
-		// geth/Pebble-specific. Reject up front.
+		// commit-interval / group-depth flags are geth/Pebble-specific.
+		// Reject up front.
 		if *binaryTrie {
 			log.Fatalf("--binary-trie is not supported with --client=nethermind (Nethermind does not implement EIP-7864)")
 		}
@@ -172,116 +165,13 @@ func main() {
 		defer statsServer.Stop()
 	}
 
-	// When --target-size is set, auto-scale ALL parameters holistically
-	// using a 70/20/10 entry ratio (storage / accounts / code).
-	// Two independent inputs:
-	//   - 70/20/10 ratio: macro-level split of entry types
-	//   - min/max-slots + distribution: micro-level per-contract shape
-	// Contracts is the derived "solver" variable that reconciles both.
-	// Explicit flags always override auto-computed values.
-	if parsedTargetSize > 0 {
-		// bytesPerEntry is used only by auto-scaling to shape
-		// --accounts/--contracts/--slots defaults; the actual stop
-		// condition is driven by the Phase 1/2 SizeTracker or dirSize check,
-		// so this constant does not need to be exact — 130 matches the
-		// observed GB-scale bintrie density (22.4M entries → 2.9 GB).
-		const bytesPerEntry uint64 = 130
-		totalEntries := parsedTargetSize / bytesPerEntry
-		chunksPerContract := uint64(((*codeSize) + 30) / 31)
-
-		// --- Auto-scale accounts (20% of entries) ---
-		if !isFlagSet("accounts") {
-			autoAccounts := int(totalEntries * 20 / 100)
-			if autoAccounts > *accounts {
-				*accounts = autoAccounts
-			}
-		}
-
-		// --- Compute contracts as solver variable ---
-		// Contracts must satisfy two constraints:
-		//   1. Code budget:    contracts × chunksPerContract ≈ 10% of entries
-		//   2. Storage budget: contracts × avgSlots ≈ 70% of entries
-		// Take the larger to satisfy both; then adjust minSlots if needed.
-		storageEntries := totalEntries * 70 / 100
-
-		// Compute avgSlots from current min/max-slots and distribution.
-		// Power-law (alpha=1.5) mean ≈ 3×min; uniform mean = (min+max)/2.
-		avgSlots := uint64(*minSlots) * 3 // power-law default
-		if isFlagSet("distribution") {
-			switch *distribution {
-			case "uniform":
-				avgSlots = uint64(*minSlots+*maxSlots) / 2
-			case "exponential":
-				avgSlots = uint64(*maxSlots) / 4
-			}
-		}
-		if avgSlots == 0 {
-			avgSlots = 1
-		}
-
-		contractsFromCode := totalEntries * 10 / 100 / max(chunksPerContract, 1)
-		contractsFromStorage := storageEntries / avgSlots
-
-		userContracts := int(max(contractsFromCode, contractsFromStorage))
-		if userContracts < 100 {
-			userContracts = 100
-		}
-
-		// If user explicitly set --contracts, respect it but warn if dangerous.
-		if isFlagSet("contracts") {
-			userContracts = *contracts
-			if !isFlagSet("min-slots") {
-				autoMin := int(storageEntries / uint64(userContracts) / 3)
-				if autoMin > 500_000 {
-					log.Printf("WARNING: %d contracts with %s target → ~%dM min-slots/contract (~%.1fGB RAM each).",
-						userContracts, *targetSize, autoMin/1_000_000,
-						float64(autoMin)*64/1e9)
-					log.Printf("  Consider: --contracts %d or let auto-scaling choose.",
-						max(int(storageEntries/500_000/3), 1000))
-				}
-			}
-		}
-
-		// --- Auto-scale min-slots from storage budget ---
-		if !isFlagSet("min-slots") {
-			actualAvgSlots := storageEntries / uint64(userContracts)
-			autoMin := int(actualAvgSlots / 3) // power-law mean ≈ 3×min
-			if isFlagSet("distribution") {
-				switch *distribution {
-				case "uniform":
-					autoMin = int(actualAvgSlots)
-				case "exponential":
-					autoMin = int(actualAvgSlots / 4)
-				}
-			}
-			if autoMin > *minSlots {
-				*minSlots = autoMin
-			}
-		}
-
-		// --- Auto-scale max-slots ---
-		if !isFlagSet("max-slots") && *maxSlots < *minSlots*10 {
-			*maxSlots = *minSlots * 10
-		}
-
-		// Log computed parameters.
-		log.Printf("Auto-scaled for %s target (70/20/10 ratio):", *targetSize)
-		log.Printf("  accounts:     %d", *accounts)
-		log.Printf("  contracts:    %d (soft cap, stops earlier at target)", userContracts)
-		log.Printf("  min-slots:    %d", *minSlots)
-		log.Printf("  max-slots:    %d", *maxSlots)
-		log.Printf("  code-size:    %d", *codeSize)
-		log.Printf("  distribution: %s", *distribution)
-
-		// Phase 1 safety cap: the SizeTracker / dirSize check is the
-		// real stop condition, but a generous finite cap protects against
-		// the stop check misbehaving (e.g. Pebble silently not growing
-		// the mainDB). autoScaleEstimate × 5 gives plenty of headroom for
-		// workloads where compression or overhead happens to push the
-		// actual stop point later than the estimate; if the cap is ever
-		// hit in practice, a warning at end-of-generation flags it.
-		*contracts = userContracts * 5
-	}
+	// --target-size is a stop condition, not an auto-scaler. The previous
+	// auto-scaling block (which silently rewrote --accounts/--contracts/
+	// --min-slots/--max-slots and multiplied --contracts by 5) was removed;
+	// users now set per-entity flags explicitly. Geth honours the stop in
+	// generator.SizeTracker / dirSize; besu honours it in Phase 1's
+	// raw-byte cap; nethermind currently no-ops; reth rejects the flag at
+	// parse time.
 
 	config := generator.Config{
 		DBPath:          *dbPath,
@@ -292,17 +182,16 @@ func main() {
 		Distribution:    generator.ParseDistribution(*distribution),
 		Seed:            *seed,
 		BatchSize:       *batchSize,
-		Workers:         *workers,
+		Workers:         runtime.NumCPU(),
 		CodeSize:        *codeSize,
 		Verbose:         *verbose,
 		TrieMode:        trieMode,
-		CommitInterval:  *commitInterval,
+		CommitInterval:  500_000,
 		WriteTrieNodes:  true, // Always write trie nodes — DB is unusable without them
 		InjectAddresses: injectAddrs,
 		TargetSize:      parsedTargetSize,
 		LiveStats:       liveStats,
 		GroupDepth:      *groupDepth,
-		PebbleBlockSize: *pebbleBlockSize,
 	}
 
 	// Load genesis if provided
@@ -334,34 +223,17 @@ func main() {
 		log.Printf("Configuration:")
 		log.Printf("  Database:     %s", config.DBPath)
 		log.Printf("  Accounts:     %d", config.NumAccounts)
-		if parsedTargetSize > 0 {
-			log.Printf("  Contracts:    %d (Phase 1 safety cap, target-size stops earlier)", config.NumContracts)
-		} else {
-			log.Printf("  Contracts:    %d", config.NumContracts)
-		}
-		if parsedTargetSize > 0 && !isFlagSet("max-slots") {
-			log.Printf("  Max Slots:    %d (auto-scaled for target size)", config.MaxSlots)
-		} else {
-			log.Printf("  Max Slots:    %d", config.MaxSlots)
-		}
-		if parsedTargetSize > 0 && !isFlagSet("min-slots") {
-			log.Printf("  Min Slots:    %d (auto-scaled for target size)", config.MinSlots)
-		} else {
-			log.Printf("  Min Slots:    %d", config.MinSlots)
-		}
+		log.Printf("  Contracts:    %d", config.NumContracts)
+		log.Printf("  Max Slots:    %d", config.MaxSlots)
+		log.Printf("  Min Slots:    %d", config.MinSlots)
 		log.Printf("  Distribution: %s", *distribution)
 		log.Printf("  Seed:         %d", config.Seed)
 		log.Printf("  Batch Size:   %d", config.BatchSize)
-		log.Printf("  Workers:      %d", config.Workers)
 		log.Printf("  Code Size:    %d bytes", config.CodeSize)
 		log.Printf("  Trie Mode:    %s", config.TrieMode)
-		if config.CommitInterval > 0 {
-			log.Printf("  Commit Interval: %d trie insertions", config.CommitInterval)
-		}
 		if config.GroupDepth > 0 {
 			log.Printf("  Group Depth:     %d", config.GroupDepth)
 		}
-		log.Printf("  Pebble Block:    %d bytes", config.PebbleBlockSize)
 		if config.TargetSize > 0 {
 			log.Printf("  Target Size:  %s", formatBytes(config.TargetSize))
 		}
@@ -610,17 +482,6 @@ func parseSize(s string) (uint64, error) {
 		return 0, fmt.Errorf("invalid size format %q (use e.g. '5GB', '500MB')", s)
 	}
 	return val, nil
-}
-
-// isFlagSet returns true if the named flag was explicitly set on the command line.
-func isFlagSet(name string) bool {
-	found := false
-	flag.Visit(func(f *flag.Flag) {
-		if f.Name == name {
-			found = true
-		}
-	})
-	return found
 }
 
 // dirSize returns the total size of all files in a directory tree.

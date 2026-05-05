@@ -180,7 +180,7 @@ func runImpl(ctx context.Context, cfg generator.Config, opts Options) (*generato
 
 	return &generator.Stats{
 		StateRoot:        header.Root,
-		AccountsCreated:  cfg.NumAccounts,
+		AccountsCreated:  cfg.NumAccounts + len(cfg.InjectAddresses),
 		ContractsCreated: cfg.NumContracts,
 	}, nil
 }

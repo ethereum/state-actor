@@ -119,9 +119,6 @@ type Config struct {
 	// GroupDepth is the binary trie group depth (1-8, default 8).
 	// Controls how many trie levels are serialized per DB entry.
 	GroupDepth int
-
-	// PebbleBlockSize is the PebbleDB SSTable block size in bytes (default 4096).
-	PebbleBlockSize int
 }
 
 // Stats holds statistics about the generation process.

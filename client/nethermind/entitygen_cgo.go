@@ -14,6 +14,7 @@ import (
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/ethdb/pebble"
 	gethrlp "github.com/ethereum/go-ethereum/rlp"
+	"github.com/holiman/uint256"
 	"github.com/linxGnu/grocksdb"
 
 	"github.com/nerolation/state-actor/generator"
@@ -111,6 +112,37 @@ func writeSyntheticAccounts(
 		}
 		if err := batch.Put(ah[:], data); err != nil {
 			return common.Hash{}, fmt.Errorf("queue genesis account: %w", err)
+		}
+		if err := flushBatchIfFull(); err != nil {
+			return common.Hash{}, err
+		}
+	}
+
+	// Inject explicitly-requested addresses (e.g. Anvil dev account) as EOAs
+	// with 999_999_999 ETH, nonce=0, no code/storage. Mirrors besu's pattern
+	// at client/besu/state_writer_cgo.go and reth's at client/reth/run_cgo.go.
+	// Without this, a user passing --client=nethermind --inject-accounts=0xf39F…
+	// produced a chain without the requested funded address.
+	injectBalance := new(uint256.Int).Mul(uint256.NewInt(999_999_999), uint256.NewInt(1_000_000_000_000_000_000))
+	seenInjected := make(map[common.Address]struct{}, len(cfg.InjectAddresses))
+	for _, addr := range cfg.InjectAddresses {
+		if _, dup := seenInjected[addr]; dup {
+			continue
+		}
+		seenInjected[addr] = struct{}{}
+		acc := &types.StateAccount{
+			Nonce:    0,
+			Balance:  injectBalance,
+			Root:     types.EmptyRootHash,
+			CodeHash: types.EmptyCodeHash.Bytes(),
+		}
+		ah := crypto.Keccak256Hash(addr[:])
+		data, err := gethrlp.EncodeToBytes(acc)
+		if err != nil {
+			return common.Hash{}, fmt.Errorf("encode injected account %s: %w", addr.Hex(), err)
+		}
+		if err := batch.Put(ah[:], data); err != nil {
+			return common.Hash{}, fmt.Errorf("queue injected account: %w", err)
 		}
 		if err := flushBatchIfFull(); err != nil {
 			return common.Hash{}, err
