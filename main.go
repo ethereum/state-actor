@@ -416,38 +416,58 @@ func main() {
 	var stats *generator.Stats
 	switch *client {
 	case "geth":
-		gen, err := generator.New(config)
-		if err != nil {
-			log.Fatalf("Failed to create generator: %v", err)
-		}
-		defer gen.Close()
-
-		stats, err = gen.Generate()
-		if err != nil {
-			log.Fatalf("Failed to generate state: %v", err)
-		}
-
-		// Update live stats with final state
-		if liveStats != nil {
-			liveStats.AddBytes(int64(stats.AccountBytes), int64(stats.StorageBytes), int64(stats.CodeBytes))
-			liveStats.SetStateRoot(stats.StateRoot.Hex())
-		}
-
-		// Write genesis block if genesis was provided (geth-specific).
-		if genesisConfig != nil {
-			if *verbose {
-				log.Printf("Writing genesis block with state root: %s", stats.StateRoot.Hex())
-			}
-
-			ancientDir := filepath.Join(config.DBPath, "ancient")
-			block, err := geth.WriteGenesisBlock(gen.DB(), genesisConfig, stats.StateRoot, config.TrieMode == generator.TrieModeBinary, ancientDir)
+		// MPT mode goes through the new direct-Pebble pipeline in
+		// client/geth/ (entitygen → temp Pebble → keccak-sorted writes
+		// to production). Binary-trie mode still routes through the
+		// legacy generator.New().Generate() path because
+		// generator/binary_stack_trie.go is intentionally untouched per
+		// the design doc.
+		if config.TrieMode == generator.TrieModeMPT {
+			geth.GenesisFilePath = *genesisPath
+			geth.ChainIDOverride = *chainID
+			var err error
+			stats, err = geth.Populate(context.Background(), config, geth.Options{})
 			if err != nil {
-				log.Fatalf("Failed to write genesis block: %v", err)
+				log.Fatalf("Failed to populate Geth DB: %v", err)
+			}
+			if liveStats != nil && stats != nil {
+				liveStats.AddBytes(int64(stats.AccountBytes), int64(stats.StorageBytes), int64(stats.CodeBytes))
+				liveStats.SetStateRoot(stats.StateRoot.Hex())
+			}
+		} else {
+			gen, err := generator.New(config)
+			if err != nil {
+				log.Fatalf("Failed to create generator: %v", err)
+			}
+			defer gen.Close()
+
+			stats, err = gen.Generate()
+			if err != nil {
+				log.Fatalf("Failed to generate state: %v", err)
 			}
 
-			if *verbose {
-				log.Printf("Genesis block hash: %s", block.Hash().Hex())
-				log.Printf("Genesis block number: %d", block.NumberU64())
+			// Update live stats with final state
+			if liveStats != nil {
+				liveStats.AddBytes(int64(stats.AccountBytes), int64(stats.StorageBytes), int64(stats.CodeBytes))
+				liveStats.SetStateRoot(stats.StateRoot.Hex())
+			}
+
+			// Write genesis block if genesis was provided (binary-trie path).
+			if genesisConfig != nil {
+				if *verbose {
+					log.Printf("Writing genesis block with state root: %s", stats.StateRoot.Hex())
+				}
+
+				ancientDir := filepath.Join(config.DBPath, "ancient")
+				block, err := geth.WriteGenesisBlock(gen.DB(), genesisConfig, stats.StateRoot, true, ancientDir)
+				if err != nil {
+					log.Fatalf("Failed to write genesis block: %v", err)
+				}
+
+				if *verbose {
+					log.Printf("Genesis block hash: %s", block.Hash().Hex())
+					log.Printf("Genesis block number: %d", block.NumberU64())
+				}
 			}
 		}
 
