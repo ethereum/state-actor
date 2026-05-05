@@ -98,6 +98,32 @@ func writeStateAndCollectRoot(
 		return nil
 	}
 
+	// Phase 1 raw-byte cap for --target-size. Tracks 32-byte addrHash
+	// key + blob len; Phase 2 then writes to production Pebble in
+	// keccak order, where on-disk size is roughly proportional to the
+	// raw entity bytes plus per-account storage trie node overhead.
+	//
+	// Mirrors the besu writer's approach (state_writer_cgo.go's
+	// totalRawBytes / targetReached pair). Over-estimates the final
+	// on-disk size — by design — so we land at-or-under target rather
+	// than past it. The 20% TestTargetSizeStopsAccurately tolerance
+	// accommodates the difference between raw entity bytes and the
+	// final compressed Pebble DB size.
+	totalRawBytes := uint64(0)
+	targetReached := false
+	checkTarget := func(blobLen int) bool {
+		totalRawBytes += uint64(32 + blobLen)
+		if cfg.TargetSize > 0 && totalRawBytes >= cfg.TargetSize {
+			if cfg.Verbose {
+				log.Printf("geth MPT Phase 1: raw bytes %d MiB >= target %d MiB — stopping entity emission early",
+					totalRawBytes>>20, cfg.TargetSize>>20)
+			}
+			targetReached = true
+			return true
+		}
+		return false
+	}
+
 	// genesisAddrs prevents synthetic-RNG addresses from colliding with
 	// pre-allocated genesis or inject addresses. Random-random
 	// collisions across 2^160 addresses are not modelled — astronomical.
@@ -110,8 +136,11 @@ func writeStateAndCollectRoot(
 		}
 		pendingBytes += 32 + len(blob)
 		if pendingBytes >= phase1FlushBytes {
-			return flush()
+			if err := flush(); err != nil {
+				return err
+			}
 		}
+		checkTarget(len(blob))
 		return nil
 	}
 
@@ -170,7 +199,7 @@ func writeStateAndCollectRoot(
 	if cfg.LiveStats != nil {
 		cfg.LiveStats.SetPhase("accounts")
 	}
-	for i := 0; i < cfg.NumAccounts; i++ {
+	for i := 0; i < cfg.NumAccounts && !targetReached; i++ {
 		if err := ctx.Err(); err != nil {
 			return common.Hash{}, nil, err
 		}
@@ -200,7 +229,7 @@ func writeStateAndCollectRoot(
 	if codeSize <= 0 {
 		codeSize = 1024
 	}
-	for i := 0; i < cfg.NumContracts; i++ {
+	for i := 0; i < cfg.NumContracts && !targetReached; i++ {
 		if err := ctx.Err(); err != nil {
 			return common.Hash{}, nil, err
 		}

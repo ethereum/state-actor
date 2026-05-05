@@ -162,6 +162,42 @@ func TestPopulateCanonicalEntitygenRoot(t *testing.T) {
 	}
 }
 
+// TestPopulateTargetSizeStopsEarly verifies the Phase-1 raw-byte cap
+// triggers an early stop when --target-size is set. Sets a small target
+// (1 MiB) below the natural footprint of the configured entity count
+// and asserts ContractsCreated < NumContracts.
+func TestPopulateTargetSizeStopsEarly(t *testing.T) {
+	dir := t.TempDir()
+	const target uint64 = 1 << 20 // 1 MiB raw entity bytes
+	cfg := generator.Config{
+		DBPath:         filepath.Join(dir, "geth", "chaindata"),
+		NumAccounts:    100,
+		NumContracts:   10_000, // far more than 1 MiB of entity bytes
+		MaxSlots:       50,
+		MinSlots:       10,
+		Distribution:   generator.PowerLaw,
+		Seed:           42,
+		BatchSize:      1000,
+		Workers:        1,
+		CodeSize:       128,
+		TrieMode:       generator.TrieModeMPT,
+		WriteTrieNodes: true,
+		TargetSize:     target,
+	}
+
+	stats, err := Populate(context.Background(), cfg, Options{})
+	if err != nil {
+		t.Fatalf("Populate: %v", err)
+	}
+	if stats.ContractsCreated >= cfg.NumContracts {
+		t.Errorf("expected target-size to trigger early stop, but ContractsCreated=%d == NumContracts=%d",
+			stats.ContractsCreated, cfg.NumContracts)
+	}
+	if stats.StateRoot == (common.Hash{}) {
+		t.Fatal("state root unexpectedly zero after target-size stop")
+	}
+}
+
 // TestPopulateGenesisAlloc covers the genesis-alloc Phase-1 branch:
 // pre-allocated EOA + contract, both surface in the resulting snapshot.
 // Mainly guards that the encodeEntityContract path with code+slots
