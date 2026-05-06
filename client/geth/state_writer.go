@@ -7,6 +7,7 @@ import (
 	"log"
 	mrand "math/rand"
 	"os"
+	"path/filepath"
 	"runtime"
 	"sort"
 	"sync"
@@ -98,25 +99,26 @@ func writeStateAndCollectRoot(
 		return nil
 	}
 
-	// Phase 1 raw-byte cap for --target-size. Tracks 32-byte addrHash
-	// key + blob len; Phase 2 then writes to production Pebble in
-	// keccak order, where on-disk size is roughly proportional to the
-	// raw entity bytes plus per-account storage trie node overhead.
-	//
-	// Mirrors the besu writer's approach (state_writer_cgo.go's
-	// totalRawBytes / targetReached pair). Over-estimates the final
-	// on-disk size — by design — so we land at-or-under target rather
-	// than past it. The 20% TestTargetSizeStopsAccurately tolerance
-	// accommodates the difference between raw entity bytes and the
-	// final compressed Pebble DB size.
+	// Phase 1 raw-byte safety cap for --target-size. Phase 1 doesn't
+	// write to the production DB (all prod writes happen in Phase 2 in
+	// keccak order), so dirSize sampling here would be misleading. As
+	// a coarse upper bound we stop entity emission once raw entity
+	// bytes reach 5× cfg.TargetSize — that's enough headroom to let
+	// Phase 2's accurate dirSize stop trigger before we waste work on
+	// entities that will never get written to the production DB. The
+	// 5× factor is empirical: MPT trie node overhead + storage tries
+	// can push final DB size to ~3-4× raw entity bytes at high storage
+	// density, so 5× ensures Phase 2 has enough material to hit the
+	// target dirSize.
 	totalRawBytes := uint64(0)
 	targetReached := false
+	const phase1Phase1RawSafetyMultiplier = 5
 	checkTarget := func(blobLen int) bool {
 		totalRawBytes += uint64(32 + blobLen)
-		if cfg.TargetSize > 0 && totalRawBytes >= cfg.TargetSize {
+		if cfg.TargetSize > 0 && totalRawBytes >= cfg.TargetSize*phase1Phase1RawSafetyMultiplier {
 			if cfg.Verbose {
-				log.Printf("geth MPT Phase 1: raw bytes %d MiB >= target %d MiB — stopping entity emission early",
-					totalRawBytes>>20, cfg.TargetSize>>20)
+				log.Printf("geth MPT Phase 1 safety cap: raw bytes %d MiB >= 5× target %d MiB — stopping entity emission",
+					totalRawBytes>>20, (cfg.TargetSize*phase1Phase1RawSafetyMultiplier)>>20)
 			}
 			targetReached = true
 			return true
@@ -386,6 +388,26 @@ func writeStateAndCollectRoot(
 		if cfg.LiveStats != nil && count%1024 == 0 {
 			cfg.LiveStats.SyncBytes(w.Stats())
 		}
+
+		// Phase 2 target-size precise stop: every N entities, flush the
+		// writer's batch so all queued bytes are on disk, then sample
+		// the chaindata directory size. When it reaches cfg.TargetSize
+		// we stop iteration with a partial state root that reflects only
+		// the entities written so far. The 1024-entity cadence balances
+		// sample frequency vs. flush+walkfs overhead — at ~600 B/entity
+		// a 1024-batch is ~600 KiB, well below typical target tolerances.
+		if cfg.TargetSize > 0 && count%1024 == 0 {
+			if err := w.FlushBatch(); err != nil {
+				return common.Hash{}, nil, fmt.Errorf("phase2 target-size flush: %w", err)
+			}
+			if size, err := dirSize(cfg.DBPath); err == nil && size >= cfg.TargetSize {
+				if cfg.Verbose {
+					log.Printf("geth MPT Phase 2: dirSize %d MiB >= target %d MiB — stopping iteration",
+						size>>20, cfg.TargetSize>>20)
+				}
+				break
+			}
+		}
 	}
 
 	stateRoot := accountTrie.Hash()
@@ -407,6 +429,29 @@ func writeStateAndCollectRoot(
 	}
 
 	return stateRoot, stats, nil
+}
+
+// dirSize returns the total bytes used by all regular files under path.
+// Used by Phase 2's --target-size sampling: we read the on-disk size of
+// the production geth chaindata directory after each batch flush and
+// stop iteration once it reaches the requested target. Returns 0 + nil
+// if path doesn't exist yet (Pebble may not have created files in the
+// first ~ms of operation).
+func dirSize(path string) (uint64, error) {
+	var total uint64
+	err := filepath.Walk(path, func(_ string, info os.FileInfo, err error) error {
+		if err != nil {
+			if os.IsNotExist(err) {
+				return nil
+			}
+			return err
+		}
+		if !info.IsDir() {
+			total += uint64(info.Size())
+		}
+		return nil
+	})
+	return total, err
 }
 
 // sortedSlot pairs a slot's keccak hash with its RLP-encoded value, used

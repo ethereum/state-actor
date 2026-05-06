@@ -162,19 +162,30 @@ func TestPopulateCanonicalEntitygenRoot(t *testing.T) {
 	}
 }
 
-// TestPopulateTargetSizeStopsEarly verifies the Phase-1 raw-byte cap
-// triggers an early stop when --target-size is set. Sets a small target
-// (1 MiB) below the natural footprint of the configured entity count
-// and asserts ContractsCreated < NumContracts.
-func TestPopulateTargetSizeStopsEarly(t *testing.T) {
+// TestPopulateTargetSizeStopsAccurately verifies Phase 2's dirSize
+// sampling stops production-DB writes when cfg.TargetSize is reached,
+// landing the on-disk size within a reasonable tolerance of the target.
+//
+// Mirrors TestTargetSizeStopsAccurately_MPT in generator/, but runs
+// against client/geth.Populate directly so it's independent of the
+// generator MPT registration shim.
+func TestPopulateTargetSizeStopsAccurately(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping target-size accuracy test in -short mode")
+	}
 	dir := t.TempDir()
-	const target uint64 = 1 << 20 // 1 MiB raw entity bytes
+	// 200 MiB is small enough to run quickly but large enough to
+	// amortise Pebble's fixed overhead (WAL + MANIFEST + SST metadata)
+	// to a small fraction of the target — keeps the 20% tolerance
+	// achievable. Smaller targets (e.g. 50 MiB) would need a
+	// proportionally tighter sample cadence to stay in band.
+	const target uint64 = 200 * 1024 * 1024 // 200 MiB
 	cfg := generator.Config{
 		DBPath:         filepath.Join(dir, "geth", "chaindata"),
 		NumAccounts:    100,
-		NumContracts:   10_000, // far more than 1 MiB of entity bytes
+		NumContracts:   1_000_000, // generous safety upper bound
 		MaxSlots:       50,
-		MinSlots:       10,
+		MinSlots:       5,
 		Distribution:   generator.PowerLaw,
 		Seed:           42,
 		BatchSize:      1000,
@@ -189,12 +200,25 @@ func TestPopulateTargetSizeStopsEarly(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Populate: %v", err)
 	}
-	if stats.ContractsCreated >= cfg.NumContracts {
-		t.Errorf("expected target-size to trigger early stop, but ContractsCreated=%d == NumContracts=%d",
-			stats.ContractsCreated, cfg.NumContracts)
-	}
 	if stats.StateRoot == (common.Hash{}) {
 		t.Fatal("state root unexpectedly zero after target-size stop")
+	}
+
+	actual, err := dirSize(cfg.DBPath)
+	if err != nil {
+		t.Fatalf("dirSize: %v", err)
+	}
+	const tolerance = 0.20
+	diff := float64(actual) - float64(target)
+	if diff < 0 {
+		diff = -diff
+	}
+	pct := diff / float64(target)
+	t.Logf("DB size: actual=%d target=%d diff=%.1f%% tolerance=%.1f%%",
+		actual, target, pct*100, tolerance*100)
+	if pct > tolerance {
+		t.Errorf("DB size %.1f%% off target (%d vs %d), tolerance %.1f%%",
+			pct*100, actual, target, tolerance*100)
 	}
 }
 

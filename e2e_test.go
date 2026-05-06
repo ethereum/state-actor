@@ -116,16 +116,26 @@ func TestEndToEndWithGenesis(t *testing.T) {
 		t.Fatalf("Failed to generate state: %v", err)
 	}
 
-	// Write genesis block
-	ancientDir := filepath.Join(config.DBPath, "ancient")
-	block, err := geth.WriteGenesisBlock(stateGen.DB(), gen, stats.StateRoot, false, ancientDir)
+	// MPT mode delegates the writer lifecycle to client/geth.Populate,
+	// so stateGen.Close() is a no-op and stateGen.DB() is nil. Close
+	// the generator (cleanup), then reopen the DB to write the genesis
+	// block. Mirrors how main.go would set client/geth.GenesisFilePath
+	// and let Populate write the block itself; this test path predates
+	// that and threads the block write explicitly to keep the e2e
+	// flow visible.
+	stateGen.Close()
+
+	w, err := geth.NewWriter(config.DBPath, config.BatchSize, config.Workers)
 	if err != nil {
-		stateGen.Close()
+		t.Fatalf("Reopen geth writer: %v", err)
+	}
+	ancientDir := filepath.Join(config.DBPath, "ancient")
+	block, err := geth.WriteGenesisBlock(w.DB(), gen, stats.StateRoot, false, ancientDir)
+	if err != nil {
+		w.Close()
 		t.Fatalf("Failed to write genesis block: %v", err)
 	}
-
-	// Close generator (flushes database)
-	stateGen.Close()
+	w.Close()
 
 	t.Logf("Generated state:")
 	t.Logf("  Accounts: %d", stats.AccountsCreated)
