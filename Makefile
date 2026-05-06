@@ -192,7 +192,7 @@ smoke-besu-spamoor: docker-besu
 	  -p 127.0.0.1:8545:8545 \
 	  hyperledger/besu:25.11.0 \
 	  --data-path=/data \
-	  --genesis-file=/test/genesis-funded.json \
+	  --genesis-file=/data/besu-chainspec.json \
 	  --network-id=1337 \
 	  --rpc-http-enabled --rpc-http-port=8545 --rpc-http-host=0.0.0.0 \
 	  --rpc-http-api=ETH,NET,WEB3,ADMIN,MINER \

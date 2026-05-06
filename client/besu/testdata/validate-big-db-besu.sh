@@ -46,7 +46,7 @@ docker run --rm -d \
   -p 127.0.0.1:8545:8545 \
   hyperledger/besu:25.11.0 \
   --data-path=/data \
-  --genesis-file=/test/genesis-funded.json \
+  --genesis-file=/data/besu-chainspec.json \
   --network-id=1337 \
   --rpc-http-enabled \
   --rpc-http-host=0.0.0.0 \
@@ -108,7 +108,7 @@ echo "[4/6] Dev wallet balance ($COINBASE) ..."
 bal=$(curl -s -X POST -H 'Content-Type: application/json' \
   --data "{\"jsonrpc\":\"2.0\",\"method\":\"eth_getBalance\",\"params\":[\"$COINBASE\",\"latest\"],\"id\":1}" \
   "$RPC" | jq -r .result)
-echo "  balance=$bal (expected 0xd3c21bcecceda1000000 = 1M ETH)"
+echo "  balance=$bal (expected ~999999999 ETH from --inject-accounts)"
 
 echo "[5/6] Send 100 txs ..."
 RPC="$RPC" COINBASE="$COINBASE" "$TESTDATA/send-100-txs-besu.sh" 2>&1 | tail -8
