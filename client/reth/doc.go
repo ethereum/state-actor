@@ -85,7 +85,7 @@
 //   - state_root.go / storage_root.go: HashBuilder-driven state-root
 //     computation (sliced + streaming variants)
 //   - temp_sort_cgo.go: Pebble-backed temp sorter for streaming Phase 4
-//   - chainspec.go: chainspec JSON + Genesis loading
+//   - chainspec.go: chainspec JSON writer (built from cfg.Genesis)
 //   - header.go: genesis header construction
-//   - options.go: Options struct + GenesisFilePath/ChainIDOverride globals
+//   - options.go: Options struct (reserved); buildInjectedAccount helper
 package reth

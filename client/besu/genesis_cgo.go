@@ -10,6 +10,7 @@ import (
 	"github.com/ethereum/go-ethereum/core/types"
 	gethrlp "github.com/ethereum/go-ethereum/rlp"
 
+	"github.com/nerolation/state-actor/genesis"
 	"github.com/nerolation/state-actor/internal/besu/keys"
 )
 
@@ -75,24 +76,21 @@ func (b *besuDB) writeGenesisBlock(header *types.Header, totalDifficulty *big.In
 	return nil
 }
 
-// supportedFork returns nil if the genesis JSON's config block targets a
-// fork through Shanghai. Cancun+ configs (cancunTime / pragueTime /
-// shanghaiTime > 0 with subsequent forks) are rejected with a clear error so
-// users don't get a silent "wrong genesis hash" boot failure. Cancun+ support
-// is a possible future addition.
-func supportedFork(g *genesisJSONConfig) error {
-	if g == nil {
+// supportedForkChainConfig returns nil if the chain config targets a fork
+// through Shanghai. Cancun+ configs (cancunTime / pragueTime > 0) are
+// rejected with a clear error so users don't get a silent "wrong genesis
+// hash" boot failure. Cancun+ support is a possible future addition that
+// requires plumbing ParentBeaconRoot/ExcessBlobGas/BlobGasUsed/RequestsHash
+// through buildGenesisHeader.
+func supportedForkChainConfig(g *genesis.Genesis) error {
+	if g == nil || g.Config == nil {
 		return nil
 	}
-	// Shanghai is allowed (we just don't add a withdrawals list to the
-	// genesis body — see writeGenesisBlock). Cancun+ adds blob fields
-	// (excessBlobGas, blobGasUsed, parentBeaconBlockRoot) to the header
-	// that we'd need to plumb through.
-	if g.CancunTime != nil {
-		return fmt.Errorf("besu v1 supports through Shanghai; Cancun config (cancunTime=%d) requires v2 follow-up", *g.CancunTime)
+	if g.Config.CancunTime != nil {
+		return fmt.Errorf("besu v1 supports through Shanghai; Cancun config (cancunTime=%d) requires v2 follow-up", *g.Config.CancunTime)
 	}
-	if g.PragueTime != nil {
-		return fmt.Errorf("besu v1 supports through Shanghai; Prague config (pragueTime=%d) requires v2 follow-up", *g.PragueTime)
+	if g.Config.PragueTime != nil {
+		return fmt.Errorf("besu v1 supports through Shanghai; Prague config (pragueTime=%d) requires v2 follow-up", *g.Config.PragueTime)
 	}
 	return nil
 }
