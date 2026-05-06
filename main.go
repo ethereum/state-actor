@@ -310,19 +310,20 @@ func main() {
 				liveStats.SetStateRoot(stats.StateRoot.Hex())
 			}
 
-		// Write genesis block (geth-specific). Always runs now that the
-		// synthesized config.Genesis is always present.
-		if *verbose {
-			log.Printf("Writing genesis block with state root: %s", stats.StateRoot.Hex())
-		}
-		ancientDir := filepath.Join(config.DBPath, "ancient")
-		block, err := geth.WriteGenesisBlock(gen.DB(), genesisConfig, stats.StateRoot, config.TrieMode == generator.TrieModeBinary, ancientDir)
-		if err != nil {
-			log.Fatalf("Failed to write genesis block: %v", err)
-		}
-		if *verbose {
-			log.Printf("Genesis block hash: %s", block.Hash().Hex())
-			log.Printf("Genesis block number: %d", block.NumberU64())
+			// Write genesis block (binary-trie path only — the MPT
+			// path's geth.Populate writes its own genesis block).
+			if *verbose {
+				log.Printf("Writing genesis block with state root: %s", stats.StateRoot.Hex())
+			}
+			ancientDir := filepath.Join(config.DBPath, "ancient")
+			block, err := geth.WriteGenesisBlock(gen.DB(), genesisConfig, stats.StateRoot, true, ancientDir)
+			if err != nil {
+				log.Fatalf("Failed to write genesis block: %v", err)
+			}
+			if *verbose {
+				log.Printf("Genesis block hash: %s", block.Hash().Hex())
+				log.Printf("Genesis block number: %d", block.NumberU64())
+			}
 		}
 
 	case "nethermind":

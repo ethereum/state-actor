@@ -23,16 +23,9 @@ type Options struct{}
 //     state root.
 //  3. Persist PathDB metadata (StateID, PersistentStateID, SnapshotRoot,
 //     completed-snapshot-generator marker) so geth boots cleanly.
-<<<<<<< feat/cli-chainid-embedding
-//  4. Write the genesis block + chain config from cfg.Genesis so the DB
-//     is fully self-bootable. cfg.Genesis is always non-nil in the
-//     production CLI flow (main.go's BuildSynthetic); tests that omit
-//     it fall through to genesis.OrDefault.
-=======
 //  4. Write the genesis block + chain config from cfg.Genesis (always
 //     non-nil after main.go's BuildSynthetic call) so the DB is
 //     fully self-bootable.
->>>>>>> main
 //  5. Close the writer.
 //
 // Returns the same *generator.Stats shape as the legacy generator.New +
@@ -68,15 +61,9 @@ func Populate(ctx context.Context, cfg generator.Config, opts Options) (*generat
 		return nil, fmt.Errorf("client/geth.Populate: set state root: %w", err)
 	}
 
-<<<<<<< feat/cli-chainid-embedding
-	// Genesis block + chain config. cfg.Genesis is the canonical surface
-	// (main.go's BuildSynthetic always populates it); genesis.OrDefault
-	// gives tests a sensible fallback chainspec without the boilerplate.
-=======
 	// Genesis block + chain config from cfg.Genesis (synthesized by
 	// main.go via genesis.BuildSynthetic; tests can leave it nil and
 	// get the default chainspec).
->>>>>>> main
 	g := genesis.OrDefault(cfg.Genesis)
 	ancientDir := filepath.Join(cfg.DBPath, "ancient")
 	if _, err := WriteGenesisBlock(w.DB(), g, stateRoot, false, ancientDir); err != nil {
