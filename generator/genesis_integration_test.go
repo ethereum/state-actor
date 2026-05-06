@@ -9,6 +9,7 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto"
+	"github.com/ethereum/go-ethereum/ethdb/pebble"
 	"github.com/ethereum/go-ethereum/trie/bintrie"
 	"github.com/holiman/uint256"
 )
@@ -97,8 +98,16 @@ func TestGenesisAccountsIntegration(t *testing.T) {
 		t.Error("State root should not be zero")
 	}
 
-	// Verify genesis accounts are in the database by checking keys
-	db := gen.DB()
+	// Verify genesis accounts are in the database by checking keys.
+	// MPT-mode Generator delegates to the registered MPTGenerator and
+	// closes its writer at the end; gen.DB() is nil. Reopen the DB
+	// independently to inspect snapshot keys.
+	gen.Close()
+	db, err := pebble.New(dbPath, 64, 64, "verify/", true)
+	if err != nil {
+		t.Fatalf("Failed to reopen database: %v", err)
+	}
+	defer db.Close()
 
 	// Check account 1 (EOA)
 	addr1 := common.HexToAddress("0x1111111111111111111111111111111111111111")

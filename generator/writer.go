@@ -103,3 +103,39 @@ func resolveDefaultWriterFactory() (WriterFactory, error) {
 	}
 	return defaultWriterFactory, nil
 }
+
+// MPTGeneratorFunc drives MPT-mode state generation end-to-end: opens its
+// own backing DB, runs the two-phase entitygen → temp Pebble → production
+// pipeline, writes metadata, and returns the result Stats. A client/<name>/
+// package supplies an implementation by calling RegisterDefaultMPTGenerator
+// in init(); generator.Generator.Generate() routes MPT mode to it.
+//
+// This decouples MPT-specific writer logic (which knows about snapshot
+// keys, trie node layouts, PathDB metadata) from the generator package,
+// while keeping the public surface — generator.New(cfg).Generate() — the
+// same.
+type MPTGeneratorFunc func(cfg Config) (*Stats, error)
+
+// defaultMPTGenerator is the MPT pipeline used by Generator.Generate when
+// TrieMode == TrieModeMPT. Set via RegisterDefaultMPTGenerator, typically
+// from a client package's init().
+var defaultMPTGenerator MPTGeneratorFunc
+
+// RegisterDefaultMPTGenerator installs f as the MPT pipeline. Calling
+// twice replaces the previous registration; the last import wins.
+//
+// Production code in package generator must NOT import client/<name>/
+// directly; the registration pattern is how client packages contribute
+// their MPT pipeline without creating an import cycle.
+func RegisterDefaultMPTGenerator(f MPTGeneratorFunc) {
+	defaultMPTGenerator = f
+}
+
+// resolveDefaultMPTGenerator returns the registered MPT pipeline or a
+// clear error pointing at the missing client import.
+func resolveDefaultMPTGenerator() (MPTGeneratorFunc, error) {
+	if defaultMPTGenerator == nil {
+		return nil, fmt.Errorf("no default MPT generator registered: import a client package (e.g. _ \"github.com/nerolation/state-actor/client/geth\")")
+	}
+	return defaultMPTGenerator, nil
+}

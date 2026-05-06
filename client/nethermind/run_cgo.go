@@ -64,9 +64,12 @@ func runImpl(ctx context.Context, cfg generator.Config, opts Options) (*generato
 		return nil, errors.New("--db is required for --client=nethermind")
 	}
 
-	// Deep-branch mode is binary-trie-only and not supported on Nethermind.
-	if cfg.DeepBranch.Enabled() {
-		return nil, errors.New("--client=nethermind: --deep-branch-* flags are MPT-incompatible")
+	// Pull genesis fields from cfg.Genesis. Production callers (main.go)
+	// always set this; tests can leave it nil and get the default chainspec.
+	g := genesis.OrDefault(cfg.Genesis)
+	gasLimit := uint64(g.GasLimit)
+	if gasLimit == 0 {
+		gasLimit = 30_000_000
 	}
 
 	// Pull genesis fields from cfg.Genesis. Production callers (main.go)

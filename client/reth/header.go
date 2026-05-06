@@ -3,7 +3,6 @@ package reth
 import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
-
 	"github.com/nerolation/state-actor/genesis"
 	"github.com/nerolation/state-actor/internal/genesisheader"
 )

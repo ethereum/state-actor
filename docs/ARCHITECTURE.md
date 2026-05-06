@@ -292,7 +292,6 @@ state-actor/
 ├── generator/
 │   ├── config.go              # Configuration types
 │   ├── generator.go           # Core generation logic
-│   ├── deep_branch.go         # Deep-branch phantom key construction
 │   ├── writer.go              # Pluggable Writer interface + factory registration
 │   └── generator_test.go      # Unit tests
 ├── client/
