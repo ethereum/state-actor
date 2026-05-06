@@ -137,6 +137,13 @@ func runImpl(ctx context.Context, cfg generator.Config, opts Options) (*generato
 		return nil, fmt.Errorf("write genesis: %w", err)
 	}
 
+	// Write Parity-style chainspec next to the DB so --chain-id is honoured
+	// at boot (closes the B7 loop). Smoke scripts point Nethermind at this
+	// via the Init config's ChainSpecPath.
+	if _, err := writeChainSpec(cfg.DBPath, g); err != nil {
+		return nil, fmt.Errorf("nethermind: %w", err)
+	}
+
 	if cfg.Verbose {
 		log.Printf("nethermind: genesis hash = %s", hash.Hex())
 		log.Printf("nethermind: state root  = %s", header.Root.Hex())

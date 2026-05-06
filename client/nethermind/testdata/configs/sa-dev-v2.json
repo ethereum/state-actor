@@ -4,7 +4,7 @@
     "KeepDevWalletInMemory": true,
     "DiscoveryEnabled": false,
     "PeerManagerEnabled": false,
-    "ChainSpecPath": "/test/chainspecs/sa-dev.json",
+    "ChainSpecPath": "/data/parity-chainspec.json",
     "BaseDbPath": "/data",
     "LogFileName": "sa-dev.log",
     "MemoryHint": 256000000
