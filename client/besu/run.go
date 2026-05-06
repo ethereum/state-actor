@@ -37,19 +37,3 @@ func Run(ctx context.Context, cfg generator.Config, opts Options) (*generator.St
 	return runImpl(ctx, cfg, opts)
 }
 
-// GenesisFilePath / ChainIDOverride are package-level vars set from main.go
-// before Run is called, mirroring the nethermind pattern. They surface the
-// --genesis and --chain-id CLI flags into the package without threading
-// them through the Config struct.
-//
-// Declared here (no build tag) so both cgo and stub builds see them.
-// The cgo runImpl reads them; the stub runImpl ignores them.
-//
-// ChainIDOverride is warn-and-ignored at runtime: Besu reads chainId from
-// --genesis-file at boot, not from the DB. We accept the flag so users
-// scripting from the geth path don't get a hard rejection, but log a
-// warning so the no-effect-here behavior is visible.
-var (
-	GenesisFilePath string
-	ChainIDOverride int64
-)

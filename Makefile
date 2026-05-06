@@ -93,6 +93,12 @@ ACCOUNTS ?= 1000
 CONTRACTS ?= 100
 SEED ?= 42
 SA_DB ?= /tmp/sa-neth-smoke
+
+# Pre-funded smoke addresses. Mirrors the three accounts that used to come
+# from testdata/genesis-funded.json (deterministic dev keys 1, 2, 3 from
+# eth_sign / spamoor); state-actor now injects them via --inject-accounts
+# instead of consuming an external --genesis JSON.
+SMOKE_INJECT_ADDRS ?= 0x7e5f4552091a69125d5dfcb7b8c2659029395bdf,0x2b5ad5c4795c026514f8317c7a215e218dccd6cf,0x6813eb9362372eef6200f3b1dbc3f819671cba69
 smoke-nethermind: docker-nethermind
 	rm -rf $(SA_DB) && mkdir -p $(SA_DB)
 	docker run --rm \
@@ -101,7 +107,7 @@ smoke-nethermind: docker-nethermind
 	  state-actor-nethermind:latest \
 	  --client=nethermind --db=/data \
 	  --accounts=$(ACCOUNTS) --contracts=$(CONTRACTS) --seed=$(SEED) \
-	  --genesis=/test/genesis-funded.json --verbose
+	  --chain-id=1337 --inject-accounts=$(SMOKE_INJECT_ADDRS) --verbose
 	bash $(PWD)/client/nethermind/testdata/validate-big-db.sh $(SA_DB)
 
 ## smoke-nethermind-spamoor: Generate a DB, boot Nethermind 1.37.0, then run
@@ -118,7 +124,7 @@ smoke-nethermind-spamoor: docker-nethermind
 	  state-actor-nethermind:latest \
 	  --client=nethermind --db=/data \
 	  --accounts=$(ACCOUNTS) --contracts=$(CONTRACTS) --seed=$(SEED) \
-	  --genesis=/test/genesis-funded.json --verbose
+	  --chain-id=1337 --inject-accounts=$(SMOKE_INJECT_ADDRS) --verbose
 	docker rm -f neth-smoke-spamoor 2>/dev/null || true
 	docker run --rm -d --name neth-smoke-spamoor \
 	  -v $(PWD)/client/nethermind/testdata:/test:ro \
@@ -162,7 +168,7 @@ smoke-besu: docker-besu
 	  state-actor-besu:latest \
 	  --client=besu --db=/data \
 	  --accounts=$(ACCOUNTS) --contracts=$(CONTRACTS) --seed=$(SEED) \
-	  --genesis=/test/genesis-funded.json --verbose
+	  --chain-id=1337 --inject-accounts=$(SMOKE_INJECT_ADDRS) --verbose
 	bash $(PWD)/client/besu/testdata/validate-big-db-besu.sh $(SA_BESU_DB)
 
 ## smoke-besu-spamoor: Generate a DB, boot hyperledger/besu:25.11.0, then run
@@ -179,7 +185,7 @@ smoke-besu-spamoor: docker-besu
 	  state-actor-besu:latest \
 	  --client=besu --db=/data \
 	  --accounts=$(ACCOUNTS) --contracts=$(CONTRACTS) --seed=$(SEED) \
-	  --genesis=/test/genesis-funded.json --verbose
+	  --chain-id=1337 --inject-accounts=$(SMOKE_INJECT_ADDRS) --verbose
 	docker rm -f besu-smoke-spamoor 2>/dev/null || true
 	docker run --rm -d --name besu-smoke-spamoor \
 	  -v $(PWD)/client/besu/testdata:/test:ro \
@@ -249,7 +255,8 @@ smoke-geth: docker-geth
 example:
 	./$(BINARY) \
 		--db /tmp/example-chaindata \
-		--genesis examples/test-genesis.json \
+		--chain-id 1337 \
+		--inject-accounts $(SMOKE_INJECT_ADDRS) \
 		--accounts 1000 \
 		--contracts 500 \
 		--max-slots 100 \

@@ -29,7 +29,6 @@ import (
 	"log"
 
 	"github.com/ethereum/go-ethereum/common"
-	"github.com/ethereum/go-ethereum/core/types"
 
 	"github.com/nerolation/state-actor/generator"
 	"github.com/nerolation/state-actor/genesis"
@@ -65,45 +64,20 @@ func runImpl(ctx context.Context, cfg generator.Config, opts Options) (*generato
 		return nil, errors.New("--db is required for --client=nethermind")
 	}
 
-	// Pull genesis fields. If the caller passed --genesis, use those values;
-	// otherwise default to a dev-mode-ish minimal genesis (chainId 1337,
-	// gasLimit 30M, empty extraData, timestamp 0).
-	chainID := int64(1337)
-	gasLimit := uint64(30_000_000)
-	var extraData []byte
-	var timestamp uint64
-	var loadedGenesis *genesis.Genesis
-	if GenesisFilePath != "" {
-		g, err := genesis.LoadGenesis(GenesisFilePath)
-		if err != nil {
-			return nil, fmt.Errorf("load genesis: %w", err)
-		}
-		loadedGenesis = g
-		if g.Config != nil && g.Config.ChainID != nil {
-			chainID = g.Config.ChainID.Int64()
-		}
-		if g.GasLimit != 0 {
-			gasLimit = uint64(g.GasLimit)
-		}
-		if len(g.ExtraData) > 0 {
-			extraData = g.ExtraData
-		}
-		timestamp = uint64(g.Timestamp)
+	// Pull genesis fields from cfg.Genesis. Production callers (main.go)
+	// always set this; tests can leave it nil and get the default chainspec.
+	g := genesis.OrDefault(cfg.Genesis)
+	gasLimit := uint64(g.GasLimit)
+	if gasLimit == 0 {
+		gasLimit = 30_000_000
 	}
-	if ChainIDOverride != 0 {
-		chainID = ChainIDOverride
-		// state-actor writes nothing that carries chainID: the genesis
-		// header has no chainID field, the state trie hashes are
-		// chainID-blind, and the genesis block has zero txs (so no
-		// EIP-155 fingerprints). chainID lives entirely in the
-		// chainspec Nethermind reads on boot — same DB can be served
-		// under any chainID without regeneration. Surface the
-		// no-effect-here behavior so users don't expect otherwise.
-		log.Printf("nethermind: --chain-id=%d is parsed but not embedded in the produced DB "+
-			"(chainID lives in the chainspec at boot time; the same DB serves any chainID). "+
-			"Set the chainID in your Nethermind chainspec/config instead.", chainID)
-	}
-	_ = chainID
+	extraData := []byte(g.ExtraData)
+	timestamp := uint64(g.Timestamp)
+	// chainID embedding is a B7 follow-up: nethermind reads chainID from
+	// the chainspec at boot, not the on-disk DB. Until state-actor writes
+	// a Parity chainspec under cfg.DBPath, the supplied chainID is recorded
+	// here for documentation and stays inert.
+	_ = g.Config.ChainID
 
 	dbs, err := openNethDBs(cfg.DBPath)
 	if err != nil {
@@ -119,31 +93,28 @@ func runImpl(ctx context.Context, cfg generator.Config, opts Options) (*generato
 	//   - genesis-alloc only (no synthetic) → writeGenesisAllocAccounts (a
 	//     simpler in-memory path without the temp Pebble round-trip).
 	//   - empty alloc → state stays empty; root = EmptyTreeHash.
+	// alloc walking is kept for tests (cfg.GenesisAccounts/Storage/Code).
+	// The CLI never sets these — production runs always go through
+	// writeSyntheticAccounts with empty alloc.
 	stateRoot := common.Hash(neth.EmptyTreeHash)
-	var allocAccounts map[common.Address]*types.StateAccount
-	var allocCodes map[common.Address][]byte
-	var allocStorages map[common.Address]map[common.Hash]common.Hash
-	if loadedGenesis != nil && len(loadedGenesis.Alloc) > 0 {
-		allocAccounts = loadedGenesis.ToStateAccounts()
-		allocCodes = loadedGenesis.GetAllocCode()
-		allocStorages = loadedGenesis.GetAllocStorage()
-	}
+	allocAccounts := cfg.GenesisAccounts
+	allocCodes := cfg.GenesisCode
+	allocStorages := cfg.GenesisStorage
 	switch {
 	case cfg.NumAccounts > 0 || cfg.NumContracts > 0:
-		// writeSyntheticAccounts doesn't yet thread genesis-alloc storage
-		// through the temp-Pebble pipeline. If the user supplied a --genesis
-		// whose alloc carries non-empty storage AND asked for synthetic
-		// accounts, those storage slots would silently disappear from the
-		// state root we write. Fail loud until storage threading lands —
-		// tracked at https://github.com/nerolation/state-actor/issues/22.
+		// writeSyntheticAccounts doesn't yet thread alloc storage through
+		// the temp-Pebble pipeline. If a test supplies cfg.GenesisStorage
+		// AND asks for synthetic accounts, those storage slots would
+		// silently disappear from the state root. Fail loud — tracked at
+		// https://github.com/nerolation/state-actor/issues/22.
 		if len(allocStorages) > 0 {
 			return nil, fmt.Errorf(
-				"--client=nethermind: --genesis with %d storage-bearing alloc account(s) is "+
-					"incompatible with --accounts/--contracts > 0. The synthetic-accounts path "+
-					"does not yet write genesis-alloc storage tries; using it now would silently "+
-					"drop your storage entries. Run again without --accounts/--contracts to use "+
-					"the genesis-alloc-only path, or remove storage from the alloc. "+
-					"Tracked at https://github.com/nerolation/state-actor/issues/22.",
+				"--client=nethermind: cfg.GenesisStorage with %d storage-bearing alloc account(s) "+
+					"is incompatible with --accounts/--contracts > 0. The synthetic-accounts path "+
+					"does not yet write alloc storage tries; using it now would silently drop your "+
+					"storage entries. Run with --accounts=0 --contracts=0 to use the alloc-only path, "+
+					"or remove storage from the alloc. Tracked at "+
+					"https://github.com/nerolation/state-actor/issues/22.",
 				len(allocStorages),
 			)
 		}
@@ -158,7 +129,7 @@ func runImpl(ctx context.Context, cfg generator.Config, opts Options) (*generato
 		}
 	}
 
-	header := buildEmptyAllocGenesisHeader(chainID, gasLimit, extraData, timestamp)
+	header := buildEmptyAllocGenesisHeader(g.Config.ChainID.Int64(), gasLimit, extraData, timestamp)
 	header.Root = stateRoot
 
 	hash, err := writeGenesisBlockToDBs(dbs, header)
@@ -170,8 +141,8 @@ func runImpl(ctx context.Context, cfg generator.Config, opts Options) (*generato
 		log.Printf("nethermind: genesis hash = %s", hash.Hex())
 		log.Printf("nethermind: state root  = %s", header.Root.Hex())
 		log.Printf("nethermind: 7 RocksDBs written under %s/", cfg.DBPath)
-		if loadedGenesis != nil && len(loadedGenesis.Alloc) > 0 {
-			log.Printf("nethermind: preallocated %d accounts from --genesis", len(loadedGenesis.Alloc))
+		if len(allocAccounts) > 0 {
+			log.Printf("nethermind: preallocated %d accounts from cfg.GenesisAccounts (test-only path)", len(allocAccounts))
 		}
 		if cfg.NumAccounts > 0 || cfg.NumContracts > 0 {
 			log.Printf("nethermind: synthesized %d EOAs + %d contracts", cfg.NumAccounts, cfg.NumContracts)
@@ -185,6 +156,3 @@ func runImpl(ctx context.Context, cfg generator.Config, opts Options) (*generato
 	}, nil
 }
 
-// GenesisFilePath / ChainIDOverride are declared in run.go (no build
-// tag) so main.go's assignments compile in both build modes. The cgo
-// build path reads them from runImpl above; the stub path ignores them.

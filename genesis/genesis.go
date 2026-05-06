@@ -58,7 +58,9 @@ type GenesisAccount struct {
 	Nonce   hexutil.Uint64              `json:"nonce,omitempty"`
 }
 
-// LoadGenesis loads a genesis configuration from a JSON file.
+// LoadGenesis loads a genesis configuration from a JSON file. Used by
+// tests; the production CLI no longer accepts --genesis (state-actor
+// builds genesis itself via BuildSynthetic).
 func LoadGenesis(path string) (*Genesis, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -71,6 +73,65 @@ func LoadGenesis(path string) (*Genesis, error) {
 	}
 
 	return &genesis, nil
+}
+
+// OrDefault returns g if non-nil, otherwise builds a default *Genesis with
+// DefaultFork active and chainID 1337. Tests that exercise client Run
+// paths use this so they don't need to call BuildSynthetic explicitly;
+// production callers always set Config.Genesis via main.go and never see
+// the default branch.
+func OrDefault(g *Genesis) *Genesis {
+	if g != nil {
+		return g
+	}
+	out, _ := BuildSynthetic("", nil, 0, 0, nil)
+	return out
+}
+
+// BuildSynthetic constructs an in-memory *Genesis with the named fork
+// active at genesis (block 0 / time 0) and the supplied header knobs.
+// Replaces the LoadGenesis-from-disk path: state-actor's CLI no longer
+// accepts --genesis; the four header fields users actually need to vary
+// (chainID, gasLimit, timestamp, extraData) are exposed as flags.
+//
+// Defaults applied when fields are zero:
+//   - fork == "" → DefaultFork ("prague")
+//   - chainID == nil → 1337 (devnet convention)
+//   - gasLimit == 0 → 30_000_000
+//   - timestamp == 0 → 0 (genesis epoch)
+//   - extraData == nil → empty slice
+//
+// Difficulty is fixed at 0 (post-Merge); BaseFee is set to
+// params.InitialBaseFee when London is active in the resolved
+// ChainConfig (so London+ headers are structurally complete). Alloc is
+// always empty — pre-funded accounts come from --inject-accounts.
+func BuildSynthetic(fork string, chainID *big.Int, gasLimit uint64, timestamp uint64, extraData []byte) (*Genesis, error) {
+	if chainID == nil {
+		chainID = big.NewInt(1337)
+	}
+	cfg, err := BuildChainConfigForFork(fork, chainID)
+	if err != nil {
+		return nil, err
+	}
+	if gasLimit == 0 {
+		gasLimit = 30_000_000
+	}
+	if extraData == nil {
+		extraData = []byte{}
+	}
+	g := &Genesis{
+		Config:     cfg,
+		Nonce:      0,
+		Timestamp:  hexutil.Uint64(timestamp),
+		ExtraData:  hexutil.Bytes(extraData),
+		GasLimit:   hexutil.Uint64(gasLimit),
+		Difficulty: (*hexutil.Big)(big.NewInt(0)),
+		Alloc:      GenesisAlloc{},
+	}
+	if cfg.IsLondon(big.NewInt(0)) {
+		g.BaseFee = (*hexutil.Big)(big.NewInt(params.InitialBaseFee))
+	}
+	return g, nil
 }
 
 // ToStateAccounts converts the genesis alloc to types.StateAccount format

@@ -54,10 +54,17 @@ var (
 	// Target size
 	targetSize = flag.String("target-size", "", "Target total DB size on disk (e.g. '5GB', '500MB'). Stop condition only — set --accounts/--contracts/--min-slots/--max-slots explicitly. Honored by geth and besu; ignored by nethermind; rejected by reth.")
 
-	// Genesis integration
-	genesisPath    = flag.String("genesis", "", "Path to genesis.json file (optional)")
-	injectAccounts = flag.String("inject-accounts", "", "Comma-separated hex addresses to inject with 999999999 ETH (e.g. 0xf39F...2266)")
-	chainID        = flag.Int64("chain-id", 0, "Override genesis chainId (0 = use value from genesis.json)")
+	// Synthetic genesis configuration. state-actor builds the genesis
+	// itself — no --genesis path. The four header knobs users actually
+	// vary are exposed as flags below; everything else takes a sensible
+	// default (Difficulty=0, Coinbase=0x0, Mixhash=0x0, Alloc empty).
+	fork           = flag.String("fork", "", "Hard fork active at genesis. Empty (default) resolves to the latest fork the chosen --client can write. Use --list-forks to see all values.")
+	listForks      = flag.Bool("list-forks", false, "Print the list of accepted --fork values and exit.")
+	injectAccounts = flag.String("inject-accounts", "", "Comma-separated hex addresses to inject with 999999999 ETH (e.g. 0xf39F...2266). Use this instead of a --genesis alloc.")
+	chainID        = flag.Int64("chain-id", 1337, "Chain ID embedded in the synthesized genesis chainspec (default 1337, the devnet convention).")
+	gasLimit       = flag.Uint64("gas-limit", 30_000_000, "Genesis block gas limit (default 30M).")
+	timestamp      = flag.Uint64("timestamp", 0, "Genesis block timestamp (unix seconds, default 0).")
+	extraData      = flag.String("extra-data", "", "Genesis block extraData as hex (default empty).")
 
 	// Binary trie group depth
 	groupDepth = flag.Int("group-depth", 8, "Binary trie group depth (1-8, default 8). Controls serialization unit size.")
@@ -72,6 +79,14 @@ var (
 
 func main() {
 	flag.Parse()
+
+	if *listForks {
+		fmt.Println("Supported --fork values (default = latest):")
+		for _, f := range genesis.SortedForks() {
+			fmt.Printf("  %s\n", f)
+		}
+		os.Exit(0)
+	}
 
 	if *dbPath == "" {
 		fmt.Fprintln(os.Stderr, "Error: -db flag is required")
@@ -194,29 +209,37 @@ func main() {
 		GroupDepth:      *groupDepth,
 	}
 
-	// Load genesis if provided
-	var genesisConfig *genesis.Genesis
-	if *genesisPath != "" {
-		var err error
-		genesisConfig, err = genesis.LoadGenesis(*genesisPath)
+	// Synthesize the genesis chainspec from CLI flags. state-actor no
+	// longer accepts an external --genesis file; the four header knobs
+	// users actually vary (--chain-id / --fork / --gas-limit /
+	// --timestamp / --extra-data) drive an in-memory *Genesis here, and
+	// each client's writer reads it via config.Genesis.
+	extraDataBytes := []byte{}
+	if *extraData != "" {
+		decoded, err := decodeHex(*extraData)
 		if err != nil {
-			log.Fatalf("Failed to load genesis: %v", err)
+			log.Fatalf("--extra-data must be hex (with or without 0x prefix): %v", err)
 		}
+		extraDataBytes = decoded
+	}
+	chosenFork := *fork
+	if chosenFork == "" {
+		chosenFork = genesis.MaxForkForClient(*client)
+	} else if !genesis.ForkAtLeast(genesis.MaxForkForClient(*client), chosenFork) {
+		log.Fatalf("--fork=%s is past --client=%s's writer ceiling (%s); "+
+			"pass --fork=%s or earlier, or use a different --client",
+			chosenFork, *client, genesis.MaxForkForClient(*client),
+			genesis.MaxForkForClient(*client))
+	}
+	genesisConfig, err := genesis.BuildSynthetic(chosenFork, big.NewInt(*chainID), *gasLimit, *timestamp, extraDataBytes)
+	if err != nil {
+		log.Fatalf("--fork %q: %v", chosenFork, err)
+	}
+	config.Genesis = genesisConfig
 
-		// Extract accounts from genesis alloc
-		config.GenesisAccounts = genesisConfig.ToStateAccounts()
-		config.GenesisStorage = genesisConfig.GetAllocStorage()
-		config.GenesisCode = genesisConfig.GetAllocCode()
-
-		// Override chain ID if requested
-		if *chainID != 0 {
-			genesisConfig.Config.ChainID = big.NewInt(*chainID)
-		}
-
-		if *verbose {
-			log.Printf("Loaded genesis with %d alloc accounts (chainId=%s)",
-				len(config.GenesisAccounts), genesisConfig.Config.ChainID)
-		}
+	if *verbose {
+		log.Printf("Synthesized genesis: fork=%s chainID=%s gasLimit=%d timestamp=%d extraData=%dB",
+			chosenFork, genesisConfig.Config.ChainID, uint64(genesisConfig.GasLimit), uint64(genesisConfig.Timestamp), len(genesisConfig.ExtraData))
 	}
 
 	if *verbose {
@@ -237,9 +260,9 @@ func main() {
 		if config.TargetSize > 0 {
 			log.Printf("  Target Size:  %s", formatBytes(config.TargetSize))
 		}
-		if *genesisPath != "" {
-			log.Printf("  Genesis:      %s", *genesisPath)
-		}
+		log.Printf("  Fork:         %s", chosenFork)
+		log.Printf("  Chain ID:     %d", *chainID)
+		log.Printf("  Gas Limit:    %d", *gasLimit)
 	}
 
 	start := time.Now()
@@ -251,15 +274,13 @@ func main() {
 	var stats *generator.Stats
 	switch *client {
 	case "geth":
-		// MPT mode goes through the new direct-Pebble pipeline in
-		// client/geth/ (entitygen → temp Pebble → keccak-sorted writes
-		// to production). Binary-trie mode still routes through the
-		// legacy generator.New().Generate() path because
-		// generator/binary_stack_trie.go is intentionally untouched per
-		// the design doc.
+		// MPT mode routes through client/geth/Populate (the new
+		// direct-Pebble pipeline added in PR #38; reads cfg.Genesis
+		// directly and writes the genesis block as part of Populate).
+		// Binary-trie mode still uses the legacy generator.New /
+		// gen.Generate / geth.WriteGenesisBlock path because
+		// generator/binary_stack_trie.go is intentionally untouched.
 		if config.TrieMode == generator.TrieModeMPT {
-			geth.GenesisFilePath = *genesisPath
-			geth.ChainIDOverride = *chainID
 			var err error
 			stats, err = geth.Populate(context.Background(), config, geth.Options{})
 			if err != nil {
@@ -281,38 +302,31 @@ func main() {
 				log.Fatalf("Failed to generate state: %v", err)
 			}
 
-			// Update live stats with final state
 			if liveStats != nil {
 				liveStats.AddBytes(int64(stats.AccountBytes), int64(stats.StorageBytes), int64(stats.CodeBytes))
 				liveStats.SetStateRoot(stats.StateRoot.Hex())
 			}
 
-			// Write genesis block if genesis was provided (binary-trie path).
-			if genesisConfig != nil {
-				if *verbose {
-					log.Printf("Writing genesis block with state root: %s", stats.StateRoot.Hex())
-				}
-
-				ancientDir := filepath.Join(config.DBPath, "ancient")
-				block, err := geth.WriteGenesisBlock(gen.DB(), genesisConfig, stats.StateRoot, true, ancientDir)
-				if err != nil {
-					log.Fatalf("Failed to write genesis block: %v", err)
-				}
-
-				if *verbose {
-					log.Printf("Genesis block hash: %s", block.Hash().Hex())
-					log.Printf("Genesis block number: %d", block.NumberU64())
-				}
+			// Write genesis block (binary-trie path). genesisConfig is
+			// always non-nil now that main.go synthesizes it via
+			// genesis.BuildSynthetic.
+			if *verbose {
+				log.Printf("Writing genesis block with state root: %s", stats.StateRoot.Hex())
+			}
+			ancientDir := filepath.Join(config.DBPath, "ancient")
+			block, err := geth.WriteGenesisBlock(gen.DB(), genesisConfig, stats.StateRoot, true, ancientDir)
+			if err != nil {
+				log.Fatalf("Failed to write genesis block: %v", err)
+			}
+			if *verbose {
+				log.Printf("Genesis block hash: %s", block.Hash().Hex())
+				log.Printf("Genesis block number: %d", block.NumberU64())
 			}
 		}
 
 	case "nethermind":
-		// Nethermind path: the writer in client/nethermind/ owns the full
-		// pipeline (entitygen → trie.Builder → grocksdb). Phase A
-		// (empty-alloc genesis only) lands behind the cgo_neth build tag;
-		// vanilla local builds get a stub redirecting users at Docker.
-		nethermind.GenesisFilePath = *genesisPath
-		nethermind.ChainIDOverride = *chainID
+		// Nethermind path: writer in client/nethermind/ reads
+		// config.Genesis directly (no package globals).
 		var err error
 		stats, err = nethermind.Run(context.Background(), config, nethermind.Options{})
 		if err != nil {
@@ -323,13 +337,7 @@ func main() {
 		}
 
 	case "besu":
-		// Besu path: writer in client/besu/ owns the full pipeline
-		// (entitygen → Phase 1 temp Pebble → Phase 2 sorted iter →
-		// Bonsai trie.Builder → single grocksdb instance with 8 column
-		// families). Behind the cgo_besu build tag; vanilla local builds
-		// get a stub redirecting users at Docker.
-		besu.GenesisFilePath = *genesisPath
-		besu.ChainIDOverride = *chainID
+		// Besu path: same — writer reads config.Genesis directly.
 		var err error
 		stats, err = besu.Run(context.Background(), config, besu.Options{})
 		if err != nil {
@@ -340,12 +348,7 @@ func main() {
 		}
 
 	case "reth":
-		// Reth path writes a complete v2 datadir directly via mdbx-go +
-		// grocksdb (cgo). Without -tags cgo_reth, RunCgo returns a clear
-		// error pointing at Dockerfile.reth — local builds without
-		// libmdbx/librocksdb cannot exercise this path.
-		reth.GenesisFilePath = *genesisPath
-		reth.ChainIDOverride = *chainID
+		// Reth path: same — writer reads config.Genesis directly.
 		var err error
 		stats, err = reth.RunCgo(context.Background(), config, reth.Options{})
 		if err != nil {
@@ -482,6 +485,40 @@ func parseSize(s string) (uint64, error) {
 		return 0, fmt.Errorf("invalid size format %q (use e.g. '5GB', '500MB')", s)
 	}
 	return val, nil
+}
+
+// decodeHex parses a 0x-prefixed-or-bare hex string into bytes.
+func decodeHex(s string) ([]byte, error) {
+	s = strings.TrimSpace(s)
+	if strings.HasPrefix(s, "0x") || strings.HasPrefix(s, "0X") {
+		s = s[2:]
+	}
+	if s == "" {
+		return []byte{}, nil
+	}
+	out := make([]byte, len(s)/2)
+	if len(s)%2 != 0 {
+		return nil, fmt.Errorf("odd-length hex string %q", s)
+	}
+	for i := 0; i < len(out); i++ {
+		var b byte
+		for j := 0; j < 2; j++ {
+			c := s[i*2+j]
+			b <<= 4
+			switch {
+			case c >= '0' && c <= '9':
+				b |= c - '0'
+			case c >= 'a' && c <= 'f':
+				b |= c - 'a' + 10
+			case c >= 'A' && c <= 'F':
+				b |= c - 'A' + 10
+			default:
+				return nil, fmt.Errorf("invalid hex char %q at offset %d", c, i*2+j)
+			}
+		}
+		out[i] = b
+	}
+	return out, nil
 }
 
 // dirSize returns the total size of all files in a directory tree.
