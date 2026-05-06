@@ -4,7 +4,7 @@
 	smoke-nethermind smoke-nethermind-spamoor \
 	docker-besu docker-besu-test test-besu-oracle \
 	smoke-besu smoke-besu-spamoor \
-	smoke-geth
+	docker-geth smoke-geth
 
 # Binary name
 BINARY=state-actor
@@ -213,34 +213,37 @@ tidy:
 deps:
 	$(GOMOD) download
 
+# ---------------------------------------------------------------------------
+# Geth targets — pure-Go state-actor build + upstream ethereum/client-go
+# image for the bootcheck. Mirrors the docker-{nethermind,besu} pattern.
+# ---------------------------------------------------------------------------
+
+## docker-geth: Build the Geth-capable image (state-actor only; no cgo)
+docker-geth:
+	docker build -f Dockerfile.geth -t state-actor-geth:latest -t state-actor-geth:$(VERSION) .
+
 ## smoke-geth: End-to-end smoke for the geth direct-Pebble MPT path.
-##   Builds the binary, generates a small DB at $(SA_DB_GETH), times the
-##   wall-clock, asserts the resulting state root is non-zero, and
-##   reports the on-disk size. Pure-Go (no Docker / no cgo); runs fast.
+##   Builds the state-actor-geth image, generates a small DB at
+##   $(SA_DB_GETH), then boots upstream ethereum/client-go against the
+##   same datadir and runs RPC-based boot-readability checks.
 ##   Usage: make smoke-geth ACCOUNTS=1000 CONTRACTS=100 SEED=42
 SA_DB_GETH ?= /tmp/sa-geth-smoke
 GETH_SMOKE_ACCOUNTS ?= 1000
 GETH_SMOKE_CONTRACTS ?= 100
 GETH_SMOKE_SEED ?= 42
-smoke-geth: build
-	@rm -rf $(SA_DB_GETH) && mkdir -p $(SA_DB_GETH)
-	@echo "==> generating geth-MPT state at $(SA_DB_GETH)"
-	@start=$$(date +%s); \
-	./$(BINARY) --client=geth --db=$(SA_DB_GETH) \
+smoke-geth: docker-geth
+	rm -rf $(SA_DB_GETH) && mkdir -p $(SA_DB_GETH)/geth/chaindata
+	docker run --rm \
+	  -v $(SA_DB_GETH):/datadir \
+	  -v $(PWD)/client/geth/testdata:/test:ro \
+	  state-actor-geth:latest \
+	  --client=geth --db=/datadir/geth/chaindata \
 	  --accounts=$(GETH_SMOKE_ACCOUNTS) --contracts=$(GETH_SMOKE_CONTRACTS) \
-	  --seed=$(GETH_SMOKE_SEED) --verbose 2>&1 \
-	  | tee $(SA_DB_GETH)/smoke.log; \
-	end=$$(date +%s); \
-	elapsed=$$((end-start)); \
-	echo "smoke-geth wall-clock: $${elapsed}s"
-	@if ! grep -q "State Root:" $(SA_DB_GETH)/smoke.log; then \
-	  echo "smoke-geth: missing 'State Root:' in output"; exit 1; \
-	fi
-	@if grep -q "State Root:.*0x0000000000000000000000000000000000000000000000000000000000000000" $(SA_DB_GETH)/smoke.log; then \
-	  echo "smoke-geth: state root is zero — generation produced no state"; exit 1; \
-	fi
-	@du -sh $(SA_DB_GETH)
-	@echo "smoke-geth: PASS"
+	  --seed=$(GETH_SMOKE_SEED) \
+	  --genesis=/test/genesis-funded.json --verbose 2>&1 \
+	  | tee $(SA_DB_GETH)/smoke.log
+	@expected_root=$$(grep -E '^State Root:' $(SA_DB_GETH)/smoke.log | awk '{print $$NF}'); \
+	bash $(PWD)/client/geth/testdata/validate-big-db-geth.sh $(SA_DB_GETH) "$$expected_root"
 
 ## example: Run example generation
 example:
