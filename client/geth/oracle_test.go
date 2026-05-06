@@ -107,16 +107,28 @@ func TestGethOracleBootReadable(t *testing.T) {
 		t.Errorf("PersistentStateID = %d, want 0", id)
 	}
 
-	// --- Account trie root node presence ---
+	// --- Account trie root node presence + hash match ---
 	//
 	// PathScheme account trie nodes live at TrieNodeAccountPrefix + path.
 	// The empty-path entry is the root node (always a list per MPT spec
 	// — branch or extension). Decoding it to a generic []rlp.RawValue
 	// validates the bytes are a valid RLP list, which is what geth's
 	// trie reader will require on the first descent.
+	//
+	// We also assert keccak256(rootBlob) == stats.StateRoot. Geth's PathDB
+	// at boot computes the trie root via keccak256(rawdb.ReadAccountTrieNode(
+	// db, nil)) (triedb/pathdb/journal.go:loadGenerator) and compares it
+	// against rawdb.ReadSnapshotRoot(db). A mismatch produces "State
+	// snapshot is not consistent" → "Genesis state is missing" → every
+	// state RPC fails. This assertion catches that class of bug at unit
+	// level, no Docker required (nerolation/state-actor#42).
 	rootBlob := rawdb.ReadAccountTrieNode(db, []byte{})
 	if len(rootBlob) == 0 {
 		t.Fatal("Account trie root node missing — Phase 2 didn't emit OnTrieNode for the root")
+	}
+	if got := crypto.Keccak256Hash(rootBlob); got != stats.StateRoot {
+		t.Fatalf("account trie root node hashes to %s, expected stats.StateRoot %s — geth at boot would treat this as the empty MPT root and refuse to serve state",
+			got.Hex(), stats.StateRoot.Hex())
 	}
 	var rootList []rlp.RawValue
 	if err := rlp.DecodeBytes(rootBlob, &rootList); err != nil {

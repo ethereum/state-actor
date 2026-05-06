@@ -292,21 +292,24 @@ func writeStateAndCollectRoot(
 	}
 
 	// Outer account trie. OnTrieNode emits each completed branch/extension
-	// node; we persist under PathScheme TrieNodeAccountPrefix.
-	var accountCb trie.OnTrieNode
-	if cfg.WriteTrieNodes {
-		accountCb = func(path []byte, hash common.Hash, blob []byte) {
-			// StackTrie warns the path/blob slices are volatile across calls;
-			// copy before queuing into the writer's batch.
-			p := make([]byte, len(path))
-			copy(p, path)
-			b := make([]byte, len(blob))
-			copy(b, blob)
-			key := append([]byte{}, rawdb.TrieNodeAccountPrefix...)
-			key = append(key, p...)
-			if err := w.PutTrieNode(key, b); err != nil {
-				log.Fatalf("write account trie node: %v", err)
-			}
+	// node; we persist under PathScheme TrieNodeAccountPrefix. Always
+	// installed — without these writes the DB is unbootable by geth: PathDB
+	// at boot computes the trie root via keccak256(rawdb.ReadAccountTrieNode(
+	// db, nil)). A missing root node short-circuits to types.EmptyRootHash
+	// (0x56e81f..63b421), which mismatches the recorded SnapshotRoot and
+	// triggers `State snapshot is not consistent` → `Genesis state is
+	// missing` → every state RPC fails. See nerolation/state-actor#42.
+	accountCb := func(path []byte, hash common.Hash, blob []byte) {
+		// StackTrie warns the path/blob slices are volatile across calls;
+		// copy before queuing into the writer's batch.
+		p := make([]byte, len(path))
+		copy(p, path)
+		b := make([]byte, len(blob))
+		copy(b, blob)
+		key := append([]byte{}, rawdb.TrieNodeAccountPrefix...)
+		key = append(key, p...)
+		if err := w.PutTrieNode(key, b); err != nil {
+			log.Fatalf("write account trie node: %v", err)
 		}
 	}
 	accountTrie := trie.NewStackTrie(accountCb)
@@ -337,7 +340,7 @@ func writeStateAndCollectRoot(
 
 		// Build storage trie + collect (sortedSlotHash, encodedValue) for
 		// snapshot writes in keccak order.
-		storageRoot, sortedSlotEntries, err := buildStorageTrie(w, addrHash, ent.slots, cfg.WriteTrieNodes)
+		storageRoot, sortedSlotEntries, err := buildStorageTrie(w, addrHash, ent.slots)
 		if err != nil {
 			return common.Hash{}, nil, fmt.Errorf("phase2 storage trie at #%d: %w", count, err)
 		}
@@ -462,9 +465,12 @@ type sortedSlot struct {
 }
 
 // buildStorageTrie hashes + sorts a contract's storage slots, builds the
-// per-account storage StackTrie (emitting trie nodes via the writer when
-// cfg.WriteTrieNodes is true), and returns (root, sortedEntries) so the
-// caller can write the snapshot in keccak order.
+// per-account storage StackTrie (always emitting trie nodes via the
+// writer — geth's PathDB needs them at boot to walk the trie), and
+// returns (root, sortedEntries) so the caller can write the snapshot in
+// keccak order. See the same rationale on the account-trie callback in
+// writeStateAndCollectRoot for why the OnTrieNode callback must always
+// be installed (nerolation/state-actor#42).
 //
 // For ≥ parallelKeccakThreshold slots, keccak hashing is parallelised
 // across cores — same threshold as the legacy MPT path.
@@ -472,7 +478,6 @@ func buildStorageTrie(
 	w *Writer,
 	accountHash common.Hash,
 	slots []entityBlobSlot,
-	writeNodes bool,
 ) (common.Hash, []sortedSlot, error) {
 	if len(slots) == 0 {
 		return types.EmptyRootHash, nil, nil
@@ -523,21 +528,18 @@ func buildStorageTrie(
 		return bytes.Compare(hashed[i].Hash[:], hashed[j].Hash[:]) < 0
 	})
 
-	var storageCb trie.OnTrieNode
-	if writeNodes {
-		acctHash := accountHash // capture for closure
-		storageCb = func(path []byte, hash common.Hash, blob []byte) {
-			p := make([]byte, len(path))
-			copy(p, path)
-			b := make([]byte, len(blob))
-			copy(b, blob)
-			key := make([]byte, 0, len(rawdb.TrieNodeStoragePrefix)+common.HashLength+len(p))
-			key = append(key, rawdb.TrieNodeStoragePrefix...)
-			key = append(key, acctHash[:]...)
-			key = append(key, p...)
-			if err := w.PutTrieNode(key, b); err != nil {
-				log.Fatalf("write storage trie node: %v", err)
-			}
+	acctHash := accountHash // capture for closure
+	storageCb := func(path []byte, hash common.Hash, blob []byte) {
+		p := make([]byte, len(path))
+		copy(p, path)
+		b := make([]byte, len(blob))
+		copy(b, blob)
+		key := make([]byte, 0, len(rawdb.TrieNodeStoragePrefix)+common.HashLength+len(p))
+		key = append(key, rawdb.TrieNodeStoragePrefix...)
+		key = append(key, acctHash[:]...)
+		key = append(key, p...)
+		if err := w.PutTrieNode(key, b); err != nil {
+			log.Fatalf("write storage trie node: %v", err)
 		}
 	}
 	storageTrie := trie.NewStackTrie(storageCb)

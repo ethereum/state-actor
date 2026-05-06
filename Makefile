@@ -4,7 +4,7 @@
 	smoke-nethermind smoke-nethermind-spamoor \
 	docker-besu docker-besu-test test-besu-oracle \
 	smoke-besu smoke-besu-spamoor \
-	docker-geth smoke-geth
+	docker-geth smoke-geth test-geth-boot
 
 # Binary name
 BINARY=state-actor
@@ -256,6 +256,15 @@ smoke-geth: docker-geth
 	  | tee $(SA_DB_GETH)/smoke.log
 	@expected_root=$$(grep -E '^State Root:' $(SA_DB_GETH)/smoke.log | awk '{print $$NF}'); \
 	bash $(PWD)/client/geth/testdata/validate-big-db-geth.sh $(SA_DB_GETH) "$$expected_root"
+
+## test-geth-boot: Boot upstream geth against a state-actor datadir and verify via JSON-RPC.
+##   Mirrors test-reth-boot. Requires the Docker daemon on the host (no DinD)
+##   and pulls $(GETH_IMAGE) (default ethereum/client-go:v1.17.2). The test
+##   itself launches the geth container with -p <freeport>:8545 and probes
+##   eth_getBalance / eth_getCode / eth_getStorageAt via internal/rpcprobe.
+##   Override the image via GETH_IMAGE=ethereum/client-go:vX.Y.Z.
+test-geth-boot:
+	$(GOTEST) -tags oracle -run TestGethNodeBoot -v -timeout 300s ./client/geth/...
 
 ## example: Run example generation
 example:
