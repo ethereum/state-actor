@@ -1,0 +1,52 @@
+# Dockerfile.geth — builds state-actor for the geth direct-Pebble path.
+#
+# Unlike Dockerfile.{besu,nethermind}, this image carries NO cgo
+# dependency: client/geth's writer uses cockroachdb/pebble pure-Go via
+# the in-tree pebbleKV adapter. Ahead-of-time CGO_ENABLED=0 keeps the
+# image small (~30 MB) and the build deterministic.
+#
+# The smoke flow (`make smoke-geth`) generates a DB with this image,
+# then boots upstream `ethereum/client-go:<tag>` against the same
+# datadir to verify the produced Pebble + PathDB metadata is what
+# stock geth expects. Mirrors how `make smoke-besu` runs
+# `hyperledger/besu:<tag>` and `make smoke-nethermind` runs
+# `nethermind/nethermind:<tag>`.
+#
+# Run:
+#   docker build -f Dockerfile.geth -t state-actor-geth:latest .
+#   docker run --rm -v $(pwd)/_artifacts/geth:/data state-actor-geth:latest \
+#     --client=geth --db=/data --accounts=10 --contracts=0
+
+# ---------- Stage 1: builder ----------
+FROM golang:1.24-alpine AS builder
+
+RUN apk add --no-cache git make
+
+WORKDIR /app
+
+# Cache go.mod / go.sum dependency layer.
+COPY go.mod go.sum ./
+RUN go mod download
+
+COPY . .
+
+# Pure-Go build — no cgo, no rocksdb, no mdbx. The client/geth path is
+# self-contained on cockroachdb/pebble.
+RUN CGO_ENABLED=0 GOOS=linux go build -ldflags "-s -w" -o /out/state-actor .
+
+# ---------- Stage 2: minimal runtime image ----------
+FROM alpine:3.19
+
+LABEL org.opencontainers.image.title="State Actor (geth)"
+LABEL org.opencontainers.image.description="Ethereum state generator targeting --client=geth (direct cockroachdb/pebble)"
+LABEL org.opencontainers.image.source="https://github.com/nerolation/state-actor"
+
+# ca-certificates for HTTPS RPC; curl for the smoke target's RPC probes
+# (validate-big-db-geth.sh runs eth_chainId / eth_getBalance from inside
+# the host but having curl available also lets users docker-exec in for
+# ad-hoc poking).
+RUN apk add --no-cache ca-certificates curl
+
+COPY --from=builder /out/state-actor /usr/local/bin/state-actor
+
+ENTRYPOINT ["/usr/local/bin/state-actor"]

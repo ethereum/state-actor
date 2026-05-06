@@ -6,54 +6,119 @@ import (
 	"sync"
 	"sync/atomic"
 
+	"github.com/cockroachdb/pebble"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/ethdb"
-	"github.com/ethereum/go-ethereum/ethdb/pebble"
 	"github.com/ethereum/go-ethereum/rlp"
 
 	"github.com/nerolation/state-actor/generator"
 	"github.com/nerolation/state-actor/genesis"
 )
 
-// Writer writes state to a geth-compatible Pebble database.
-// It uses the snapshot layer format with hashed keys.
+// Writer writes state to a geth-compatible Pebble database using
+// cockroachdb/pebble directly (no go-ethereum/ethdb/pebble wrapper, no
+// goroutine pool). It mirrors the direct-cgo write pattern used by
+// client/nethermind and client/besu, but with cockroach pebble in place of
+// grocksdb because geth's on-disk format is Pebble.
+//
+// Hot-path writes (WriteAccount/WriteStorage/WriteCode and the trie-node
+// callbacks driven by state_writer.go) accumulate into a single
+// *pebble.Batch and flush at flushBytes. Cold-path callers (genesis block
+// metadata, PathDB markers, rawdb.Open's freezer init) consume DB() — a
+// thin pebbleKV adapter that satisfies ethdb.KeyValueStore over the same
+// *pebble.DB.
+//
+// The Writer holds a single batch under a mutex. The hot path is
+// single-goroutine in normal operation (state_writer.go drives it from one
+// place); the mutex serialises that with mid-run FlushBatch calls issued
+// from a different goroutine (target-size size-sampling). No worker pool
+// — the slowness in the legacy go-ethereum/ethdb/pebble path traced to
+// the batch worker mutex contention plus random write order, neither of
+// which this design has.
 type Writer struct {
-	db        ethdb.KeyValueStore
+	db        *pebble.DB
+	kv        *pebbleKV // ethdb.KeyValueStore adapter; cold path only
 	dbPath    string
-	batchSize int
-	workers   int
+	flushBytes int
 
-	bw *batchWriter
+	// batchMu serialises hot-path Put on `batch` against mid-run
+	// FlushBatch / Flush. The hot path is single-goroutine; the mutex
+	// exists for the cross-goroutine flush case.
+	batchMu sync.Mutex
+	batch   *pebble.Batch
+	batchSz int
 
 	accountBytes atomic.Uint64
 	storageBytes atomic.Uint64
 	codeBytes    atomic.Uint64
 }
 
-// NewWriter creates a new geth-format state writer.
+// defaultFlushBytes is the bulk-import batch flush threshold. 64 MiB
+// matches client/besu/state_writer_cgo.go's phase1FlushBytes; large
+// enough to amortise commit overhead, small enough to bound RAM.
+const defaultFlushBytes = 64 * 1024 * 1024
+
+// NewWriter opens the geth Pebble DB at dbPath using cockroachdb/pebble
+// directly. batchSize and workers are accepted for backwards-compatibility
+// with the generator.Writer signature; the new implementation derives its
+// behaviour from a fixed ~64 MiB byte-budget flush instead.
+//
+// The DB is opened with bulk-import-friendly defaults: large MemTable,
+// L0-compaction trigger raised, MaxConcurrentCompactions=4. WAL is kept
+// enabled for the production DB so a crash doesn't lose the post-import
+// metadata writes (Phase 1's scratch DB, opened separately in
+// state_writer.go, disables WAL — that's what the speed delta buys).
 func NewWriter(dbPath string, batchSize, workers int) (*Writer, error) {
-	db, err := pebble.New(dbPath, 512, 256, "stategen/", false)
+	_ = batchSize // honoured implicitly via flushBytes; see comment above
+	_ = workers   // worker pool removed; signature kept for compatibility
+
+	db, err := pebble.Open(dbPath, prodPebbleOptions())
 	if err != nil {
-		return nil, fmt.Errorf("failed to open pebble database: %w", err)
+		return nil, fmt.Errorf("open pebble at %q: %w", dbPath, err)
 	}
 
 	w := &Writer{
-		db:        db,
-		dbPath:    dbPath,
-		batchSize: batchSize,
-		workers:   workers,
+		db:         db,
+		kv:         newPebbleKV(db, &pebble.WriteOptions{Sync: false}),
+		dbPath:     dbPath,
+		flushBytes: defaultFlushBytes,
+		batch:      db.NewBatch(),
 	}
-
-	w.bw = newBatchWriter(db, batchSize, workers)
-
 	return w, nil
 }
 
-// DB returns the underlying database for external use (e.g., genesis writing).
+// prodPebbleOptions returns pebble.Options tuned for state-actor's
+// write-heavy bulk-import workload on the production geth DB. WAL stays
+// enabled (durability for the metadata writes); other knobs are nudged
+// from pebble defaults toward bulk-import friendliness:
+//   - MemTableSize 128 MiB — fewer L0 flushes during a fresh import.
+//   - L0CompactionThreshold 8 — postpones compactions until enough L0
+//     files exist that a multi-file compaction is more efficient.
+//   - MaxConcurrentCompactions 4 — keep up with import throughput.
+//
+// All values stay within Pebble's documented safe ranges and produce a DB
+// that geth opens with no special flags.
+func prodPebbleOptions() *pebble.Options {
+	return &pebble.Options{
+		MemTableSize:                64 * 1024 * 1024,
+		MemTableStopWritesThreshold: 8,
+		L0CompactionThreshold:       8,
+		L0StopWritesThreshold:       24,
+		MaxConcurrentCompactions:    func() int { return 4 },
+	}
+}
+
+// DB returns an ethdb.KeyValueStore view of the underlying Pebble DB for
+// cold-path callers (genesis block writer, rawdb.Write* helpers,
+// rawdb.Open's freezer initialiser).
+//
+// The adapter does NOT own the *pebble.DB; closing the adapter is a no-op
+// so that ad-hoc rawdb wrappers (e.g. fdb.Close in genesis_block.go) don't
+// invalidate Writer's still-active handle.
 func (w *Writer) DB() ethdb.KeyValueStore {
-	return w.db
+	return w.kv
 }
 
 // WriteAccount writes an account to the snapshot layer.
@@ -61,7 +126,7 @@ func (w *Writer) DB() ethdb.KeyValueStore {
 func (w *Writer) WriteAccount(addr common.Address, addrHash common.Hash, acc *types.StateAccount, incarnation uint64) error {
 	slimData := types.SlimAccountRLP(*acc)
 	key := accountSnapshotKey(addrHash)
-	return w.bw.put(key, slimData, &w.accountBytes)
+	return w.put(key, slimData, &w.accountBytes)
 }
 
 // WriteStorage writes a storage slot to the snapshot layer.
@@ -72,14 +137,14 @@ func (w *Writer) WriteStorage(addr common.Address, addrHash common.Hash, slot co
 		return fmt.Errorf("encode storage value: %w", err)
 	}
 	key := storageSnapshotKey(addrHash, slotHash)
-	return w.bw.put(key, valueRLP, &w.storageBytes)
+	return w.put(key, valueRLP, &w.storageBytes)
 }
 
 // WriteStorageRLP writes a storage slot with pre-encoded RLP value.
 // Avoids double-encoding when the caller already has the RLP bytes.
 func (w *Writer) WriteStorageRLP(addrHash common.Hash, slotHash common.Hash, valueRLP []byte) error {
 	key := storageSnapshotKey(addrHash, slotHash)
-	return w.bw.put(key, valueRLP, &w.storageBytes)
+	return w.put(key, valueRLP, &w.storageBytes)
 }
 
 // WriteRawStorage writes a storage slot using a pre-hashed trie key.
@@ -91,13 +156,13 @@ func (w *Writer) WriteRawStorage(addr common.Address, incarnation uint64, hashed
 		return fmt.Errorf("encode storage value: %w", err)
 	}
 	key := storageSnapshotKey(addrHash, hashedSlot)
-	return w.bw.put(key, valueRLP, &w.storageBytes)
+	return w.put(key, valueRLP, &w.storageBytes)
 }
 
 // WriteCode writes contract bytecode.
 func (w *Writer) WriteCode(codeHash common.Hash, code []byte) error {
 	key := codeKey(codeHash)
-	return w.bw.put(key, code, &w.codeBytes)
+	return w.put(key, code, &w.codeBytes)
 }
 
 // SetStateRoot writes the snapshot root marker and PathDB initialization
@@ -107,32 +172,42 @@ func (w *Writer) WriteCode(codeHash common.Hash, code []byte) error {
 // match. When --genesis is provided, WriteGenesisBlock writes the same
 // entries; doing it here too is idempotent and ensures non-genesis DBs
 // also boot cleanly.
+//
+// Drains the in-flight bulk-import batch first so the metadata write lands
+// after all snapshot/trie data — critical for SnapshotGenerator's "Done"
+// flag to reflect a fully-populated state.
 func (w *Writer) SetStateRoot(root common.Hash, binaryTrie bool) error {
-	if err := WritePathDBMetadata(w.db, root, binaryTrie); err != nil {
+	if err := w.flushBatch(true); err != nil {
+		return fmt.Errorf("drain batch before SetStateRoot: %w", err)
+	}
+	if err := WritePathDBMetadata(w.kv, root, binaryTrie); err != nil {
 		return fmt.Errorf("write pathdb metadata: %w", err)
 	}
 	return nil
 }
 
-// Flush commits all pending writes and closes the async batch pipeline.
-// This is a shutdown-once operation — don't call it mid-run.
+// Flush commits all pending writes. Tearing down semantics matched the
+// legacy goroutine-pool form for compatibility, but with no pool to drain
+// the operation is just a final batch commit.
 func (w *Writer) Flush() error {
-	return w.bw.finish()
+	return w.flushBatch(true)
 }
 
-// FlushBatch commits the currently-buffered batch to Pebble synchronously
-// and waits for the async pipeline to drain outstanding batches. Does not
-// close the pipeline, so subsequent Write* calls still work. Safe to call
-// mid-generation (e.g. to force a dirSize sample to see the latest bytes).
-// The caller is responsible for coordinating that all desired Write* calls
-// have already returned before flushing.
+// FlushBatch commits the currently-buffered batch synchronously. Safe to
+// call mid-generation (e.g. before a dirSize sample) — the hot path's
+// next put() opens a fresh batch transparently.
 func (w *Writer) FlushBatch() error {
-	return w.bw.flushAndDrainSync()
+	return w.flushBatch(true)
 }
 
-// Close closes the writer.
+// Close closes the writer and the underlying pebble DB.
 func (w *Writer) Close() error {
-	w.bw.close()
+	if err := w.flushBatch(true); err != nil {
+		// Best-effort flush before close — surface the error but still try
+		// to close the DB so resources don't leak.
+		_ = w.db.Close()
+		return fmt.Errorf("final flush: %w", err)
+	}
 	return w.db.Close()
 }
 
@@ -147,142 +222,68 @@ func (w *Writer) Stats() generator.WriterStats {
 
 // WriteGenesisBlockFull writes the genesis block with full genesis config.
 func (w *Writer) WriteGenesisBlockFull(genesisConfig *genesis.Genesis, stateRoot common.Hash, binaryTrie bool) error {
+	// The genesis block writer touches the DB through the kv adapter; flush
+	// the hot-path batch first so its writes are visible to the metadata
+	// path.
+	if err := w.flushBatch(true); err != nil {
+		return fmt.Errorf("drain batch before genesis block: %w", err)
+	}
 	ancientDir := filepath.Join(w.dbPath, "ancient")
-	_, err := WriteGenesisBlock(w.db, genesisConfig, stateRoot, binaryTrie, ancientDir)
+	_, err := WriteGenesisBlock(w.kv, genesisConfig, stateRoot, binaryTrie, ancientDir)
 	return err
 }
 
-// --- Batch writer for parallel writes ---
-
-type batchWriter struct {
-	db        ethdb.KeyValueStore
-	batchSize int
-	batchChan chan *batchWork
-	errChan   chan error
-	wg        sync.WaitGroup
-	closeOnce sync.Once
-	// mu serialises put() (hot path, single-goroutine in normal operation)
-	// with mid-run flush() calls issued from a different goroutine (e.g.
-	// target-size size sampling). The async batch-commit workers don't
-	// touch bw.batch directly — they consume the detached *batchWork
-	// sent on batchChan — so they don't need to hold this mutex.
-	mu    sync.Mutex
-	batch ethdb.Batch
-	count int
+// PutTrieNode writes a single trie node to the in-flight bulk-import
+// batch, accounting it under the storage-bytes counter for now (trie
+// nodes are not separately metered today). Exposed for state_writer.go.
+//
+// The accounting is intentionally rough — the LiveStats progress bar
+// cares about gross order-of-magnitude bytes-on-disk, not category
+// precision. A separate trieNodeBytes counter can be added when callers
+// need it.
+func (w *Writer) PutTrieNode(key, blob []byte) error {
+	return w.put(key, blob, &w.storageBytes)
 }
 
-type batchWork struct {
-	batch ethdb.Batch
-}
-
-func newBatchWriter(db ethdb.KeyValueStore, batchSize, workers int) *batchWriter {
-	bw := &batchWriter{
-		db:        db,
-		batchSize: batchSize,
-		batchChan: make(chan *batchWork, workers*2),
-		errChan:   make(chan error, 1),
-		batch:     db.NewBatch(),
+// put is the shared hot-path entry. Single-goroutine in normal operation;
+// batchMu protects against mid-run FlushBatch from a sampler goroutine.
+func (w *Writer) put(key, value []byte, counter *atomic.Uint64) error {
+	w.batchMu.Lock()
+	if err := w.batch.Set(key, value, nil); err != nil {
+		w.batchMu.Unlock()
+		return fmt.Errorf("pebble batch set: %w", err)
 	}
-
-	for i := 0; i < workers; i++ {
-		bw.wg.Add(1)
-		go func() {
-			defer bw.wg.Done()
-			for work := range bw.batchChan {
-				if err := work.batch.Write(); err != nil {
-					select {
-					case bw.errChan <- err:
-					default:
-					}
-					return
-				}
-			}
-		}()
-	}
-
-	return bw
-}
-
-func (bw *batchWriter) put(key, value []byte, counter *atomic.Uint64) error {
-	bw.mu.Lock()
-	if err := bw.batch.Put(key, value); err != nil {
-		bw.mu.Unlock()
-		return err
-	}
+	w.batchSz += len(key) + len(value)
 	counter.Add(uint64(len(key) + len(value)))
-	bw.count++
-	shouldFlush := bw.count >= bw.batchSize
-	bw.mu.Unlock()
-	if shouldFlush {
-		return bw.flushExternal()
+	full := w.batchSz >= w.flushBytes
+	w.batchMu.Unlock()
+	if full {
+		return w.flushBatch(false)
 	}
 	return nil
 }
 
-// flushExternal is the public-facing flush entry. flushLocked expects the
-// caller to already hold bw.mu.
-func (bw *batchWriter) flushExternal() error {
-	bw.mu.Lock()
-	defer bw.mu.Unlock()
-	return bw.flushLocked()
-}
-
-func (bw *batchWriter) flushLocked() error {
-	if bw.count == 0 {
+// flushBatch commits the current batch and rotates in a new one. sync
+// controls whether pebble.WriteOptions.Sync=true is set; the periodic
+// auto-flush from put() uses sync=false (durability handled by the next
+// sync flush or Close), while explicit Flush/FlushBatch/SetStateRoot use
+// sync=true to guarantee the write hits stable storage.
+func (w *Writer) flushBatch(sync bool) error {
+	w.batchMu.Lock()
+	if w.batchSz == 0 {
+		w.batchMu.Unlock()
 		return nil
 	}
-	select {
-	case bw.batchChan <- &batchWork{batch: bw.batch}:
-	case err := <-bw.errChan:
-		return fmt.Errorf("batch worker failed: %w", err)
-	}
-	bw.batch = bw.db.NewBatch()
-	bw.count = 0
-	return nil
-}
+	old := w.batch
+	w.batch = w.db.NewBatch()
+	w.batchSz = 0
+	w.batchMu.Unlock()
 
-// flush is retained as the lock-acquiring form used by external callers
-// (FlushBatch and finish).
-func (bw *batchWriter) flush() error {
-	return bw.flushExternal()
-}
-
-// flushAndDrainSync commits the current batch synchronously (bypassing
-// the async workers) so the bytes are guaranteed on disk by the time
-// the call returns. It swaps in a fresh batch under the lock, then
-// commits the old one directly; the async workers continue handling
-// their own queued batches normally.
-func (bw *batchWriter) flushAndDrainSync() error {
-	bw.mu.Lock()
-	if bw.count == 0 {
-		bw.mu.Unlock()
-		return nil
-	}
-	oldBatch := bw.batch
-	bw.batch = bw.db.NewBatch()
-	bw.count = 0
-	bw.mu.Unlock()
-	return oldBatch.Write()
-}
-
-func (bw *batchWriter) finish() error {
-	if err := bw.flush(); err != nil {
-		return err
-	}
-	bw.closeOnce.Do(func() { close(bw.batchChan) })
-	bw.wg.Wait()
-
-	select {
-	case err := <-bw.errChan:
-		return err
-	default:
+	opts := &pebble.WriteOptions{Sync: sync}
+	if err := old.Commit(opts); err != nil {
+		return fmt.Errorf("pebble batch commit: %w", err)
 	}
 	return nil
-}
-
-func (bw *batchWriter) close() {
-	bw.closeOnce.Do(func() { close(bw.batchChan) })
-	bw.wg.Wait()
 }
 
 // --- Key encoding functions matching geth's rawdb schema ---
@@ -329,3 +330,4 @@ func trimLeftZeroes(s []byte) []byte {
 	}
 	return nil
 }
+

@@ -1,20 +1,40 @@
 package geth
 
 import (
+	"context"
 	"fmt"
 
 	"github.com/nerolation/state-actor/generator"
 )
 
-// init registers NewWriterFactory as state-actor's default writer factory.
+// init registers state-actor's default writer factory (used by binary-trie
+// mode through generator.New) and the default MPT generator (used by MPT
+// mode through Generator.Generate).
+//
 // Importing this package — even with a blank import:
 //
 //	import _ "github.com/nerolation/state-actor/client/geth"
 //
-// is enough to make generator.New(cfg) work without further wiring. This is
-// how state-actor's main.go and e2e tests opt into the geth writer.
+// is enough to make generator.New(cfg).Generate() work without further
+// wiring for both modes. main.go and e2e tests opt in this way.
+//
+// MPT mode: generator.Generator delegates to Populate, which opens its
+// own production Pebble + temp scratch and runs the two-phase pipeline
+// end-to-end. Generator's own writer field is nil for MPT-mode runs.
+//
+// Binary-trie mode: generator.NewWithWriter constructs a Writer via the
+// factory below; the binary pipeline in generator/binary_stack_trie.go
+// drives it directly.
 func init() {
 	generator.RegisterDefaultWriterFactory(NewWriterFactory())
+	generator.RegisterDefaultMPTGenerator(populateForGenerator)
+}
+
+// populateForGenerator is the MPTGeneratorFunc registered with the
+// generator package. It adapts Populate (which takes a context + Options)
+// to the generator's MPTGeneratorFunc signature.
+func populateForGenerator(cfg generator.Config) (*generator.Stats, error) {
+	return Populate(context.Background(), cfg, Options{})
 }
 
 // NewWriterFactory returns a generator.WriterFactory that constructs a geth
