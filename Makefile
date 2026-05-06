@@ -317,7 +317,8 @@ test-reth-oracle: image-reth
 	  -v /var/run/docker.sock:/var/run/docker.sock \
 	  -e RETH_ORACLE_DATADIR=/oracle-data \
 	  -e RETH_ORACLE_VOL=$(ORACLE_VOL) \
-	  state-actor-reth go test -tags 'cgo_reth oracle' ./client/reth/ -run TestRethDbStats -v -timeout 300s
+	  -e RETH_DOCKER_PLATFORM \
+	  state-actor-reth go test -tags 'cgo_reth oracle' ./client/reth/ -run TestRethDbStats -v -timeout 900s
 	docker volume rm -f $(ORACLE_VOL) >/dev/null 2>&1 || true
 
 ## test-reth-boot: Boot reth node --dev against a state-actor datadir and verify via JSON-RPC
@@ -334,5 +335,6 @@ test-reth-boot: image-reth
 	  -v /var/run/docker.sock:/var/run/docker.sock \
 	  -e RETH_ORACLE_DATADIR=/oracle-data \
 	  -e RETH_ORACLE_VOL=$(BOOT_VOL) \
-	  state-actor-reth go test -tags 'cgo_reth oracle' ./client/reth/ -run TestRethNodeBoot -v -timeout 600s
+	  -e RETH_DOCKER_PLATFORM \
+	  state-actor-reth go test -tags 'cgo_reth oracle' ./client/reth/ -run TestRethNodeBoot -v -timeout 1800s
 	docker volume rm -f $(BOOT_VOL) >/dev/null 2>&1 || true
