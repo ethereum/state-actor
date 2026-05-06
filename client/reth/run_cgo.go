@@ -222,10 +222,7 @@ func RunCgo(ctx context.Context, cfg generator.Config, opts Options) (*generator
 	// with --debug.skip-genesis-validation and trusts the DB-resident
 	// genesis state. File size is constant in N, no longer the OOM ceiling.
 	gen := genesis.OrDefault(cfg.Genesis)
-	chainID := int64(1337)
-	if gen.Config != nil && gen.Config.ChainID != nil {
-		chainID = gen.Config.ChainID.Int64()
-	}
+	chainID := gen.Config.ChainID.Int64()
 
 	chainspecPath := filepath.Join(cfg.DBPath, "chainspec.json")
 	if err := writeChainSpec(gen, chainspecPath); err != nil {
@@ -233,7 +230,7 @@ func RunCgo(ctx context.Context, cfg generator.Config, opts Options) (*generator
 	}
 
 	// Phase 5b: build genesis header (block 0) + write MDBX metadata tables.
-	header, err := buildBlock0Header(gen, chainID)
+	header, err := buildBlock0Header(gen)
 	if err != nil {
 		return nil, fmt.Errorf("RunCgo: buildBlock0Header: %w", err)
 	}

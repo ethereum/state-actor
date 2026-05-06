@@ -3,7 +3,6 @@ package geth
 import (
 	"encoding/json"
 	"fmt"
-	"math/big"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/rawdb"
@@ -14,6 +13,7 @@ import (
 	"github.com/ethereum/go-ethereum/trie"
 
 	"github.com/nerolation/state-actor/genesis"
+	"github.com/nerolation/state-actor/internal/genesisheader"
 )
 
 // pathdbSchemaVersion mirrors the on-disk schema constant from
@@ -88,74 +88,28 @@ func WriteGenesisBlock(db ethdb.KeyValueStore, gen *genesis.Genesis, stateRoot c
 		chainCfg = &cfgCopy
 	}
 
-	// Build the genesis block header
-	header := &types.Header{
-		Number:     new(big.Int).SetUint64(uint64(gen.Number)),
-		Nonce:      types.EncodeNonce(uint64(gen.Nonce)),
-		Time:       uint64(gen.Timestamp),
-		ParentHash: gen.ParentHash,
-		Extra:      gen.ExtraData,
-		GasLimit:   uint64(gen.GasLimit),
-		GasUsed:    uint64(gen.GasUsed),
-		Difficulty: (*big.Int)(gen.Difficulty),
-		MixDigest:  gen.Mixhash,
-		Coinbase:   gen.Coinbase,
-		Root:       stateRoot,
+	// Build the genesis block header via the shared builder.
+	header := genesisheader.Build(gen, uint64(gen.Number), gen.ParentHash, stateRoot)
+
+	// Geth-specific Ethash difficulty fallback: when the user-supplied
+	// genesis lacks an explicit Difficulty AND the chain is configured
+	// with Ethash, geth's historical default is params.GenesisDifficulty
+	// (vs the shared builder's 0). Only fires for the corner case
+	// gen.Difficulty == nil + gen.Config.Ethash != nil — for state-actor's
+	// synthetic genesis path (BuildSynthetic always sets Difficulty=0)
+	// this branch is dormant; preserved for callers that hand-roll a
+	// *Genesis without setting Difficulty.
+	if gen.Difficulty == nil && gen.Config.Ethash != nil {
+		header.Difficulty = params.GenesisDifficulty
 	}
 
-	// Set defaults
-	if header.GasLimit == 0 {
-		header.GasLimit = params.GenesisGasLimit
-	}
-	if header.Difficulty == nil {
-		if gen.Config.Ethash == nil {
-			header.Difficulty = big.NewInt(0)
-		} else {
-			header.Difficulty = params.GenesisDifficulty
-		}
-	}
-
-	// Handle EIP-1559 base fee
-	if gen.Config.IsLondon(common.Big0) {
-		if gen.BaseFee != nil {
-			header.BaseFee = (*big.Int)(gen.BaseFee)
-		} else {
-			header.BaseFee = new(big.Int).SetUint64(params.InitialBaseFee)
-		}
-	}
-
+	// Withdrawals body must be allocated (empty slice, not nil) when
+	// Shanghai+ so the genesis block hash matches the canonical
+	// EmptyWithdrawalsHash the shared builder set on the header. Geth's
+	// `types.NewBlock` derives the body's WithdrawalsRoot from this slice.
 	var withdrawals []*types.Withdrawal
-	num := big.NewInt(int64(gen.Number))
-	timestamp := uint64(gen.Timestamp)
-
-	// Handle Shanghai
-	if gen.Config.IsShanghai(num, timestamp) {
-		emptyWithdrawalsHash := types.EmptyWithdrawalsHash
-		header.WithdrawalsHash = &emptyWithdrawalsHash
+	if header.WithdrawalsHash != nil {
 		withdrawals = make([]*types.Withdrawal, 0)
-	}
-
-	// Handle Cancun
-	if gen.Config.IsCancun(num, timestamp) {
-		header.ParentBeaconRoot = new(common.Hash)
-		if gen.ExcessBlobGas != nil {
-			excess := uint64(*gen.ExcessBlobGas)
-			header.ExcessBlobGas = &excess
-		} else {
-			header.ExcessBlobGas = new(uint64)
-		}
-		if gen.BlobGasUsed != nil {
-			used := uint64(*gen.BlobGasUsed)
-			header.BlobGasUsed = &used
-		} else {
-			header.BlobGasUsed = new(uint64)
-		}
-	}
-
-	// Handle Prague
-	if gen.Config.IsPrague(num, timestamp) {
-		emptyRequestsHash := types.EmptyRequestsHash
-		header.RequestsHash = &emptyRequestsHash
 	}
 
 	// Create the block
