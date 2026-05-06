@@ -5,12 +5,8 @@ package reth
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
-	"io"
-	"math/big"
 	mrand "math/rand"
-	"net/http"
 	"os"
 	"os/exec"
 	"strconv"
@@ -18,10 +14,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ethereum/go-ethereum/common"
 	"github.com/nerolation/state-actor/generator"
 	"github.com/nerolation/state-actor/internal/entitygen"
 	iReth "github.com/nerolation/state-actor/internal/reth"
+	"github.com/nerolation/state-actor/internal/rpcprobe"
 )
 
 // oracleDatadir holds paths for an oracle test's datadir.
@@ -293,7 +289,7 @@ func TestRethNodeBootEmptyAlloc(t *testing.T) {
 	rpcURL := "http://" + containerIP + ":8545"
 	t.Logf("reth JSON-RPC: %s", rpcURL)
 
-	if err := waitForRPC(rpcURL, 120*time.Second); err != nil {
+	if err := rpcprobe.WaitForRPC(rpcURL, 120*time.Second); err != nil {
 		t.Fatalf("RPC never came up (logs in t.Cleanup):\n%v", err)
 	}
 	t.Log("empty-alloc reth node booted successfully")
@@ -429,13 +425,13 @@ func TestRethNodeBoot(t *testing.T) {
 	t.Logf("reth JSON-RPC: %s", rpcURL)
 
 	// Poll until the RPC endpoint is accepting connections (max 120 s).
-	if err := waitForRPC(rpcURL, 120*time.Second); err != nil {
+	if err := rpcprobe.WaitForRPC(rpcURL, 120*time.Second); err != nil {
 		t.Fatalf("RPC never came up (logs captured in t.Cleanup):\nerr: %v", err)
 	}
 
 	// ---- EOA assertions ----
 	for _, eoa := range eoas {
-		gotBal, err := rpcEthGetBalance(rpcURL, eoa.Address, "0x0")
+		gotBal, err := rpcprobe.EthGetBalance(rpcURL, eoa.Address, "0x0")
 		if err != nil {
 			t.Errorf("eth_getBalance %s: %v", eoa.Address.Hex(), err)
 			continue
@@ -451,7 +447,7 @@ func TestRethNodeBoot(t *testing.T) {
 	for _, c := range contracts {
 		// eth_getCode — reth returns the ORIGINAL bytecode (not the analyzed
 		// form), so compare against c.Code directly.
-		gotCode, err := rpcEthGetCode(rpcURL, c.Address, "0x0")
+		gotCode, err := rpcprobe.EthGetCode(rpcURL, c.Address, "0x0")
 		if err != nil {
 			t.Errorf("eth_getCode %s: %v", c.Address.Hex(), err)
 		} else if !bytes.Equal(gotCode, c.Code) {
@@ -462,7 +458,7 @@ func TestRethNodeBoot(t *testing.T) {
 
 		// eth_getStorageAt — one call per slot.
 		for _, slot := range c.Storage {
-			gotVal, err := rpcEthGetStorageAt(rpcURL, c.Address, slot.Key, "0x0")
+			gotVal, err := rpcprobe.EthGetStorageAt(rpcURL, c.Address, slot.Key, "0x0")
 			if err != nil {
 				t.Errorf("eth_getStorageAt %s slot %s: %v",
 					c.Address.Hex(), slot.Key.Hex(), err)
@@ -477,126 +473,8 @@ func TestRethNodeBoot(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// JSON-RPC helpers
+// Container helpers
 // ---------------------------------------------------------------------------
-
-// jsonRPCRequest is a minimal JSON-RPC 2.0 request.
-type jsonRPCRequest struct {
-	JSONRPC string        `json:"jsonrpc"`
-	Method  string        `json:"method"`
-	Params  []interface{} `json:"params"`
-	ID      int           `json:"id"`
-}
-
-// jsonRPCResponse is a minimal JSON-RPC 2.0 response envelope.
-type jsonRPCResponse struct {
-	JSONRPC string          `json:"jsonrpc"`
-	Result  json.RawMessage `json:"result"`
-	Error   *struct {
-		Code    int    `json:"code"`
-		Message string `json:"message"`
-	} `json:"error"`
-	ID int `json:"id"`
-}
-
-// callRPC sends a single JSON-RPC call and returns the raw result bytes.
-func callRPC(url, method string, params []interface{}) (json.RawMessage, error) {
-	req := jsonRPCRequest{
-		JSONRPC: "2.0",
-		Method:  method,
-		Params:  params,
-		ID:      1,
-	}
-	body, err := json.Marshal(req)
-	if err != nil {
-		return nil, fmt.Errorf("marshal: %w", err)
-	}
-	resp, err := http.Post(url, "application/json", bytes.NewReader(body)) //nolint:noctx
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-	raw, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("read body: %w", err)
-	}
-	var rpcResp jsonRPCResponse
-	if err := json.Unmarshal(raw, &rpcResp); err != nil {
-		return nil, fmt.Errorf("unmarshal response: %w (body: %s)", err, raw)
-	}
-	if rpcResp.Error != nil {
-		return nil, fmt.Errorf("RPC error %d: %s", rpcResp.Error.Code, rpcResp.Error.Message)
-	}
-	return rpcResp.Result, nil
-}
-
-// waitForRPC polls eth_blockNumber until it succeeds or deadline is exceeded.
-func waitForRPC(url string, timeout time.Duration) error {
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		_, err := callRPC(url, "eth_blockNumber", nil)
-		if err == nil {
-			return nil
-		}
-		time.Sleep(500 * time.Millisecond)
-	}
-	return fmt.Errorf("RPC at %s did not respond within %s", url, timeout)
-}
-
-// rpcEthGetBalance returns the balance of addr at the given block tag.
-func rpcEthGetBalance(url string, addr common.Address, block string) (*big.Int, error) {
-	raw, err := callRPC(url, "eth_getBalance", []interface{}{addr.Hex(), block})
-	if err != nil {
-		return nil, err
-	}
-	var hexStr string
-	if err := json.Unmarshal(raw, &hexStr); err != nil {
-		return nil, fmt.Errorf("unmarshal balance: %w (raw: %s)", err, raw)
-	}
-	hexStr = strings.TrimPrefix(hexStr, "0x")
-	if hexStr == "" || hexStr == "0" {
-		return new(big.Int), nil
-	}
-	n := new(big.Int)
-	if _, ok := n.SetString(hexStr, 16); !ok {
-		return nil, fmt.Errorf("parse hex balance %q", hexStr)
-	}
-	return n, nil
-}
-
-// rpcEthGetCode returns the bytecode at addr at the given block tag.
-func rpcEthGetCode(url string, addr common.Address, block string) ([]byte, error) {
-	raw, err := callRPC(url, "eth_getCode", []interface{}{addr.Hex(), block})
-	if err != nil {
-		return nil, err
-	}
-	var hexStr string
-	if err := json.Unmarshal(raw, &hexStr); err != nil {
-		return nil, fmt.Errorf("unmarshal code: %w (raw: %s)", err, raw)
-	}
-	hexStr = strings.TrimPrefix(hexStr, "0x")
-	if hexStr == "" {
-		return []byte{}, nil
-	}
-	b, err := hexDecode(hexStr)
-	if err != nil {
-		return nil, fmt.Errorf("decode code hex: %w", err)
-	}
-	return b, nil
-}
-
-// rpcEthGetStorageAt returns the value at the given storage slot.
-func rpcEthGetStorageAt(url string, addr common.Address, slot common.Hash, block string) (common.Hash, error) {
-	raw, err := callRPC(url, "eth_getStorageAt", []interface{}{addr.Hex(), slot.Hex(), block})
-	if err != nil {
-		return common.Hash{}, err
-	}
-	var hexStr string
-	if err := json.Unmarshal(raw, &hexStr); err != nil {
-		return common.Hash{}, fmt.Errorf("unmarshal storage: %w (raw: %s)", err, raw)
-	}
-	return common.HexToHash(hexStr), nil
-}
 
 // inspectContainerIP returns the bridge-network IP of a running container.
 // This is the IP that other containers (and the host when running natively)
@@ -628,36 +506,6 @@ func randSuffix(n int) string {
 		b[i] = chars[r.Intn(len(chars))]
 	}
 	return string(b)
-}
-
-// hexDecode decodes a hex string (no 0x prefix) into bytes.
-func hexDecode(s string) ([]byte, error) {
-	if len(s)%2 != 0 {
-		s = "0" + s
-	}
-	b := make([]byte, len(s)/2)
-	for i := range b {
-		hi := hexNibble(s[i*2])
-		lo := hexNibble(s[i*2+1])
-		if hi > 15 || lo > 15 {
-			return nil, fmt.Errorf("invalid hex char at pos %d: %q", i*2, s[i*2:i*2+2])
-		}
-		b[i] = hi<<4 | lo
-	}
-	return b, nil
-}
-
-func hexNibble(c byte) byte {
-	switch {
-	case c >= '0' && c <= '9':
-		return c - '0'
-	case c >= 'a' && c <= 'f':
-		return c - 'a' + 10
-	case c >= 'A' && c <= 'F':
-		return c - 'A' + 10
-	default:
-		return 255
-	}
 }
 
 // safePrefix returns the first n bytes of b, or all of b if len(b) < n.
