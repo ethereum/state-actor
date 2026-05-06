@@ -126,9 +126,6 @@ func main() {
 		if *targetSize != "" {
 			log.Fatalf("--target-size is not yet supported with --client=reth; set --accounts / --contracts explicitly")
 		}
-		if *deepBranchAccounts > 0 {
-			log.Fatalf("--deep-branch-accounts is not yet supported with --client=reth")
-		}
 	}
 
 	trieMode := generator.TrieModeMPT
