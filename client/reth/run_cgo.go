@@ -13,6 +13,7 @@ import (
 	"github.com/ethereum/go-ethereum/rlp"
 
 	"github.com/nerolation/state-actor/generator"
+	"github.com/nerolation/state-actor/genesis"
 	"github.com/nerolation/state-actor/internal/entitygen"
 )
 
@@ -220,15 +221,14 @@ func RunCgo(ctx context.Context, cfg generator.Config, opts Options) (*generator
 	// chainspec is now alloc-free (just config + header bits) — reth boots
 	// with --debug.skip-genesis-validation and trusts the DB-resident
 	// genesis state. File size is constant in N, no longer the OOM ceiling.
-	genesisPath := genesisPathFromCfg(cfg)
-	gen, err := loadGenesisForReth(genesisPath)
-	if err != nil {
-		return nil, fmt.Errorf("RunCgo: loadGenesisForReth: %w", err)
+	gen := genesis.OrDefault(cfg.Genesis)
+	chainID := int64(1337)
+	if gen.Config != nil && gen.Config.ChainID != nil {
+		chainID = gen.Config.ChainID.Int64()
 	}
-	chainID := deriveChainID(chainIDFromCfg(cfg), gen)
 
 	chainspecPath := filepath.Join(cfg.DBPath, "chainspec.json")
-	if err := writeChainSpec(genesisPath, chainspecPath, chainID); err != nil {
+	if err := writeChainSpec(gen, chainspecPath); err != nil {
 		return nil, fmt.Errorf("RunCgo: writeChainSpec: %w", err)
 	}
 

@@ -4,12 +4,8 @@ package besu
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
-	"fmt"
-	"log"
 	"math/big"
-	"os"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
@@ -33,20 +29,19 @@ func runImpl(ctx context.Context, cfg generator.Config, opts Options) (*generato
 	if cfg.DBPath == "" {
 		return nil, errors.New("besu: --db is required")
 	}
-
 	// Besu reads chainId from --genesis-file at boot, not from the DB.
-	if ChainIDOverride != 0 {
-		log.Printf(
-			"warning: --chain-id=%d is ignored for --client=besu — make sure it matches genesis JSON's config.chainId",
-			ChainIDOverride,
-		)
+	// B7 (chainID embedding via state-actor-written chainspec) is the
+	// follow-up that makes --chain-id take effect end-to-end.
+	//
+	// Tests can leave cfg.Genesis nil; we synthesize a Shanghai default
+	// (besu's writer ceiling — see genesis.MaxForkForClient("besu")) so
+	// the supportedForkChainConfig gate doesn't reject the global default.
+	g := cfg.Genesis
+	if g == nil {
+		g, _ = genesis.BuildSynthetic("shanghai", nil, 0, 0, nil)
 	}
-
-	genesisCfg, err := loadOrDefault(GenesisFilePath)
-	if err != nil {
-		return nil, err
-	}
-	if err := supportedFork(&genesisCfg.unstable); err != nil {
+	genesisCfg := besuGenesisFromConfig(g)
+	if err := supportedForkChainConfig(g); err != nil {
 		return nil, err
 	}
 
@@ -82,10 +77,9 @@ func runImpl(ctx context.Context, cfg generator.Config, opts Options) (*generato
 	return stats, nil
 }
 
-// loadOrDefault loads a genesis JSON from path (if non-empty) or returns
-// a minimal dev-default. The default chainId is 1337 with a London-frozen
-// fork schedule (londonBlock at Long.MAX so genesis is pre-London and we
-// don't need baseFeePerGas in the header).
+// besuGenesis holds the header fields besu's writer needs. Built from
+// the in-memory cfg.Genesis (synthesized by genesis.BuildSynthetic in
+// main.go); no JSON re-parsing required.
 type besuGenesis struct {
 	chainID    *big.Int
 	gasLimit   uint64
@@ -97,53 +91,30 @@ type besuGenesis struct {
 	parentHash common.Hash
 	nonce      uint64
 	baseFee    *big.Int // nil if pre-London; *big.Int if londonBlock <= 0
-	unstable   genesisJSONConfig
 }
 
-func loadOrDefault(path string) (*besuGenesis, error) {
-	if path == "" {
-		return &besuGenesis{
-			chainID:    big.NewInt(1337),
-			gasLimit:   30_000_000,
-			difficulty: big.NewInt(0),
-			timestamp:  0,
-		}, nil
+// besuGenesisFromConfig translates an in-memory *genesis.Genesis into the
+// flat besuGenesis struct the writer consumes.
+func besuGenesisFromConfig(g *genesis.Genesis) *besuGenesis {
+	gasLimit := uint64(g.GasLimit)
+	if gasLimit == 0 {
+		gasLimit = 30_000_000
 	}
-	g, err := genesis.LoadGenesis(path)
-	if err != nil {
-		return nil, fmt.Errorf("besu: load genesis: %w", err)
-	}
-
-	// Re-parse the raw JSON to inspect post-Shanghai timestamps that
-	// genesis.LoadGenesis doesn't surface in its struct.
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		return nil, fmt.Errorf("besu: re-read genesis: %w", err)
-	}
-	var top struct {
-		Config genesisJSONConfig `json:"config"`
-	}
-	_ = json.Unmarshal(raw, &top) // best-effort; missing fields are nil
-
-	var diff *big.Int
+	diff := big.NewInt(0)
 	if g.Difficulty != nil {
 		diff = g.Difficulty.ToInt()
-	} else {
-		diff = big.NewInt(0)
 	}
-	var chainID *big.Int
-	if g.Config != nil {
+	chainID := big.NewInt(1337)
+	if g.Config != nil && g.Config.ChainID != nil {
 		chainID = g.Config.ChainID
-	} else {
-		chainID = big.NewInt(1337)
 	}
 	var baseFee *big.Int
 	if g.BaseFee != nil {
 		baseFee = g.BaseFee.ToInt()
 	}
-	out := &besuGenesis{
+	return &besuGenesis{
 		chainID:    chainID,
-		gasLimit:   uint64(g.GasLimit),
+		gasLimit:   gasLimit,
 		difficulty: diff,
 		timestamp:  uint64(g.Timestamp),
 		extraData:  []byte(g.ExtraData),
@@ -152,9 +123,7 @@ func loadOrDefault(path string) (*besuGenesis, error) {
 		parentHash: g.ParentHash,
 		nonce:      uint64(g.Nonce),
 		baseFee:    baseFee,
-		unstable:   top.Config,
 	}
-	return out, nil
 }
 
 // buildGenesisHeader assembles a *types.Header for the genesis block from

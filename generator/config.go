@@ -6,6 +6,7 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
 
+	"github.com/nerolation/state-actor/genesis"
 	"github.com/nerolation/state-actor/internal/entitygen"
 )
 
@@ -79,15 +80,23 @@ type Config struct {
 	// Defaults to TrieModeMPT if empty.
 	TrieMode TrieMode
 
-	// GenesisAccounts are pre-defined accounts from genesis.json alloc.
-	// These are included in state generation with their exact addresses.
+	// Genesis is the in-memory genesis configuration that drives chainID,
+	// fork selection, and the genesis-block header fields. Always non-nil
+	// after main.go's BuildSynthetic call. Each client's writer reads
+	// Genesis.Config (for IsLondon / IsShanghai / etc.) and Genesis's
+	// header fields (GasLimit, Timestamp, ExtraData, ...).
+	//
+	// Genesis.Alloc is intentionally always empty in the production path:
+	// pre-funded accounts come from --inject-accounts, not the genesis JSON.
+	Genesis *genesis.Genesis
+
+	// GenesisAccounts / GenesisStorage / GenesisCode are kept for tests
+	// (oracle differential tests construct an in-memory alloc programmatically
+	// and rely on the alloc-walking code paths in client/* writers). The
+	// production CLI never sets these — main.go does not touch them.
 	GenesisAccounts map[common.Address]*types.StateAccount
-
-	// GenesisStorage is the storage for genesis alloc accounts.
-	GenesisStorage map[common.Address]map[common.Hash]common.Hash
-
-	// GenesisCode is the code for genesis alloc accounts.
-	GenesisCode map[common.Address][]byte
+	GenesisStorage  map[common.Address]map[common.Hash]common.Hash
+	GenesisCode     map[common.Address][]byte
 
 	// CommitInterval is the number of accounts between binary trie commits
 	// to disk. Only used in TrieModeBinary. 0 means no intermediate commits

@@ -3,7 +3,6 @@ package geth
 import (
 	"context"
 	"fmt"
-	"math/big"
 	"path/filepath"
 
 	"github.com/nerolation/state-actor/generator"
@@ -15,17 +14,6 @@ import (
 // today the writer derives its tuning from defaults.
 type Options struct{}
 
-// GenesisFilePath / ChainIDOverride are package-level vars set from
-// main.go before Populate is called, mirroring the besu/nethermind
-// pattern. The MPT writer reads chain config from cfg.GenesisAccounts /
-// cfg.GenesisStorage / cfg.GenesisCode (already pre-loaded by the
-// CLI); these vars are kept for parity with the other clients but
-// aren't yet consumed here.
-var (
-	GenesisFilePath string
-	ChainIDOverride int64
-)
-
 // Populate is the public entry for `--client=geth` MPT mode. It
 // orchestrates the two-phase direct-Pebble writer:
 //
@@ -35,9 +23,10 @@ var (
 //     state root.
 //  3. Persist PathDB metadata (StateID, PersistentStateID, SnapshotRoot,
 //     completed-snapshot-generator marker) so geth boots cleanly.
-//  4. If a genesis config was loaded by the CLI (cfg.GenesisAccounts or
-//     a non-empty *genesis.Genesis loaded from --genesis), write the
-//     genesis block and chain config so the DB is fully self-bootable.
+//  4. Write the genesis block + chain config from cfg.Genesis so the DB
+//     is fully self-bootable. cfg.Genesis is always non-nil in the
+//     production CLI flow (main.go's BuildSynthetic); tests that omit
+//     it fall through to genesis.OrDefault.
 //  5. Close the writer.
 //
 // Returns the same *generator.Stats shape as the legacy generator.New +
@@ -67,41 +56,20 @@ func Populate(ctx context.Context, cfg generator.Config, opts Options) (*generat
 		return nil, err
 	}
 
-	// PathDB / snapshot metadata. Always written, even when --genesis is
-	// absent, so a state-only DB can boot the dev geth fork without
-	// `geth init`.
+	// PathDB / snapshot metadata. Always written so a state-only DB can
+	// boot stock geth without `geth init`.
 	if err := w.SetStateRoot(stateRoot, false); err != nil {
 		return nil, fmt.Errorf("client/geth.Populate: set state root: %w", err)
 	}
 
-	// Genesis block + chain config (only if the CLI loaded one).
-	if cfg.GenesisAccounts != nil || GenesisFilePath != "" {
-		if g, err := loadGenesisIfPresent(); err != nil {
-			return nil, fmt.Errorf("client/geth.Populate: load genesis: %w", err)
-		} else if g != nil {
-			ancientDir := filepath.Join(cfg.DBPath, "ancient")
-			if _, err := WriteGenesisBlock(w.DB(), g, stateRoot, false, ancientDir); err != nil {
-				return nil, fmt.Errorf("client/geth.Populate: write genesis block: %w", err)
-			}
-		}
+	// Genesis block + chain config. cfg.Genesis is the canonical surface
+	// (main.go's BuildSynthetic always populates it); genesis.OrDefault
+	// gives tests a sensible fallback chainspec without the boilerplate.
+	g := genesis.OrDefault(cfg.Genesis)
+	ancientDir := filepath.Join(cfg.DBPath, "ancient")
+	if _, err := WriteGenesisBlock(w.DB(), g, stateRoot, false, ancientDir); err != nil {
+		return nil, fmt.Errorf("client/geth.Populate: write genesis block: %w", err)
 	}
 
 	return stats, nil
-}
-
-// loadGenesisIfPresent reads GenesisFilePath if set, applying the
-// ChainIDOverride if non-zero. Returns (nil, nil) when no genesis file
-// is configured — the caller should treat that as a state-only run.
-func loadGenesisIfPresent() (*genesis.Genesis, error) {
-	if GenesisFilePath == "" {
-		return nil, nil
-	}
-	g, err := genesis.LoadGenesis(GenesisFilePath)
-	if err != nil {
-		return nil, err
-	}
-	if ChainIDOverride != 0 && g.Config != nil {
-		g.Config.ChainID = big.NewInt(ChainIDOverride)
-	}
-	return g, nil
 }
