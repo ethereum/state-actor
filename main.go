@@ -35,6 +35,7 @@ import (
 	"github.com/nerolation/state-actor/client/reth"
 	"github.com/nerolation/state-actor/generator"
 	"github.com/nerolation/state-actor/genesis"
+	"github.com/nerolation/state-actor/internal/clientpolicy"
 )
 
 var (
@@ -106,49 +107,14 @@ func main() {
 	// Validate --client value and its compatibility with other flags. Doing
 	// this at CLI parse time (before any generation work) means misconfigured
 	// runs fail fast instead of burning minutes producing a wrong output.
-	switch *client {
-	case "geth", "nethermind", "besu", "reth":
-		// supported
-	case "erigon":
-		log.Fatalf("--client=%s is not yet implemented (planned in a follow-up PR); use --client=geth, --client=nethermind, --client=besu, or --client=reth", *client)
-	default:
-		log.Fatalf("--client=%s is not recognized; valid values: geth, nethermind, besu, reth", *client)
-	}
-	if *client == "nethermind" {
-		// Nethermind doesn't implement EIP-7864 (binary trie) and the
-		// deep-branch / group-depth flags are geth/Pebble-specific.
-		// Reject up front.
-		if *binaryTrie {
-			log.Fatalf("--binary-trie is not supported with --client=nethermind (Nethermind does not implement EIP-7864)")
-		}
-		if *deepBranchAccounts > 0 {
-			log.Fatalf("--deep-branch-accounts is geth-specific and not supported with --client=nethermind")
-		}
-	}
-	if *client == "besu" {
-		// Besu doesn't implement EIP-7864 (binary trie) and the deep-branch
-		// flag is geth/Pebble-specific. Reject up front. --chain-id is
-		// warn-and-ignored inside client/besu/run_cgo.go (Besu reads chainId
-		// from --genesis-file at boot, not from the DB).
-		if *binaryTrie {
-			log.Fatalf("--binary-trie is not supported with --client=besu (Besu does not implement EIP-7864)")
-		}
-		if *deepBranchAccounts > 0 {
-			log.Fatalf("--deep-branch-accounts is geth-specific and not supported with --client=besu")
-		}
-	}
-	if *client == "reth" {
-		// Reth doesn't implement EIP-7864; surface the mismatch here rather
-		// than letting reth init-state fail opaquely later.
-		if *binaryTrie {
-			log.Fatalf("--binary-trie is not supported with --client=reth (Reth does not implement EIP-7864)")
-		}
-		if *targetSize != "" {
-			log.Fatalf("--target-size is not yet supported with --client=reth; set --accounts / --contracts explicitly")
-		}
-		if *deepBranchAccounts > 0 {
-			log.Fatalf("--deep-branch-accounts is not yet supported with --client=reth")
-		}
+	// Rules live in internal/clientpolicy/ as one source-of-truth table.
+	if err := clientpolicy.ValidateForClient(*client, clientpolicy.FlagValues{
+		BinaryTrie:         *binaryTrie,
+		DeepBranchAccounts: *deepBranchAccounts,
+		TargetSize:         *targetSize,
+		Fork:               *fork,
+	}); err != nil {
+		log.Fatalf("%v", err)
 	}
 
 	trieMode := generator.TrieModeMPT
@@ -255,14 +221,11 @@ func main() {
 		}
 		extraDataBytes = decoded
 	}
+	// Empty --fork resolves to the per-client ceiling (auto). Explicit values
+	// past the ceiling were rejected by ValidateForClient above.
 	chosenFork := *fork
 	if chosenFork == "" {
 		chosenFork = genesis.MaxForkForClient(*client)
-	} else if !genesis.ForkAtLeast(genesis.MaxForkForClient(*client), chosenFork) {
-		log.Fatalf("--fork=%s is past --client=%s's writer ceiling (%s); "+
-			"pass --fork=%s or earlier, or use a different --client",
-			chosenFork, *client, genesis.MaxForkForClient(*client),
-			genesis.MaxForkForClient(*client))
 	}
 	genesisConfig, err := genesis.BuildSynthetic(chosenFork, big.NewInt(*chainID), *gasLimit, *timestamp, extraDataBytes)
 	if err != nil {
