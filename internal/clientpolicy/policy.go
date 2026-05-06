@@ -21,10 +21,9 @@ import (
 // validated by the flag parser itself (--db required, --extra-data hex
 // well-formed, ...).
 type FlagValues struct {
-	BinaryTrie         bool   // --binary-trie
-	DeepBranchAccounts int    // --deep-branch-accounts (>0 means active)
-	TargetSize         string // --target-size (non-empty means active)
-	Fork               string // --fork (canonical fork name; "" means "auto")
+	BinaryTrie bool   // --binary-trie
+	TargetSize string // --target-size (non-empty means active)
+	Fork       string // --fork (canonical fork name; "" means "auto")
 }
 
 // ValidateForClient returns nil when every flag in fv is compatible with
@@ -34,10 +33,10 @@ type FlagValues struct {
 //
 // Two layers:
 //  1. Client recognition: erigon → not-yet-implemented; unknown → reject.
-//  2. Per-client compatibility: --binary-trie / --deep-branch-accounts
-//     are geth-only (the others lack EIP-7864 support); --target-size is
-//     incompatible with reth; --fork is clamped at each client's writer
-//     ceiling (see genesis.MaxForkForClient).
+//  2. Per-client compatibility: --binary-trie is geth-only (the others
+//     lack EIP-7864 support); --target-size is incompatible with reth;
+//     --fork is clamped at each client's writer ceiling (see
+//     genesis.MaxForkForClient).
 func ValidateForClient(client string, fv FlagValues) error {
 	switch client {
 	case "geth", "nethermind", "besu", "reth":
@@ -57,17 +56,6 @@ func ValidateForClient(client string, fv FlagValues) error {
 			return fmt.Errorf("--binary-trie is not supported with --client=besu (Besu does not implement EIP-7864)")
 		case "reth":
 			return fmt.Errorf("--binary-trie is not supported with --client=reth (Reth does not implement EIP-7864)")
-		}
-	}
-
-	// Deep-branch — geth-only (binary-trie experiment using its own
-	// Pebble layout).
-	if fv.DeepBranchAccounts > 0 && client != "geth" {
-		switch client {
-		case "nethermind", "besu":
-			return fmt.Errorf("--deep-branch-accounts is geth-specific and not supported with --client=%s", client)
-		case "reth":
-			return fmt.Errorf("--deep-branch-accounts is not yet supported with --client=reth")
 		}
 	}
 

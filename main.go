@@ -52,11 +52,6 @@ var (
 	benchmark    = flag.Bool("benchmark", false, "Run in benchmark mode (print detailed stats)")
 	binaryTrie   = flag.Bool("binary-trie", false, "Generate state for binary trie mode (EIP-7864)")
 
-	// Deep-branch accounts
-	deepBranchAccounts   = flag.Int("deep-branch-accounts", 0, "Number of additional contracts with deep storage tries (0 = disabled)")
-	deepBranchDepth      = flag.Int("deep-branch-depth", 64, "Branch depth per deep slot in nibbles (1-64)")
-	deepBranchKnownSlots = flag.Int("deep-branch-known-slots", 1, "Legitimate storage slots with known preimages per deep-branch account")
-
 	// Target size
 	targetSize = flag.String("target-size", "", "Target total DB size on disk (e.g. '5GB', '500MB'). Stop condition only — set --accounts/--contracts/--min-slots/--max-slots explicitly. Honored by geth and besu; ignored by nethermind; rejected by reth.")
 
@@ -109,10 +104,9 @@ func main() {
 	// runs fail fast instead of burning minutes producing a wrong output.
 	// Rules live in internal/clientpolicy/ as one source-of-truth table.
 	if err := clientpolicy.ValidateForClient(*client, clientpolicy.FlagValues{
-		BinaryTrie:         *binaryTrie,
-		DeepBranchAccounts: *deepBranchAccounts,
-		TargetSize:         *targetSize,
-		Fork:               *fork,
+		BinaryTrie: *binaryTrie,
+		TargetSize: *targetSize,
+		Fork:       *fork,
 	}); err != nil {
 		log.Fatalf("%v", err)
 	}
@@ -169,16 +163,6 @@ func main() {
 	// raw-byte cap; nethermind currently no-ops; reth rejects the flag at
 	// parse time.
 
-	// Validate deep-branch flags
-	if *deepBranchAccounts > 0 {
-		if *deepBranchDepth < 1 || *deepBranchDepth > 64 {
-			log.Fatalf("--deep-branch-depth must be 1-64, got %d", *deepBranchDepth)
-		}
-		if *deepBranchKnownSlots < 1 {
-			log.Fatalf("--deep-branch-known-slots must be >= 1, got %d", *deepBranchKnownSlots)
-		}
-	}
-
 	config := generator.Config{
 		DBPath:          *dbPath,
 		NumAccounts:     *accounts,
@@ -196,13 +180,8 @@ func main() {
 		WriteTrieNodes:  true, // Always write trie nodes — DB is unusable without them
 		InjectAddresses: injectAddrs,
 		TargetSize:      parsedTargetSize,
-		DeepBranch: generator.DeepBranchConfig{
-			NumAccounts: *deepBranchAccounts,
-			Depth:       *deepBranchDepth,
-			KnownSlots:  *deepBranchKnownSlots,
-		},
-		LiveStats:  liveStats,
-		GroupDepth: *groupDepth,
+		LiveStats:       liveStats,
+		GroupDepth:      *groupDepth,
 	}
 
 	// Synthesize the genesis chainspec from CLI flags. state-actor no
@@ -252,10 +231,6 @@ func main() {
 		}
 		if config.TargetSize > 0 {
 			log.Printf("  Target Size:  %s", formatBytes(config.TargetSize))
-		}
-		if config.DeepBranch.Enabled() {
-			log.Printf("  Deep Branch:  %d accounts, depth=%d, known_slots=%d",
-				config.DeepBranch.NumAccounts, config.DeepBranch.Depth, config.DeepBranch.KnownSlots)
 		}
 		log.Printf("  Fork:         %s", chosenFork)
 		log.Printf("  Chain ID:     %d", *chainID)

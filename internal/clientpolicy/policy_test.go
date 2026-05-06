@@ -39,18 +39,6 @@ func TestValidateForClient_BinaryTrieGethOnly(t *testing.T) {
 	}
 }
 
-func TestValidateForClient_DeepBranchGethOnly(t *testing.T) {
-	if err := ValidateForClient("geth", FlagValues{DeepBranchAccounts: 5}); err != nil {
-		t.Errorf("geth + --deep-branch-accounts should be allowed: %v", err)
-	}
-	for _, c := range []string{"nethermind", "besu", "reth"} {
-		err := ValidateForClient(c, FlagValues{DeepBranchAccounts: 5})
-		if err == nil {
-			t.Errorf("%s + --deep-branch-accounts should reject", c)
-		}
-	}
-}
-
 func TestValidateForClient_TargetSizeRejectsReth(t *testing.T) {
 	for _, c := range []string{"geth", "nethermind", "besu"} {
 		if err := ValidateForClient(c, FlagValues{TargetSize: "5GB"}); err != nil {
