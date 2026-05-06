@@ -313,7 +313,13 @@ func main() {
 				liveStats.SetStateRoot(stats.StateRoot.Hex())
 			}
 
+<<<<<<< feat/cli-chainid-embedding
 			// Always write genesis block — synthesized config is always present.
+=======
+			// Write genesis block (binary-trie path). genesisConfig is
+			// always non-nil now that main.go synthesizes it via
+			// genesis.BuildSynthetic.
+>>>>>>> main
 			if *verbose {
 				log.Printf("Writing genesis block with state root: %s", stats.StateRoot.Hex())
 			}

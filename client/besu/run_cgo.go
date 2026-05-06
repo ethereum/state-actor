@@ -5,7 +5,10 @@ package besu
 import (
 	"context"
 	"errors"
+<<<<<<< feat/cli-chainid-embedding
 	"fmt"
+=======
+>>>>>>> main
 	"math/big"
 
 	"github.com/ethereum/go-ethereum/common"
