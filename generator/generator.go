@@ -175,11 +175,6 @@ func (g *Generator) generateStreamingMPT() (*Stats, error) {
 		addrHash common.Hash
 		slotHash common.Hash
 		valueRLP []byte
-		// For deep-branch phantom entries (WriteRawStorage path):
-		isRaw   bool
-		rawAddr common.Address
-		rawSlot common.Hash
-		rawVal  common.Hash
 	}
 
 	// Async snapshot writing: ALL snapshot writes (storage + account + code)
@@ -204,22 +199,9 @@ func (g *Generator) generateStreamingMPT() (*Stats, error) {
 		for work := range snapCh {
 			// Write storage snapshots
 			for _, s := range work.storageEntries {
-				if s.isRaw {
-					if err := g.writer.WriteRawStorage(s.rawAddr, 0, s.rawSlot, s.rawVal); err != nil {
-						snapErrCh <- fmt.Errorf("write raw storage: %w", err)
-						return
-					}
-				} else if s.valueRLP != nil {
-					if err := g.writer.WriteStorageRLP(s.addrHash, s.slotHash, s.valueRLP); err != nil {
-						snapErrCh <- fmt.Errorf("write storage: %w", err)
-						return
-					}
-				} else {
-					// Non-phantom deep-branch entry with pre-hashed key
-					if err := g.writer.WriteStorage(s.rawAddr, s.addrHash, s.rawSlot, s.slotHash, s.rawVal); err != nil {
-						snapErrCh <- fmt.Errorf("write storage: %w", err)
-						return
-					}
+				if err := g.writer.WriteStorageRLP(s.addrHash, s.slotHash, s.valueRLP); err != nil {
+					snapErrCh <- fmt.Errorf("write storage: %w", err)
+					return
 				}
 			}
 			// Write code
@@ -591,78 +573,6 @@ func (g *Generator) generateStreamingMPT() (*Stats, error) {
 		}
 	}
 
-	// Deep-branch contracts
-	if g.config.DeepBranch.Enabled() {
-		deepSlots := g.config.DeepBranch.KnownSlots * (1 + g.config.DeepBranch.Depth)
-		for i := 0; i < g.config.DeepBranch.NumAccounts; i++ {
-			var addr common.Address
-			g.rng.Read(addr[:])
-			for genesisAddrs[addr] {
-				g.rng.Read(addr[:])
-			}
-
-			balance := new(uint256.Int).Mul(uint256.NewInt(uint64(g.rng.Intn(100)+1)), uint256.NewInt(1e18))
-			codeSize := g.config.CodeSize + g.rng.Intn(g.config.CodeSize)
-			codeSeed := g.rng.Int63()
-
-			rng := mrand.New(mrand.NewSource(codeSeed))
-			code := make([]byte, codeSize)
-			rng.Read(code)
-			codeHash := crypto.Keccak256Hash(code)
-			addrHash := crypto.Keccak256Hash(addr[:])
-
-			entries := generateDeepBranchStorage(
-				g.config.DeepBranch.KnownSlots,
-				g.config.DeepBranch.Depth,
-				rng,
-			)
-
-			var deepStorageCb trie.OnTrieNode
-			if nodeWriter != nil {
-				deepStorageCb = nodeWriter.storageCallback(addrHash)
-			}
-			storageTrie := trie.NewStackTrie(deepStorageCb)
-			deepEntries := make([]mptStorageEntry, 0, len(entries))
-			for _, entry := range entries {
-				if entry.isPhantom {
-					deepEntries = append(deepEntries, mptStorageEntry{
-						isRaw: true, rawAddr: addr, rawSlot: entry.trieKey, rawVal: entry.value,
-					})
-				} else {
-					slotHash := crypto.Keccak256Hash(entry.rawSlotKey[:])
-					deepEntries = append(deepEntries, mptStorageEntry{
-						rawAddr: addr, addrHash: addrHash, rawSlot: entry.rawSlotKey, slotHash: slotHash, rawVal: entry.value,
-					})
-				}
-				valueRLP, err := encodeStorageValue(entry.value)
-				if err != nil {
-					return nil, err
-				}
-				storageTrie.Update(entry.trieKey[:], valueRLP)
-			}
-
-			acc := &types.StateAccount{
-				Nonce:    1,
-				Balance:  balance,
-				Root:     storageTrie.Hash(),
-				CodeHash: codeHash.Bytes(),
-			}
-			if err := sendSnapshot(addr, addrHash, acc, code, codeHash, deepEntries); err != nil {
-				return nil, fmt.Errorf("send deep-branch snapshot: %w", err)
-			}
-
-			stats.StorageSlotsCreated += deepSlots
-			stats.ContractsCreated++
-		}
-		stats.DeepBranchAccounts = g.config.DeepBranch.NumAccounts
-		stats.DeepBranchDepth = g.config.DeepBranch.Depth
-
-		if g.config.Verbose {
-			log.Printf("Added %d deep-branch contracts (depth=%d, known_slots=%d)",
-				g.config.DeepBranch.NumAccounts, g.config.DeepBranch.Depth,
-				g.config.DeepBranch.KnownSlots)
-		}
-	}
 
 	stats.GenerationTime = time.Since(start)
 

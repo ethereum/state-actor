@@ -112,12 +112,6 @@ type Config struct {
 	// NumContracts serves as a safety upper bound. 0 means no size limit.
 	TargetSize uint64
 
-	// DeepBranch configures deep-branch account generation. When enabled,
-	// additional contract accounts are created with storage tries that have
-	// maximally deep chains of branch nodes (no extension nodes along the
-	// target path). Disabled by default (NumAccounts=0).
-	DeepBranch DeepBranchConfig
-
 	// LiveStats is an optional live stats tracker for real-time monitoring.
 	// When set, the generator updates stats during generation.
 	LiveStats *LiveStats
@@ -160,12 +154,6 @@ type Stats struct {
 	// StemBlobBytes is the number of bytes written for bintrie flat-state
 	// stem blobs (Phase 2). Only populated in binary trie mode.
 	StemBlobBytes uint64
-
-	// DeepBranchAccounts is the number of deep-branch contracts created.
-	DeepBranchAccounts int
-
-	// DeepBranchDepth is the configured branch depth for deep-branch accounts.
-	DeepBranchDepth int
 
 	// StateRoot is the computed state root hash.
 	StateRoot common.Hash
