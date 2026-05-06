@@ -175,8 +175,8 @@ func writeSyntheticAccounts(
 	}
 
 	for i := 0; i < cfg.NumContracts; i++ {
-		numSlots := entitygen.GenerateSlotCount(rng, cfg.Distribution, cfg.MinSlots, cfg.MaxSlots)
-		contract := entitygen.GenerateContract(rng, codeSize, numSlots)
+		contract := entitygen.GenerateContractRoll(rng, cfg.Distribution, codeSize, cfg.MinSlots, cfg.MaxSlots)
+		numSlots := len(contract.Storage)
 
 		// Write code first — keccak(code) goes into the State leaf below.
 		if err := dbs.code.Put(codeWO, contract.CodeHash[:], contract.Code); err != nil {

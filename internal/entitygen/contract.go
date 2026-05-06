@@ -27,6 +27,13 @@ import (
 // The returned Account.Storage is sorted by Key so consumers can stream into a
 // StackTrie without re-sorting.
 func GenerateContract(rng *mrand.Rand, codeSize int, numSlots int) *Account {
+	// (Implementation follows the function-level doc above. The package-
+	// level helper GenerateContractRoll is the preferred entry point for
+	// callers in writer + test code; calling GenerateContract directly is
+	// only correct when the slot count is *deliberately* a constant (e.g.
+	// equivalence tests that don't reproduce a writer's RNG sequence).
+	// See GenerateContractRoll.)
+
 	var addr common.Address
 	rng.Read(addr[:])
 
@@ -71,4 +78,31 @@ func GenerateContract(rng *mrand.Rand, codeSize int, numSlots int) *Account {
 		CodeHash: codeHash,
 		Storage:  storage,
 	}
+}
+
+// GenerateContractRoll bundles the canonical "roll a slot count, then
+// roll a contract" RNG sequence every state-actor writer uses. Splitting
+// the two calls (GenerateSlotCount + GenerateContract) at every call
+// site is what produced nerolation/state-actor#42's secondary bug —
+// boot-test reproductions skipped GenerateSlotCount and ended up one
+// Float64 ahead of the writer's RNG, so the contracts they reproduced
+// did not match the contracts the writer persisted.
+//
+// All four client writers (besu, geth, nethermind, reth) call this in
+// place of the two-step idiom. Test-side reproductions that need to
+// re-derive the writer's contracts from the same seed call this too —
+// it is the single source of truth for the contract draw order.
+//
+// Equivalent to:
+//
+//	numSlots := GenerateSlotCount(rng, dist, minSlots, maxSlots)
+//	return GenerateContract(rng, codeSize, numSlots)
+//
+// Direct callers of GenerateContract still exist for tests that
+// deliberately use a constant slot count (e.g. legacy-vs-streaming
+// equivalence in client/reth/streaming_test.go) — those don't reproduce
+// a writer's RNG sequence so GenerateSlotCount would just be noise.
+func GenerateContractRoll(rng *mrand.Rand, dist Distribution, codeSize, minSlots, maxSlots int) *Account {
+	numSlots := GenerateSlotCount(rng, dist, minSlots, maxSlots)
+	return GenerateContract(rng, codeSize, numSlots)
 }

@@ -152,10 +152,10 @@ func writeStateAndCollectRoot(
 			pdb.Close()
 			return common.Hash{}, nil, nil, err
 		}
-		// GenerateSlotCount MUST draw before GenerateContract — same RNG
-		// sequence as the other entitygen-using clients.
-		numSlots := entitygen.GenerateSlotCount(rng, cfg.Distribution, cfg.MinSlots, cfg.MaxSlots)
-		contract := entitygen.GenerateContract(rng, codeSize, numSlots)
+		// Canonical (slot-count, contract) draw order — single source of
+		// truth in entitygen so every writer + every reproduction-side
+		// test stays RNG-aligned.
+		contract := entitygen.GenerateContractRoll(rng, cfg.Distribution, codeSize, cfg.MinSlots, cfg.MaxSlots)
 		slotMap := make(map[common.Hash]common.Hash, len(contract.Storage))
 		for _, s := range contract.Storage {
 			slotMap[s.Key] = s.Value

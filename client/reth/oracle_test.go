@@ -98,6 +98,17 @@ func rethImageRef() string {
 	return image + ":" + tag
 }
 
+// dockerPlatformArgs returns ["--platform", $RETH_DOCKER_PLATFORM] when the
+// env var is set, otherwise an empty slice. Use to inject `--platform
+// linux/amd64` (qemu emulation) on arm64 hosts when the pinned image lacks
+// an arm64 manifest. See nerolation/state-actor#43.
+func dockerPlatformArgs() []string {
+	if v := os.Getenv("RETH_DOCKER_PLATFORM"); v != "" {
+		return []string{"--platform", v}
+	}
+	return nil
+}
+
 // parseDbStatsEntries extracts the numeric entry count for table from the
 // output of `reth db stats`. Returns (count, ok). The output format uses pipe
 // separators; the table name appears in column 1 and the entry count in
@@ -149,11 +160,13 @@ func TestRethDbStats(t *testing.T) {
 		t.Fatalf("RunCgo: %v", err)
 	}
 
-	cmd := exec.Command("docker", "run", "--rm",
+	args := append([]string{"run", "--rm"}, dockerPlatformArgs()...)
+	args = append(args,
 		"-v", dd.volMount,
 		rethImageRef(),
 		"db", "--datadir", dd.containerDatadir, "stats",
 	)
+	cmd := exec.Command("docker", args...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("reth db stats failed:\noutput:\n%s\nerr: %v", out, err)
@@ -193,11 +206,13 @@ func TestRethDbStatsSyntheticEOAs(t *testing.T) {
 		t.Fatalf("AccountsCreated = %d, want %d", stats.AccountsCreated, numAccounts)
 	}
 
-	cmd := exec.Command("docker", "run", "--rm",
+	args := append([]string{"run", "--rm"}, dockerPlatformArgs()...)
+	args = append(args,
 		"-v", dd.volMount,
 		rethImageRef(),
 		"db", "--datadir", dd.containerDatadir, "stats",
 	)
+	cmd := exec.Command("docker", args...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("reth db stats failed:\noutput:\n%s\nerr: %v", out, err)
@@ -253,7 +268,8 @@ func TestRethNodeBootEmptyAlloc(t *testing.T) {
 	imageRef := rethImageRef()
 	containerName := "state-actor-reth-boot-empty-" + randSuffix(8)
 	chainspecPath := dd.containerDatadir + "/chainspec.json"
-	runCmd := exec.Command("docker", "run", "-d",
+	runArgs := append([]string{"run", "-d"}, dockerPlatformArgs()...)
+	runArgs = append(runArgs,
 		"--name", containerName,
 		"-v", dd.volMount,
 		imageRef,
@@ -268,6 +284,7 @@ func TestRethNodeBootEmptyAlloc(t *testing.T) {
 		"--http.port", "8545",
 		"--http.api", "eth",
 	)
+	runCmd := exec.Command("docker", runArgs...)
 	runOut, err := runCmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("docker run: %s\n%v", runOut, err)
@@ -327,15 +344,6 @@ func TestRethNodeBoot(t *testing.T) {
 		maxSlots    = 2
 	)
 
-	// Compute slotCount exactly as RunCgo does.
-	slotCount := 5
-	if minSlots > 0 && maxSlots >= minSlots {
-		slotCount = (minSlots + maxSlots) / 2
-		if slotCount < minSlots {
-			slotCount = minSlots
-		}
-	}
-
 	// Acquire oracle datadir (honours RETH_ORACLE_DATADIR / RETH_ORACLE_VOL).
 	dd, cleanup := acquireOracleDatadir(t)
 	defer cleanup()
@@ -355,7 +363,15 @@ func TestRethNodeBoot(t *testing.T) {
 		t.Fatalf("RunCgo: %v", err)
 	}
 
-	// Reproduce the RNG sequence to capture expected values.
+	// Reproduce the RNG sequence to capture expected values. Goes through
+	// entitygen.GenerateContractRoll (same canonical draw order RunCgo
+	// uses): for each contract, GenerateSlotCount(rng, ...) THEN
+	// GenerateContract(rng, ...). The previous reproduction here computed
+	// a static slotCount mid-point and called GenerateContract directly,
+	// leaving the RNG one Float64 ahead of RunCgo per contract — every
+	// contract address it derived was wrong, and every contract probe
+	// would silently return zero. The geth boot test surfaced this by
+	// asserting eth_getCode and eth_getStorageAt; nerolation/state-actor#42.
 	rng := mrand.New(mrand.NewSource(seed))
 	eoas := make([]*entitygen.Account, numAccounts)
 	for i := 0; i < numAccounts; i++ {
@@ -363,7 +379,7 @@ func TestRethNodeBoot(t *testing.T) {
 	}
 	contracts := make([]*entitygen.Account, numContracts)
 	for i := 0; i < numContracts; i++ {
-		contracts[i] = entitygen.GenerateContract(rng, codeSize, slotCount)
+		contracts[i] = entitygen.GenerateContractRoll(rng, cfg.Distribution, codeSize, minSlots, maxSlots)
 	}
 
 	// Boot reth node --dev.
@@ -384,7 +400,8 @@ func TestRethNodeBoot(t *testing.T) {
 	// Without this, reth defaults to its built-in --dev chainspec whose genesis
 	// hash won't match our custom-written datadir.
 	chainspecPath := dd.containerDatadir + "/chainspec.json"
-	runCmd := exec.Command("docker", "run", "-d",
+	runArgs := append([]string{"run", "-d"}, dockerPlatformArgs()...)
+	runArgs = append(runArgs,
 		"--name", containerName,
 		"-v", dd.volMount,
 		imageRef,
@@ -399,6 +416,7 @@ func TestRethNodeBoot(t *testing.T) {
 		"--http.port", "8545",
 		"--http.api", "eth",
 	)
+	runCmd := exec.Command("docker", runArgs...)
 	runOut, err := runCmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("docker run: %s\n%v", runOut, err)

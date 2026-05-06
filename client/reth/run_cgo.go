@@ -181,8 +181,7 @@ func RunCgo(ctx context.Context, cfg generator.Config, opts Options) (*generator
 				}
 				batch := make([]*entitygen.Account, b)
 				for i := 0; i < b; i++ {
-					slotCount := entitygen.GenerateSlotCount(rng, cfg.Distribution, cfg.MinSlots, cfg.MaxSlots)
-					batch[i] = entitygen.GenerateContract(rng, codeSize, slotCount)
+					batch[i] = entitygen.GenerateContractRoll(rng, cfg.Distribution, codeSize, cfg.MinSlots, cfg.MaxSlots)
 				}
 				// WriteContracts mutates each contract's StateAccount.Root
 				// (storage trie root) and .CodeHash in-place BEFORE

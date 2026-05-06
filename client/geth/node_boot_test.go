@@ -37,6 +37,18 @@ func gethImageRef() string {
 	return defaultGethImage
 }
 
+// dockerPlatformArgs returns ["--platform", $GETH_DOCKER_PLATFORM] when
+// the env var is set, otherwise an empty slice. Use to inject `--platform
+// linux/amd64` (qemu emulation) on arm64 hosts when the geth image lacks
+// an arm64 manifest, mirroring the reth side. Tracked in
+// nerolation/state-actor#43.
+func dockerPlatformArgs() []string {
+	if v := os.Getenv("GETH_DOCKER_PLATFORM"); v != "" {
+		return []string{"--platform", v}
+	}
+	return nil
+}
+
 // freeTCPPort asks the kernel for an available TCP port. The returned
 // port is briefly bound and then released — there's a small race window
 // before docker -p binds it back, but in practice this is the standard
@@ -134,19 +146,13 @@ func TestGethNodeBoot(t *testing.T) {
 	// Reproduce the RNG sequence state-actor's geth Phase 1 used so we
 	// know the expected balances/code/storage without exposing them
 	// through the Populate API. Mirrors client/geth/state_writer.go's
-	// Phase 1 draw order exactly:
+	// Phase 1 draw order, which now goes through entitygen.GenerateContractRoll
+	// (the canonical "slot-count then contract" draw — single source of
+	// truth across all four client writers).
 	//
-	//   - For each EOA: GenerateEOA(rng) (no GenerateSlotCount).
-	//   - For each contract: GenerateSlotCount(rng, dist, min, max) THEN
-	//     GenerateContract(rng, codeSize, numSlots). Skipping the
-	//     GenerateSlotCount call would leave the RNG state out of sync
-	//     because that helper draws from rng (one Float64 for PowerLaw /
-	//     Exponential, one Intn for Uniform) regardless of whether
-	//     min == max.
-	//
-	// We don't need state-actor's genesisAddrs collision-retry loop here
-	// — this test passes no genesis alloc and no --inject-accounts, so
-	// the map is empty and no re-rolls happen.
+	// We don't need state-actor's genesisAddrs collision-retry loop here:
+	// this test passes no genesis alloc and no --inject-accounts, so the
+	// map is empty and no re-rolls happen.
 	rng := mrand.New(mrand.NewSource(seed))
 	eoas := make([]*entitygen.Account, numAccounts)
 	for i := 0; i < numAccounts; i++ {
@@ -154,8 +160,7 @@ func TestGethNodeBoot(t *testing.T) {
 	}
 	contracts := make([]*entitygen.Account, numContracts)
 	for i := 0; i < numContracts; i++ {
-		numSlots := entitygen.GenerateSlotCount(rng, generator.PowerLaw, minSlots, maxSlots)
-		contracts[i] = entitygen.GenerateContract(rng, codeSize, numSlots)
+		contracts[i] = entitygen.GenerateContractRoll(rng, generator.PowerLaw, codeSize, minSlots, maxSlots)
 	}
 
 	// Boot upstream geth in passive read-only mode. --syncmode=full +
@@ -166,10 +171,10 @@ func TestGethNodeBoot(t *testing.T) {
 	containerName := "state-actor-geth-boot-" + randSuffix(8)
 	hostPort := freeTCPPort(t)
 
-	runArgs := []string{
-		"run", "-d",
+	runArgs := append([]string{"run", "-d"}, dockerPlatformArgs()...)
+	runArgs = append(runArgs,
 		"--name", containerName,
-		"-v", datadir + ":/data",
+		"-v", datadir+":/data",
 		"-p", fmt.Sprintf("127.0.0.1:%d:8545", hostPort),
 		gethImageRef(),
 		"--datadir", "/data",
@@ -185,7 +190,7 @@ func TestGethNodeBoot(t *testing.T) {
 		"--http.corsdomain", "*",
 		"--http.vhosts", "*",
 		"--verbosity", "3",
-	}
+	)
 	runOut, err := exec.Command("docker", runArgs...).CombinedOutput()
 	if err != nil {
 		t.Fatalf("docker run: %s\n%v", runOut, err)

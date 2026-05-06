@@ -235,13 +235,12 @@ func writeStateAndCollectRoot(
 		if err := ctx.Err(); err != nil {
 			return common.Hash{}, nil, err
 		}
-		// numSlots is drawn first per entitygen's contract.go RNG
-		// contract; this MUST stay before GenerateContract.
-		numSlots := entitygen.GenerateSlotCount(rng, cfg.Distribution, cfg.MinSlots, cfg.MaxSlots)
-		contract := entitygen.GenerateContract(rng, codeSize, numSlots)
+		// Canonical (slot-count, contract) draw order — single source of
+		// truth in entitygen so every writer + every reproduction-side
+		// test stays RNG-aligned.
+		contract := entitygen.GenerateContractRoll(rng, cfg.Distribution, codeSize, cfg.MinSlots, cfg.MaxSlots)
 		for _, dup := genesisAddrs[contract.Address]; dup; {
-			numSlots = entitygen.GenerateSlotCount(rng, cfg.Distribution, cfg.MinSlots, cfg.MaxSlots)
-			contract = entitygen.GenerateContract(rng, codeSize, numSlots)
+			contract = entitygen.GenerateContractRoll(rng, cfg.Distribution, codeSize, cfg.MinSlots, cfg.MaxSlots)
 			_, dup = genesisAddrs[contract.Address]
 		}
 
