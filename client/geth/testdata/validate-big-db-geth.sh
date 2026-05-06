@@ -114,21 +114,27 @@ if [[ -n "$EXPECTED_ROOT" ]]; then
 fi
 
 echo "[4/5] Dev wallet balances ..."
+# After the --genesis JSON flow was retired, dev wallets are pre-funded
+# via --inject-accounts (state-actor's hardcoded 999999999 ETH). The
+# strict balance equality is gone since the value is now an
+# implementation detail of the inject path; we just assert the address
+# resolves to a non-zero balance, which is the actual smoke property
+# (the inject-account write made it into the snapshot).
 bal_coinbase=$(curl -s -X POST -H 'Content-Type: application/json' \
   --data "{\"jsonrpc\":\"2.0\",\"method\":\"eth_getBalance\",\"params\":[\"$COINBASE\",\"latest\"],\"id\":1}" \
   "$RPC" | jq -r .result)
-echo "  $COINBASE: $bal_coinbase (expected 0xd3c21bcecceda1000000 = 1M ETH)"
-if [[ "$bal_coinbase" != "0xd3c21bcecceda1000000" ]]; then
-  echo "  coinbase balance mismatch — alloc-funded account not in snapshot"
+echo "  $COINBASE: $bal_coinbase (expected non-zero from --inject-accounts)"
+if [[ "$bal_coinbase" == "0x0" || -z "$bal_coinbase" || "$bal_coinbase" == "null" ]]; then
+  echo "  coinbase balance is zero — --inject-accounts did not land"
   exit 1
 fi
 
 bal_dev2=$(curl -s -X POST -H 'Content-Type: application/json' \
   --data "{\"jsonrpc\":\"2.0\",\"method\":\"eth_getBalance\",\"params\":[\"$DEV2\",\"latest\"],\"id\":1}" \
   "$RPC" | jq -r .result)
-echo "  $DEV2: $bal_dev2 (expected 0xd3c21bcecceda1000000 = 1M ETH)"
-if [[ "$bal_dev2" != "0xd3c21bcecceda1000000" ]]; then
-  echo "  dev2 balance mismatch"
+echo "  $DEV2: $bal_dev2 (expected non-zero from --inject-accounts)"
+if [[ "$bal_dev2" == "0x0" || -z "$bal_dev2" || "$bal_dev2" == "null" ]]; then
+  echo "  dev2 balance is zero — --inject-accounts did not land"
   exit 1
 fi
 
