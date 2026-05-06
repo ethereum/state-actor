@@ -3,7 +3,8 @@
 	docker-nethermind docker-nethermind-test test-nethermind-oracle \
 	smoke-nethermind smoke-nethermind-spamoor \
 	docker-besu docker-besu-test test-besu-oracle \
-	smoke-besu smoke-besu-spamoor
+	smoke-besu smoke-besu-spamoor \
+	smoke-geth
 
 # Binary name
 BINARY=state-actor
@@ -211,6 +212,35 @@ tidy:
 ## deps: Download dependencies
 deps:
 	$(GOMOD) download
+
+## smoke-geth: End-to-end smoke for the geth direct-Pebble MPT path.
+##   Builds the binary, generates a small DB at $(SA_DB_GETH), times the
+##   wall-clock, asserts the resulting state root is non-zero, and
+##   reports the on-disk size. Pure-Go (no Docker / no cgo); runs fast.
+##   Usage: make smoke-geth ACCOUNTS=1000 CONTRACTS=100 SEED=42
+SA_DB_GETH ?= /tmp/sa-geth-smoke
+GETH_SMOKE_ACCOUNTS ?= 1000
+GETH_SMOKE_CONTRACTS ?= 100
+GETH_SMOKE_SEED ?= 42
+smoke-geth: build
+	@rm -rf $(SA_DB_GETH) && mkdir -p $(SA_DB_GETH)
+	@echo "==> generating geth-MPT state at $(SA_DB_GETH)"
+	@start=$$(date +%s); \
+	./$(BINARY) --client=geth --db=$(SA_DB_GETH) \
+	  --accounts=$(GETH_SMOKE_ACCOUNTS) --contracts=$(GETH_SMOKE_CONTRACTS) \
+	  --seed=$(GETH_SMOKE_SEED) --verbose 2>&1 \
+	  | tee $(SA_DB_GETH)/smoke.log; \
+	end=$$(date +%s); \
+	elapsed=$$((end-start)); \
+	echo "smoke-geth wall-clock: $${elapsed}s"
+	@if ! grep -q "State Root:" $(SA_DB_GETH)/smoke.log; then \
+	  echo "smoke-geth: missing 'State Root:' in output"; exit 1; \
+	fi
+	@if grep -q "State Root:.*0x0000000000000000000000000000000000000000000000000000000000000000" $(SA_DB_GETH)/smoke.log; then \
+	  echo "smoke-geth: state root is zero — generation produced no state"; exit 1; \
+	fi
+	@du -sh $(SA_DB_GETH)
+	@echo "smoke-geth: PASS"
 
 ## example: Run example generation
 example:
