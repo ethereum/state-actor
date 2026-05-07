@@ -84,3 +84,40 @@ func TestEncodeStorageValue_MaxU256(t *testing.T) {
 		}
 	}
 }
+
+// TestTrimStorageValue_FlatDbContract — the flat-db variant must NEVER
+// exceed 32 bytes (besu's UInt256.fromBytes rejects >32). Lock the
+// contract: trimmed all-0xff is exactly 32 bytes; trimmed value 1 is 1
+// byte; trimmed zero is 0 bytes. Mirrors the
+// BonsaiWorldState.java:182 putStorageValueBySlotHash arg shape.
+func TestTrimStorageValue_FlatDbContract(t *testing.T) {
+	t.Run("zero", func(t *testing.T) {
+		got := TrimStorageValue(common.Hash{})
+		if len(got) != 0 {
+			t.Fatalf("zero: got len=%d, want 0", len(got))
+		}
+	})
+	t.Run("one", func(t *testing.T) {
+		var h common.Hash
+		h[31] = 0x01
+		got := TrimStorageValue(h)
+		if !bytes.Equal(got, []byte{0x01}) {
+			t.Fatalf("one: got %x, want 01", got)
+		}
+	})
+	t.Run("max", func(t *testing.T) {
+		var h common.Hash
+		for i := range h {
+			h[i] = 0xff
+		}
+		got := TrimStorageValue(h)
+		if len(got) != 32 {
+			t.Fatalf("max: got len=%d, want 32 (must be ≤32 for UInt256.fromBytes)", len(got))
+		}
+		for i, b := range got {
+			if b != 0xff {
+				t.Fatalf("max byte[%d]: got %x, want ff", i, b)
+			}
+		}
+	})
+}

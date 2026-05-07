@@ -227,19 +227,28 @@ func writeStateAndCollectRoot(
 					return kvs[i].slotHash.Big().Cmp(kvs[j].slotHash.Big()) < 0
 				})
 				for _, e := range kvs {
-					valueRLP := besurlp.EncodeStorageValue(e.value)
-					if err := sb.AddSlot(e.slotHash, valueRLP); err != nil {
+					// Trie and flat-db use DIFFERENT encodings for the same
+					// slot value (BonsaiWorldState.java:182-183):
+					//   trie  → encodeTrieValue = RLP(trim(value))    (≤33 bytes)
+					//   flat  → raw trim(value)                       (≤32 bytes)
+					// Flat-db reads go through UInt256.fromBytes which
+					// rejects > 32 bytes, so writing the RLP-wrapped form
+					// to flat fatals at first eth_getStorageAt:
+					//   "Expected at most 32 bytes but got 33"
+					valueTrieRLP := besurlp.EncodeStorageValue(e.value)
+					valueFlat := besurlp.TrimStorageValue(e.value)
+					if err := sb.AddSlot(e.slotHash, valueTrieRLP); err != nil {
 						iter.Close()
 						pdb.Close()
 						return common.Hash{}, nil, nil, err
 					}
-					if err := sink.PutFlatStorage(addrHash, e.slotHash, valueRLP); err != nil {
+					if err := sink.PutFlatStorage(addrHash, e.slotHash, valueFlat); err != nil {
 						iter.Close()
 						pdb.Close()
 						return common.Hash{}, nil, nil, err
 					}
 					stats.StorageSlotsCreated++
-					stats.StorageBytes += uint64(64 + len(valueRLP))
+					stats.StorageBytes += uint64(64 + len(valueTrieRLP) + len(valueFlat))
 				}
 				root, err := sb.Commit()
 				if err != nil {
