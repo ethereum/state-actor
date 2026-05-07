@@ -230,9 +230,17 @@ func TestBesuNodeBoot(t *testing.T) {
 		// has no glob characters so it survives intact. Per besu docs
 		// (`--host-allowlist=...`), "all" and "*" are equivalent literals.
 		"--host-allowlist", "all",
-		// CORS not needed for our localhost RPC probes; omitting the
-		// `--rpc-http-cors-origins` flag avoids another `*` that would
-		// be shell-globbed in the entrypoint.
+		// Miner / dev-mode flags. Required for besu 25.11.0 to accept a
+		// chainspec with ethash.fixeddifficulty (state-actor's
+		// chainspec.go writes that stanza to enable
+		// post-london-no-CL block production). Without --miner-enabled +
+		// --miner-coinbase, besu rejects the chainspec at the
+		// "Supplied genesis block does not match chain data stored"
+		// check even with --genesis-state-hash-cache-enabled. Same flag
+		// set client/besu/testdata/validate-big-db-besu.sh uses.
+		"--min-gas-price", "0",
+		"--miner-enabled",
+		"--miner-coinbase", "0x0000000000000000000000000000000000000000",
 		"--logging", "INFO",
 	)
 	runOut, err := exec.Command("docker", runArgs...).CombinedOutput()
