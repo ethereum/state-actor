@@ -222,8 +222,17 @@ func TestBesuNodeBoot(t *testing.T) {
 		"--rpc-http-host", "0.0.0.0",
 		"--rpc-http-port", "8545",
 		"--rpc-http-api", "ETH,NET,WEB3",
-		"--rpc-http-cors-origins", "*",
-		"--host-allowlist", "*",
+		// `--host-allowlist=all` literally accepts any Host: header. We
+		// don't pass `*` because the besu Docker image's entrypoint script
+		// expands unquoted `$@`, which globs `*` against /opt/besu's
+		// directory contents (README.md, bin, lib, …) — first run failed
+		// with "Unmatched arguments from index 18: 'README.md', …". `all`
+		// has no glob characters so it survives intact. Per besu docs
+		// (`--host-allowlist=...`), "all" and "*" are equivalent literals.
+		"--host-allowlist", "all",
+		// CORS not needed for our localhost RPC probes; omitting the
+		// `--rpc-http-cors-origins` flag avoids another `*` that would
+		// be shell-globbed in the entrypoint.
 		"--logging", "INFO",
 	)
 	runOut, err := exec.Command("docker", runArgs...).CombinedOutput()

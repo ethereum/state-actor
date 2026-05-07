@@ -125,19 +125,24 @@ func acquireOracleDatadir(t *testing.T) (oracleDatadir, func()) {
 	}, func() {}
 }
 
-// nethermindBootConfig is the minimal Nethermind config for booting in
-// passive read-only mode against a state-actor datadir. Mirrors
+// nethermindBootConfigTemplate is the minimal Nethermind config for booting
+// in passive read-only mode against a state-actor datadir. Mirrors
 // client/nethermind/testdata/configs/sa-dev-v2.json but inlined here so the
-// test is self-contained — the test writes this to <datadir>/boot.cfg and
-// passes --config=/data/boot.cfg, avoiding the need to bind-mount the
-// state-actor source tree (which is a DinD path-translation hazard).
-const nethermindBootConfig = `{
+// test is self-contained — written into the datadir at runtime with the
+// chainspec / DB paths plugged in, so DinD mode (where the test container
+// places state-actor data at /data/<testName>/) and direct mode (/data)
+// both resolve correctly.
+//
+// Two %s placeholders, in order:
+//   1. ChainSpecPath  — full path to state-actor's parity-chainspec.json
+//   2. BaseDbPath     — full path to the per-test datadir
+const nethermindBootConfigTemplate = `{
   "Init": {
     "EnableUnsecuredDevWallet": false,
     "DiscoveryEnabled": false,
     "PeerManagerEnabled": false,
-    "ChainSpecPath": "/data/parity-chainspec.json",
-    "BaseDbPath": "/data",
+    "ChainSpecPath": "%s",
+    "BaseDbPath": "%s",
     "MemoryHint": 256000000
   },
   "Sync": {
@@ -208,10 +213,17 @@ func TestNethermindNodeBoot(t *testing.T) {
 		t.Fatalf("Run: %v", err)
 	}
 
-	// Write the minimal nethermind config into the datadir so we don't
-	// need a separate bind-mount for the source-tree config.
+	// Write the minimal nethermind config into the datadir, with paths
+	// resolved against the *container-side* layout (dd.containerDatadir),
+	// not the host-side path. In DinD mode they differ — the test
+	// container's filesystem and the spawned nethermind container's
+	// filesystem only share the named volume, mounted at /data on each;
+	// the per-test sub-directory is /data/<testName>.
 	cfgPath := filepath.Join(dd.hostPath, "boot.cfg")
-	if err := os.WriteFile(cfgPath, []byte(nethermindBootConfig), 0o644); err != nil {
+	chainSpecPath := dd.containerDatadir + "/" + ChainSpecFileName
+	baseDbPath := dd.containerDatadir
+	cfgContent := fmt.Sprintf(nethermindBootConfigTemplate, chainSpecPath, baseDbPath)
+	if err := os.WriteFile(cfgPath, []byte(cfgContent), 0o644); err != nil {
 		t.Fatalf("write boot.cfg: %v", err)
 	}
 
