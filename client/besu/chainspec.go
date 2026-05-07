@@ -28,6 +28,14 @@ const ChainSpecFileName = "besu-chainspec.json"
 //   - alloc: always {} — state-actor writes the state directly to RocksDB
 //     and the smoke scripts pass `--genesis-state-hash-cache-enabled` so
 //     Besu trusts the DB-resident state instead of recomputing from alloc.
+//
+// CRITICAL: every field written here must match what
+// genesis_cgo.buildGenesisHeader encodes into the DB. Besu's cached path
+// (BesuControllerBuilder.getGenesisState → GenesisState.fromStorage)
+// rebuilds the genesis header from chainspec + cached stateRoot, then
+// compares its hash against VARIABLES["chainHeadHash"]. Any field
+// divergence produces "Supplied genesis block does not match chain data
+// stored" at boot.
 func writeChainSpec(dbPath string, g *genesis.Genesis) (string, error) {
 	if g == nil {
 		return "", fmt.Errorf("besu writeChainSpec: nil genesis")
@@ -48,6 +56,14 @@ func writeChainSpec(dbPath string, g *genesis.Genesis) (string, error) {
 	if g.BaseFee != nil {
 		baseFeeHex = (*g.BaseFee).String()
 	}
+	// Difficulty MUST match what besuGenesisFromConfig flows into the
+	// stored header (run_cgo.go:111-114 → diff = g.Difficulty.ToInt()).
+	// BuildSynthetic emits Difficulty=0; older hand-written genesis JSONs
+	// used 0x10000. Either is OK as long as both sides agree.
+	diffHex := "0x0"
+	if g.Difficulty != nil {
+		diffHex = fmt.Sprintf("0x%x", g.Difficulty.ToInt())
+	}
 
 	cfg := map[string]any{
 		"chainId":           chainID,
@@ -63,7 +79,7 @@ func writeChainSpec(dbPath string, g *genesis.Genesis) (string, error) {
 		"timestamp":  fmt.Sprintf("0x%x", uint64(g.Timestamp)),
 		"extraData":  extraDataHex,
 		"gasLimit":   fmt.Sprintf("0x%x", gasLimit),
-		"difficulty": "0x10000", // matches besu testdata; ethash.fixeddifficulty actually controls
+		"difficulty": diffHex,
 		"mixHash":    "0x0000000000000000000000000000000000000000000000000000000000000000",
 		"coinbase":   "0x0000000000000000000000000000000000000000",
 		"alloc":      map[string]any{},
