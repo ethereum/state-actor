@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strings"
 	"syscall"
 	"time"
 
@@ -92,9 +93,25 @@ func SpamoorRun(cfg SpamoorRunCfg) (uint64, error) {
 		cfg.TargetGasRatio = 0.1
 	}
 
-	startTip, err := rpcprobe.EthBlockNumber(cfg.RPCURL)
-	if err != nil {
-		return 0, fmt.Errorf("SpamoorRun: read start tip: %w", err)
+	// Pre-flight: read start tip with the same 5×500ms tolerance
+	// rpcprobe.WaitForRPC uses. Today's startup races (RPC accepting
+	// connections per WaitForRPC but eth_blockNumber momentarily
+	// stalling) shouldn't hard-fail the suite asymmetrically vs the
+	// in-loop tolerance below.
+	var startTip uint64
+	{
+		const preflightAttempts = 5
+		var preErr error
+		for i := 0; i < preflightAttempts; i++ {
+			startTip, preErr = rpcprobe.EthBlockNumber(cfg.RPCURL)
+			if preErr == nil {
+				break
+			}
+			time.Sleep(500 * time.Millisecond)
+		}
+		if preErr != nil {
+			return 0, fmt.Errorf("SpamoorRun: read start tip after %d attempts: %w", preflightAttempts, preErr)
+		}
 	}
 	targetTip := startTip + cfg.TargetBlockDelta
 
@@ -123,31 +140,63 @@ func SpamoorRun(cfg SpamoorRunCfg) (uint64, error) {
 		if cmd.Process == nil {
 			return
 		}
-		// Send SIGTERM to the process group so spamoor's child
-		// goroutines also wind down.
-		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM)
-		_, _ = cmd.Process.Wait()
+		pid := cmd.Process.Pid
+		// SIGTERM the process group so spamoor's child goroutines
+		// wind down with it.
+		if err := syscall.Kill(-pid, syscall.SIGTERM); err != nil {
+			fmt.Fprintf(os.Stderr, "SpamoorRun cleanup: SIGTERM pgid=%d: %v\n", pid, err)
+		}
+		// Wait up to 10s for graceful exit; if it doesn't, escalate
+		// to SIGKILL. A wedged spamoor (e.g. blocked on a syscall
+		// that ignores SIGTERM) would otherwise leak the test
+		// goroutine until the outer GHA timeout.
+		done := make(chan error, 1)
+		go func() { done <- cmd.Wait() }()
+		select {
+		case err := <-done:
+			if err != nil && !strings.Contains(err.Error(), "signal: terminated") {
+				fmt.Fprintf(os.Stderr, "SpamoorRun cleanup: Wait: %v\n", err)
+			}
+		case <-time.After(10 * time.Second):
+			fmt.Fprintf(os.Stderr, "SpamoorRun cleanup: SIGTERM didn't exit in 10s, escalating to SIGKILL\n")
+			_ = syscall.Kill(-pid, syscall.SIGKILL)
+			<-done
+		}
 	}()
 
 	deadline := time.Now().Add(cfg.Timeout)
 	tick := time.NewTicker(time.Second)
 	defer tick.Stop()
 
+	var lastTip uint64
+	var lastRPCErr error
 	for {
 		select {
 		case <-tick.C:
+			// Deadline check FIRST — must fire even when RPC has been
+			// failing the whole time (broken RPC mid-spamoor must not
+			// silently hang until GHA's outer 30-min kill). Surfaces
+			// the most recent RPC error in the timeout message.
+			if time.Now().After(deadline) {
+				if lastRPCErr != nil {
+					return lastTip, fmt.Errorf("SpamoorRun: tip=%d, want ≥ %d, timed out after %s; last RPC error: %v",
+						lastTip, targetTip, cfg.Timeout, lastRPCErr)
+				}
+				return lastTip, fmt.Errorf("SpamoorRun: tip=%d, want ≥ %d, timed out after %s",
+					lastTip, targetTip, cfg.Timeout)
+			}
 			tip, err := rpcprobe.EthBlockNumber(cfg.RPCURL)
 			if err != nil {
-				// Don't fatal on transient RPC errors — spamoor's load
-				// can briefly stall the node's JSON-RPC. Retry next tick.
+				// Tolerate transient RPC errors — spamoor's load can
+				// briefly stall the node's JSON-RPC. Track the last
+				// error so the deadline-fire message has context.
+				lastRPCErr = err
 				continue
 			}
+			lastTip = tip
+			lastRPCErr = nil
 			if tip >= targetTip {
 				return tip, nil
-			}
-			if time.Now().After(deadline) {
-				return tip, fmt.Errorf("SpamoorRun: tip=%d, want ≥ %d, timed out after %s",
-					tip, targetTip, cfg.Timeout)
 			}
 		}
 	}

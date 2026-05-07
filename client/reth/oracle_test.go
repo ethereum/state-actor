@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"math/big"
 	mrand "math/rand"
 	"os"
 	"os/exec"
@@ -16,6 +17,7 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 
+	stategenesis "github.com/nerolation/state-actor/genesis"
 	"github.com/nerolation/state-actor/generator"
 	"github.com/nerolation/state-actor/internal/oracle"
 	iReth "github.com/nerolation/state-actor/internal/reth"
@@ -351,6 +353,14 @@ func TestE2ESuite(t *testing.T) {
 		maxSlots     = 2
 	)
 
+	// Pin --fork=osaka (reth's MaxForkForClient ceiling, post-PR-Pre-C).
+	// 60M gas matches mainnet-current. internal/genesisheader.Build's
+	// existing Prague ladder is structurally complete for Osaka.
+	g, err := stategenesis.BuildSynthetic("osaka", big.NewInt(1337), 60_000_000, 0, nil)
+	if err != nil {
+		t.Fatalf("BuildSynthetic: %v", err)
+	}
+
 	dd, cleanup := acquireOracleDatadir(t)
 	defer cleanup()
 
@@ -362,6 +372,7 @@ func TestE2ESuite(t *testing.T) {
 		MinSlots:        minSlots,
 		MaxSlots:        maxSlots,
 		Seed:            seed,
+		Genesis:         g,
 		InjectAddresses: []common.Address{spamoorSenderAddr},
 	}
 
@@ -524,6 +535,9 @@ func TestE2ESuite(t *testing.T) {
 		spamoorBin = "spamoor"
 	}
 	if _, err := exec.LookPath(spamoorBin); err != nil {
+		if os.Getenv("REQUIRE_SPAMOOR") == "1" {
+			t.Fatalf("REQUIRE_SPAMOOR=1 but spamoor binary not found: %v", err)
+		}
 		t.Skipf("spamoor binary not found (set $SPAMOOR or `make spamoor-install`): %v", err)
 	}
 	postBlock, err := oracle.SpamoorRun(oracle.SpamoorRunCfg{

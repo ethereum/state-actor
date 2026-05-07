@@ -309,7 +309,7 @@ test-besu-suite: image-besu
 	  -e RESULT_PATH=/result/besu-result.json \
 	  -e SPAMOOR=$(SPAMOOR) \
 	  --entrypoint bash state-actor-besu-builder:latest \
-	  -c 'cd /app && go test -tags '\''cgo_besu oracle spamoor'\'' ./client/besu/ -run TestE2ESuite -v -timeout 1800s'
+	  -c 'cd /app && go test -tags '\''cgo_besu oracle'\'' ./client/besu/ -run '\''TestE2ESuite|TestDifferentialOracle'\'' -v -timeout 1800s'
 	docker volume rm -f $(BESU_SUITE_VOL) >/dev/null 2>&1 || true
 
 ## test-nethermind-suite: Run the nethermind end-to-end suite
@@ -328,7 +328,7 @@ test-nethermind-suite: image-nethermind
 	  -e RESULT_PATH=/result/nethermind-result.json \
 	  -e SPAMOOR=$(SPAMOOR) \
 	  --entrypoint bash state-actor-nethermind-builder:latest \
-	  -c 'cd /app && go test -tags '\''cgo_neth oracle spamoor'\'' ./client/nethermind/ -run TestE2ESuite -v -timeout 1800s'
+	  -c 'cd /app && go test -tags '\''cgo_neth oracle'\'' ./client/nethermind/ -run '\''TestE2ESuite|TestDifferentialOracle'\'' -v -timeout 1800s'
 	docker volume rm -f $(NETH_SUITE_VOL) >/dev/null 2>&1 || true
 
 ## test-reth-suite: Run the reth end-to-end suite
@@ -346,14 +346,14 @@ test-reth-suite: image-reth
 	  -e RETH_DOCKER_PLATFORM \
 	  -e RESULT_PATH=/result/reth-result.json \
 	  -e SPAMOOR=$(SPAMOOR) \
-	  state-actor-reth go test -tags 'cgo_reth oracle spamoor' ./client/reth/ -run TestE2ESuite -v -timeout 1800s
+	  state-actor-reth go test -tags 'cgo_reth oracle' ./client/reth/ -v -timeout 2700s
 	docker volume rm -f $(RETH_SUITE_VOL) >/dev/null 2>&1 || true
 
 ## test-geth-suite: Run the geth end-to-end suite (pure Go, no Docker build)
 test-geth-suite:
 	mkdir -p $(RESULT_DIR)
 	RESULT_PATH=$(RESULT_DIR)/geth-result.json SPAMOOR=$(SPAMOOR) \
-	  $(GOTEST) -tags 'oracle spamoor' -run TestE2ESuite -v -timeout 1800s ./client/geth/...
+	  $(GOTEST) -tags oracle -run TestE2ESuite -v -timeout 1800s ./client/geth/...
 
 ## help: Show this help
 help:

@@ -366,6 +366,9 @@ func TestE2ESuite(t *testing.T) {
 		spamoorBin = "spamoor"
 	}
 	if _, err := exec.LookPath(spamoorBin); err != nil {
+		if os.Getenv("REQUIRE_SPAMOOR") == "1" {
+			t.Fatalf("REQUIRE_SPAMOOR=1 but spamoor binary not found: %v", err)
+		}
 		t.Skipf("spamoor binary not found (set $SPAMOOR or `make spamoor-install`): %v", err)
 	}
 	postBlock, err := oracle.SpamoorRun(oracle.SpamoorRunCfg{

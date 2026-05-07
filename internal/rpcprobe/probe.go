@@ -231,6 +231,13 @@ type Block struct {
 // header view. blockTag is a JSON-RPC tag: "0x0", "latest", "earliest", or
 // a hex height. The fullTxObjects param is hardcoded to false — oracle
 // callers don't read tx bodies through this helper.
+//
+// Rejects three failure modes that would otherwise silently produce a
+// zero-shaped Block: (1) result == null (block not found), (2) Number
+// field empty (incomplete reply), (3) StateRoot is zero (misconfigured
+// client returning {}-shaped headers). These checks defend the
+// cross-client stateRoot invariant against false-PASS via missing
+// fields — see MEMORY.md's "no silent-zero hex parsers" guidance.
 func BlockByNumber(url, blockTag string) (*Block, error) {
 	raw, err := Call(url, "eth_getBlockByNumber", []any{blockTag, false})
 	if err != nil {
@@ -242,6 +249,12 @@ func BlockByNumber(url, blockTag string) (*Block, error) {
 	var b Block
 	if err := json.Unmarshal(raw, &b); err != nil {
 		return nil, fmt.Errorf("unmarshal block: %w (raw: %s)", err, raw)
+	}
+	if b.Number == "" {
+		return nil, fmt.Errorf("eth_getBlockByNumber(%s): empty Number field (incomplete reply: %s)", blockTag, raw)
+	}
+	if b.StateRoot == (common.Hash{}) {
+		return nil, fmt.Errorf("eth_getBlockByNumber(%s): zero stateRoot (misconfigured client or incomplete reply)", blockTag)
 	}
 	return &b, nil
 }

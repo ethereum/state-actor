@@ -14,11 +14,10 @@
 #                                   re-query, with GHA-natural fail-fast
 #                                   between phases. Uploads
 #                                   {client}-result.json artifact.
-#   geth-suite                    — same shape, but Phase 5-7 (spamoor +
-#                                   post-spamoor) is skipped: state-actor
-#                                   produces a post-merge geth chain,
-#                                   block production needs a CL or
-#                                   pre-merge PoW. Tracked as follow-up.
+#   geth-suite                    — same shape; geth runs in --dev mode
+#                                   (PoA + self-emulated CL) so Phase
+#                                   5-7 spamoor advances the chain
+#                                   without an engine-API mock.
 #   cross-client-genesis-root     — needs all 4 *-suite jobs. Downloads
 #                                   the artifact from each, asserts every
 #                                   genesis_state_root is identical.
@@ -139,8 +138,9 @@ jobs:
             -e BESU_ORACLE_VOL="$SUITE_VOL" \
             -e RESULT_PATH=/result/besu-result.json \
             -e SPAMOOR=/usr/local/bin/spamoor \
+            -e REQUIRE_SPAMOOR=1 \
             --entrypoint bash state-actor-besu-builder:latest \
-            -c 'cd /app && go test -tags '"'"'cgo_besu oracle'"'"' ./client/besu/ -run TestE2ESuite -v -timeout 30m'
+            -c 'cd /app && go test -tags '"'"'cgo_besu oracle'"'"' ./client/besu/ -run '"'"'TestE2ESuite|TestDifferentialOracle'"'"' -v -timeout 30m'
           docker volume rm -f "$SUITE_VOL" >/dev/null 2>&1 || true
 
       - uses: actions/upload-artifact@v4
@@ -197,8 +197,9 @@ jobs:
             -e NETH_ORACLE_VOL="$SUITE_VOL" \
             -e RESULT_PATH=/result/nethermind-result.json \
             -e SPAMOOR=/usr/local/bin/spamoor \
+            -e REQUIRE_SPAMOOR=1 \
             --entrypoint bash state-actor-nethermind-builder:latest \
-            -c 'cd /app && go test -tags '"'"'cgo_neth oracle'"'"' ./client/nethermind/ -run TestE2ESuite -v -timeout 30m'
+            -c 'cd /app && go test -tags '"'"'cgo_neth oracle'"'"' ./client/nethermind/ -run '"'"'TestE2ESuite|TestDifferentialOracle'"'"' -v -timeout 30m'
           docker volume rm -f "$SUITE_VOL" >/dev/null 2>&1 || true
 
       - uses: actions/upload-artifact@v4
@@ -255,7 +256,8 @@ jobs:
             -e RETH_ORACLE_VOL="$SUITE_VOL" \
             -e RESULT_PATH=/result/reth-result.json \
             -e SPAMOOR=/usr/local/bin/spamoor \
-            state-actor-reth go test -tags 'cgo_reth oracle' ./client/reth/ -run TestE2ESuite -v -timeout 30m
+            -e REQUIRE_SPAMOOR=1 \
+            state-actor-reth go test -tags 'cgo_reth oracle' ./client/reth/ -v -timeout 45m
           docker volume rm -f "$SUITE_VOL" >/dev/null 2>&1 || true
 
       - uses: actions/upload-artifact@v4
@@ -266,9 +268,9 @@ jobs:
           if-no-files-found: warn
 
   geth-suite:
-    name: geth · e2e suite (boot + re-query, no spamoor)
+    name: geth · e2e suite (boot + spamoor + re-query)
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -276,14 +278,26 @@ jobs:
           go-version-file: go.mod
           cache: true
 
-      # geth doesn't run spamoor (Phase 5-7 skipped — see TestE2ESuite
-      # docstring), so we don't install/cache it here.
+      # Spamoor binary, cached across runs by upstream commit ref. Geth
+      # uses --dev mode (PoA, self-emulated CL) for Phase 5-7 spamoor —
+      # no engine-API mock needed.
+      - name: Cache spamoor binary
+        id: spamoor-cache
+        uses: actions/cache@v4
+        with:
+          path: /usr/local/bin/spamoor
+          key: spamoor-${{ env.SPAMOOR_REF }}-${{ runner.os }}
+      - name: Build spamoor (cache miss)
+        if: steps.spamoor-cache.outputs.cache-hit != 'true'
+        run: make spamoor-install SPAMOOR_COMMIT=${{ env.SPAMOOR_REF }}
 
       - name: Run e2e suite
         run: |
           mkdir -p _artifacts
           RESULT_PATH=$PWD/_artifacts/geth-result.json \
-            go test -tags oracle -run TestE2ESuite -v -timeout 20m ./client/geth/...
+          SPAMOOR=/usr/local/bin/spamoor \
+          REQUIRE_SPAMOOR=1 \
+            go test -tags oracle -run TestE2ESuite -v -timeout 30m ./client/geth/...
 
       - uses: actions/upload-artifact@v4
         if: always()
@@ -333,10 +347,27 @@ jobs:
             echo "  (each *-suite job must reach Phase 3 to upload its result)"
             exit 1
           fi
-          # Extract every {client, genesis_state_root}.
+          # Extract every {client, genesis_state_root}, validate the
+          # shape, and reject the all-zero hash. `jq -r .x` on a
+          # missing field outputs the literal string "null" — which
+          # would silently be considered "unique" by the count below
+          # if all 4 clients reported missing fields. Same for short/
+          # malformed values. The regex pin defends against false-PASS
+          # via missing fields or zero-init writes — it's the
+          # invariant the whole 5-job CI exists to defend.
+          root_re='^0x[0-9a-fA-F]{64}$'
+          zero_root='0x0000000000000000000000000000000000000000000000000000000000000000'
           for c in "${want[@]}"; do
             root=$(jq -r .genesis_state_root "$c-result.json")
             echo "  $c → $root"
+            if ! [[ "$root" =~ $root_re ]]; then
+              echo "FAIL: $c reported malformed genesis_state_root (jq -r returned '$root', want match $root_re)"
+              exit 1
+            fi
+            if [ "$root" = "$zero_root" ]; then
+              echo "FAIL: $c reported all-zero genesis_state_root (writer/test bug — should never happen for canonical-MPT root)"
+              exit 1
+            fi
           done
           uniq_roots=$(jq -s '[.[].genesis_state_root] | unique' *-result.json)
           n=$(echo "$uniq_roots" | jq 'length')
