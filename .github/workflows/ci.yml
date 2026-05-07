@@ -34,8 +34,8 @@ name: CI
 
 on:
   pull_request:
-    # The Tier-2 jobs (geth-boot, reth-boot) only fire when a PR carries
-    # the `full-ci` label. Tier-1 jobs run on every PR.
+    # The Tier-2 boot matrix (besu, geth, nethermind, reth) only fires
+    # when a PR carries the `full-ci` label. Tier-1 jobs run on every PR.
     types: [opened, synchronize, reopened, labeled, unlabeled]
   push:
     # No branch filter: triggers on every push.
@@ -190,34 +190,62 @@ jobs:
   # on every PR; the label gives risky-looking PRs an opt-in run.
   # ---------------------------------------------------------------------------
 
-  geth-boot:
-    name: geth · real-node boot oracle
-    runs-on: ubuntu-latest
-    if: github.event_name == 'schedule' || (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'full-ci'))
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: go.mod
-          cache: true
-      # `make test-geth-boot` is just a `go test -tags oracle` invocation —
-      # no Make-side docker build prereq, no RocksDB, pure-Go state-actor.
-      # The test itself spawns ethereum/client-go via `docker run` (the
-      # daemon is pre-installed on ubuntu-latest).
-      - run: make test-geth-boot
-
-  reth-boot:
-    name: reth · real-node boot oracle (DinD)
+  # Matrix: one job per client, all 4 boot tests run in parallel. Failures
+  # are independent (`fail-fast: false`) so e.g. a flaky reth doesn't mask
+  # a real besu regression. Each job builds its client's cgo builder image
+  # (where applicable — geth is pure Go) with a per-client GHA cache scope.
+  boot:
+    name: ${{ matrix.client }} · real-node boot oracle
     runs-on: ubuntu-latest
     if: github.event_name == 'schedule' || (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'full-ci'))
     timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        client: [besu, geth, nethermind, reth]
     steps:
       - uses: actions/checkout@v4
-      - uses: docker/setup-buildx-action@v3
-      # Same builder-stage build + cache as Tier-1's reth-cgo and
-      # reth-oracle (shared scope).
-      - uses: docker/build-push-action@v5
+
+      # geth path is pure Go — uses `actions/setup-go` and runs the test
+      # directly on the runner. The test itself spawns
+      # ethereum/client-go:v1.17.2 via `docker run`.
+      - if: matrix.client == 'geth'
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # Non-geth paths need cgo (librocksdb / libmdbx). We build the
+      # client's `builder`-stage Docker image (which has the toolchain +
+      # cgo deps + state-actor source compiled with the right tag), then
+      # run the boot test inside that image via DinD.
+      - if: matrix.client != 'geth'
+        uses: docker/setup-buildx-action@v3
+
+      - if: matrix.client == 'besu'
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: Dockerfile.besu
+          target: builder
+          tags: state-actor-besu-builder:latest
+          load: true
+          cache-from: type=gha,scope=besu-builder
+          cache-to: type=gha,scope=besu-builder,mode=max
+
+      - if: matrix.client == 'nethermind'
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: Dockerfile.nethermind
+          target: builder
+          tags: state-actor-nethermind-builder:latest
+          load: true
+          cache-from: type=gha,scope=neth-builder
+          cache-to: type=gha,scope=neth-builder,mode=max
+
+      - if: matrix.client == 'reth'
+        uses: docker/build-push-action@v5
         with:
           context: .
           file: Dockerfile.reth
@@ -226,10 +254,43 @@ jobs:
           load: true
           cache-from: type=gha,scope=reth-builder
           cache-to: type=gha,scope=reth-builder,mode=max
-      # Inlined from `make test-reth-boot` minus the image-reth Make
-      # prereq (would re-build RocksDB; see file-level note above the
-      # Tier-1 reth-cgo job).
-      - run: |
+
+      # Per-client test invocation. Inlined from each Make target's body
+      # (minus the docker-build prereq that would force a redundant
+      # RocksDB rebuild on cgo paths — same fix as Tier-1's job inlining).
+      - if: matrix.client == 'geth'
+        run: make test-geth-boot
+
+      - if: matrix.client == 'besu'
+        run: |
+          BOOT_VOL=besu-boot-datadir
+          docker volume rm -f "$BOOT_VOL" >/dev/null 2>&1 || true
+          docker volume create "$BOOT_VOL"
+          docker run --rm \
+            -v "$BOOT_VOL":/oracle-data \
+            -v /var/run/docker.sock:/var/run/docker.sock \
+            -e BESU_ORACLE_DATADIR=/oracle-data \
+            -e BESU_ORACLE_VOL="$BOOT_VOL" \
+            --entrypoint bash state-actor-besu-builder:latest \
+            -c 'cd /app && go test -tags '"'"'cgo_besu oracle'"'"' ./client/besu/ -run TestBesuNodeBoot -v -timeout 30m'
+          docker volume rm -f "$BOOT_VOL" >/dev/null 2>&1 || true
+
+      - if: matrix.client == 'nethermind'
+        run: |
+          BOOT_VOL=neth-boot-datadir
+          docker volume rm -f "$BOOT_VOL" >/dev/null 2>&1 || true
+          docker volume create "$BOOT_VOL"
+          docker run --rm \
+            -v "$BOOT_VOL":/oracle-data \
+            -v /var/run/docker.sock:/var/run/docker.sock \
+            -e NETH_ORACLE_DATADIR=/oracle-data \
+            -e NETH_ORACLE_VOL="$BOOT_VOL" \
+            --entrypoint bash state-actor-nethermind-builder:latest \
+            -c 'cd /app && go test -tags '"'"'cgo_neth oracle'"'"' ./client/nethermind/ -run TestNethermindNodeBoot -v -timeout 30m'
+          docker volume rm -f "$BOOT_VOL" >/dev/null 2>&1 || true
+
+      - if: matrix.client == 'reth'
+        run: |
           BOOT_VOL=reth-boot-datadir
           docker volume rm -f "$BOOT_VOL" >/dev/null 2>&1 || true
           docker volume create "$BOOT_VOL"

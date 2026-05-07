@@ -1,8 +1,8 @@
 .PHONY: all build test clean docker install lint fmt help \
 	image-reth test-reth-cgo test-reth-oracle test-reth-boot \
-	docker-nethermind docker-nethermind-test test-nethermind-oracle \
+	docker-nethermind docker-nethermind-test test-nethermind-oracle test-nethermind-boot \
 	smoke-nethermind smoke-nethermind-spamoor \
-	docker-besu docker-besu-test test-besu-oracle \
+	docker-besu docker-besu-test test-besu-oracle test-besu-boot \
 	smoke-besu smoke-besu-spamoor \
 	docker-geth smoke-geth test-geth-boot
 
@@ -87,6 +87,27 @@ test-nethermind-oracle: docker-nethermind-test
 	docker run --rm --entrypoint bash state-actor-nethermind-builder:latest \
 	  -c 'cd /app && go test -tags cgo_neth -run TestDifferentialOracle -v ./client/nethermind/...'
 
+## test-nethermind-boot: Boot upstream Nethermind against a state-actor datadir and verify via JSON-RPC.
+##   Mirrors test-reth-boot: builds the cgo_neth builder image (which has
+##   librocksdb + the Go toolchain), runs the `cgo_neth oracle`-tagged
+##   boot test inside it via DinD, which then spawns
+##   nethermind/nethermind:1.37.0 against state-actor's RocksDB datadir
+##   and probes EOA balances / contract code / storage slots via
+##   internal/rpcprobe.
+NETH_BOOT_VOL ?= neth-boot-datadir
+test-nethermind-boot: docker-nethermind-test
+	docker volume rm -f $(NETH_BOOT_VOL) >/dev/null 2>&1 || true
+	docker volume create $(NETH_BOOT_VOL)
+	docker run --rm \
+	  -v $(NETH_BOOT_VOL):/oracle-data \
+	  -v /var/run/docker.sock:/var/run/docker.sock \
+	  -e NETH_ORACLE_DATADIR=/oracle-data \
+	  -e NETH_ORACLE_VOL=$(NETH_BOOT_VOL) \
+	  -e NETH_DOCKER_PLATFORM \
+	  --entrypoint bash state-actor-nethermind-builder:latest \
+	  -c 'cd /app && go test -tags '\''cgo_neth oracle'\'' ./client/nethermind/ -run TestNethermindNodeBoot -v -timeout 1800s'
+	docker volume rm -f $(NETH_BOOT_VOL) >/dev/null 2>&1 || true
+
 ## smoke-nethermind: End-to-end smoke — generate a small DB, boot Nethermind 1.37.0, send 100 dev-mode txs
 ##   Usage: make smoke-nethermind ACCOUNTS=1000 CONTRACTS=100
 ACCOUNTS ?= 1000
@@ -156,6 +177,27 @@ docker-besu-test:
 test-besu-oracle: docker-besu-test
 	docker run --rm --entrypoint bash state-actor-besu-builder:latest \
 	  -c 'cd /app && go test -tags cgo_besu -run TestDifferentialOracle -v ./client/besu/...'
+
+## test-besu-boot: Boot upstream Besu against a state-actor datadir and verify via JSON-RPC.
+##   Mirrors test-reth-boot: builds the cgo_besu builder image (which has
+##   librocksdb + the Go toolchain), runs the `cgo_besu oracle`-tagged
+##   boot test inside it via DinD, which then spawns
+##   hyperledger/besu:25.11.0 against state-actor's BONSAI datadir and
+##   probes EOA balances / contract code / storage slots via
+##   internal/rpcprobe.
+BESU_BOOT_VOL ?= besu-boot-datadir
+test-besu-boot: docker-besu-test
+	docker volume rm -f $(BESU_BOOT_VOL) >/dev/null 2>&1 || true
+	docker volume create $(BESU_BOOT_VOL)
+	docker run --rm \
+	  -v $(BESU_BOOT_VOL):/oracle-data \
+	  -v /var/run/docker.sock:/var/run/docker.sock \
+	  -e BESU_ORACLE_DATADIR=/oracle-data \
+	  -e BESU_ORACLE_VOL=$(BESU_BOOT_VOL) \
+	  -e BESU_DOCKER_PLATFORM \
+	  --entrypoint bash state-actor-besu-builder:latest \
+	  -c 'cd /app && go test -tags '\''cgo_besu oracle'\'' ./client/besu/ -run TestBesuNodeBoot -v -timeout 1800s'
+	docker volume rm -f $(BESU_BOOT_VOL) >/dev/null 2>&1 || true
 
 ## smoke-besu: End-to-end smoke — generate a small DB, boot hyperledger/besu:25.11.0, send 100 dev-mode txs
 ##   Usage: make smoke-besu ACCOUNTS=1000 CONTRACTS=100
