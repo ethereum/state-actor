@@ -65,11 +65,16 @@ var forks = []forkSpec{
 // historical order are also activated at 0, so every IsX(0) predicate
 // returns true up to and including the chosen fork.
 //
-// chainID becomes the chain's only chainID (no override semantics — the
-// new --chain-id flag is the source of truth).
+// User-selectable forks: prague, osaka. Pre-Prague forks are rejected
+// at parse time — state-actor only supports current/future mainnet
+// configs (PoW + pre-Pectra are EOL). Pre-Prague entries in the forks
+// slice stay as cascade-only steps (they apply when a post-Prague fork
+// is selected so the resulting ChainConfig is structurally complete).
 //
-// Returns an error if name is empty or unknown. Use ListForks() for the
-// full set of accepted names; "latest" / "default" alias DefaultFork.
+// chainID becomes the chain's only chainID (no override semantics —
+// the --chain-id flag is the source of truth).
+//
+// Returns an error if name is empty, unknown, or pre-Prague.
 func BuildChainConfigForFork(name string, chainID *big.Int) (*params.ChainConfig, error) {
 	if chainID == nil {
 		return nil, fmt.Errorf("genesis: chainID cannot be nil")
@@ -88,6 +93,9 @@ func BuildChainConfigForFork(name string, chainID *big.Int) (*params.ChainConfig
 	if idx < 0 {
 		return nil, fmt.Errorf("genesis: unknown fork %q (use --list-forks to see valid names)", name)
 	}
+	if !ForkAtLeast(canonical, "prague") {
+		return nil, fmt.Errorf("genesis: fork %q rejected — state-actor only supports prague and later (PoW + pre-Pectra are EOL)", canonical)
+	}
 	cfg := &params.ChainConfig{ChainID: new(big.Int).Set(chainID)}
 	for i := 0; i <= idx; i++ {
 		forks[i].apply(cfg)
@@ -100,13 +108,16 @@ func BuildChainConfigForFork(name string, chainID *big.Int) (*params.ChainConfig
 // reflect the current default without duplicating the constant.
 func LatestForkName() string { return DefaultFork }
 
-// ListForks returns the canonical fork names in historical activation
-// order. Backed directly by the forks slice so changes to the catalogue
-// flow through automatically.
+// ListForks returns the user-selectable fork names in historical
+// activation order — prague and later. Pre-Prague forks (PoW +
+// pre-Pectra) are EOL and rejected at parse time; not surfaced here.
 func ListForks() []string {
-	out := make([]string, len(forks))
-	for i, f := range forks {
-		out[i] = f.name
+	out := make([]string, 0, len(forks))
+	for _, f := range forks {
+		if !ForkAtLeast(f.name, "prague") {
+			continue
+		}
+		out = append(out, f.name)
 	}
 	return out
 }

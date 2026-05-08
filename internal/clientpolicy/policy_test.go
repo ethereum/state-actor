@@ -52,6 +52,10 @@ func TestValidateForClient_TargetSizeRejectsReth(t *testing.T) {
 }
 
 func TestValidateForClient_ForkCeiling(t *testing.T) {
+	// Pre-Prague forks are EOL and rejected globally by
+	// genesis.BuildChainConfigForFork, so clientpolicy never sees them
+	// in practice. The per-client ceiling check still matters for
+	// future forks past osaka.
 	cases := []struct {
 		client   string
 		fork     string
@@ -59,15 +63,10 @@ func TestValidateForClient_ForkCeiling(t *testing.T) {
 	}{
 		{"geth", "prague", true},
 		{"geth", "osaka", true},
-		{"geth", "shanghai", true},
 		{"reth", "prague", true},
 		{"reth", "osaka", true},
-		{"besu", "shanghai", true},
-		{"besu", "cancun", true},  // Pre-C-v2: besu writer now uses internal/genesisheader.Build
 		{"besu", "prague", true},
 		{"besu", "osaka", true},
-		{"nethermind", "merge", true},
-		{"nethermind", "shanghai", true},  // Pre-C-v2: neth writer now uses internal/genesisheader.Build
 		{"nethermind", "prague", true},
 		{"nethermind", "osaka", true},
 	}

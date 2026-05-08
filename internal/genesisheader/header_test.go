@@ -51,36 +51,6 @@ func TestBuild_PragueGenesis(t *testing.T) {
 	}
 }
 
-func TestBuild_ShanghaiNoCancunFields(t *testing.T) {
-	g, err := genesis.BuildSynthetic("shanghai", big.NewInt(1), 0, 0, nil)
-	if err != nil {
-		t.Fatalf("BuildSynthetic: %v", err)
-	}
-	h := Build(g, 0, common.Hash{}, types.EmptyRootHash)
-
-	if h.WithdrawalsHash == nil {
-		t.Error("WithdrawalsHash should be set under Shanghai")
-	}
-	if h.ParentBeaconRoot != nil {
-		t.Error("ParentBeaconRoot should NOT be set under Shanghai (Cancun-only)")
-	}
-	if h.RequestsHash != nil {
-		t.Error("RequestsHash should NOT be set under Shanghai (Prague-only)")
-	}
-}
-
-func TestBuild_PreLondonNoBaseFee(t *testing.T) {
-	g, err := genesis.BuildSynthetic("istanbul", big.NewInt(1), 0, 0, nil)
-	if err != nil {
-		t.Fatalf("BuildSynthetic: %v", err)
-	}
-	h := Build(g, 0, common.Hash{}, types.EmptyRootHash)
-
-	if h.BaseFee != nil {
-		t.Error("BaseFee should be nil pre-London")
-	}
-}
-
 func TestBuild_HeaderHashStable(t *testing.T) {
 	// Same inputs → same hash. Catches accidental nondeterminism.
 	g, _ := genesis.BuildSynthetic("prague", big.NewInt(1337), 25_000_000, 100, []byte{0x01, 0x02})

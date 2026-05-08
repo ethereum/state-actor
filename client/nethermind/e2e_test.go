@@ -185,9 +185,11 @@ var (
 )
 
 // TestE2ESuite — see client/besu/e2e_test.go for the full phase
-// description. nethermind-specific bits: --fork=merge ceiling, embedded
-// boot.cfg template (Mining.Enabled=true so spamoor can advance the
-// chain). Build-tagged `cgo_neth && oracle`. Run via `make test-nethermind-suite`.
+// description. nethermind-specific bits: --fork=osaka (unified across
+// all 4 clients post-Pre-C-v2), embedded boot.cfg template
+// (Mining.Enabled=true so spamoor can advance the chain via NethDev's
+// built-in dev consensus). Build-tagged `cgo_neth && oracle`. Run via
+// `make test-nethermind-suite`.
 func TestE2ESuite(t *testing.T) {
 	if testing.Short() {
 		t.Skip("e2e suite skipped in short mode")
@@ -202,10 +204,10 @@ func TestE2ESuite(t *testing.T) {
 		maxSlots     = 2
 	)
 
-	// Pin --fork=merge. Nethermind's writer ceiling today is "merge"
-	// (genesis.MaxForkForClient("nethermind") == "merge"); going past
-	// that is rejected at parse time in main.go.
-	g, err := stategenesis.BuildSynthetic("merge", big.NewInt(1337), 30_000_000, 0, nil)
+	// All 4 clients pin --fork=osaka post-Pre-C-v2. state-actor's
+	// MaxForkForClient(c)=="osaka" for every client; pre-Prague forks
+	// are EOL and rejected at parse. 60M gas tracks current mainnet.
+	g, err := stategenesis.BuildSynthetic("osaka", big.NewInt(1337), 60_000_000, 0, nil)
 	if err != nil {
 		t.Fatalf("BuildSynthetic: %v", err)
 	}

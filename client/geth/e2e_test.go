@@ -88,8 +88,7 @@ func safePrefix(b []byte, n int) []byte {
 
 // TestE2ESuite — see client/besu/e2e_test.go for the full phase
 // description. geth-specific bits:
-//   - --fork=shanghai (geth's writer ceiling supports up through prague,
-//     but shanghai is enough for boot + read-only oracle).
+//   - --fork=osaka (matches all 4 clients post-Pre-C-v2).
 //   - No DinD; geth runs with -p host-port mapping.
 //   - Phase 5-7 (spamoor + post-spamoor re-query) is SKIPPED for geth
 //     because state-actor's chain is post-merge → block production
@@ -113,11 +112,10 @@ func TestE2ESuite(t *testing.T) {
 		maxSlots     = 2
 	)
 
-	// Pin --fork=shanghai. state-actor's BuildSynthetic does not emit a
-	// BlobSchedule, which geth requires once Cancun or Prague are active
-	// at the genesis chain config. Shanghai is the latest fork that
-	// boots cleanly until that wiring lands. Same pin make smoke-geth uses.
-	g, err := stategenesis.BuildSynthetic("shanghai", big.NewInt(1337), 30_000_000, 0, nil)
+	// All 4 clients pin --fork=osaka post-Pre-C-v2. state-actor's
+	// MaxForkForClient(c)=="osaka" for every client; pre-Prague forks
+	// are EOL and rejected at parse. 60M gas tracks current mainnet.
+	g, err := stategenesis.BuildSynthetic("osaka", big.NewInt(1337), 60_000_000, 0, nil)
 	if err != nil {
 		t.Fatalf("BuildSynthetic: %v", err)
 	}

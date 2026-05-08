@@ -260,7 +260,7 @@ smoke-geth: docker-geth
 	  --client=geth --db=/datadir/geth/chaindata \
 	  --accounts=$(GETH_SMOKE_ACCOUNTS) --contracts=$(GETH_SMOKE_CONTRACTS) \
 	  --seed=$(GETH_SMOKE_SEED) \
-	  --chain-id=1337 --fork=shanghai --inject-accounts=$(SMOKE_INJECT_ADDRS) \
+	  --chain-id=1337 --fork=osaka --inject-accounts=$(SMOKE_INJECT_ADDRS) \
 	  --verbose 2>&1 \
 	  | tee $(SA_DB_GETH)/smoke.log
 	@expected_root=$$(grep -E '^State Root:' $(SA_DB_GETH)/smoke.log | awk '{print $$NF}'); \

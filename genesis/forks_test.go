@@ -35,20 +35,26 @@ func TestBuildChainConfigForFork_PragueActive(t *testing.T) {
 	}
 }
 
-func TestBuildChainConfigForFork_ShanghaiOnlyActivatesShanghai(t *testing.T) {
-	cfg, err := BuildChainConfigForFork("shanghai", big.NewInt(1))
+func TestBuildChainConfigForFork_PrePragueRejected(t *testing.T) {
+	// Pre-Prague forks (PoW + pre-Pectra) are EOL; rejected at parse.
+	for _, fork := range []string{"shanghai", "cancun", "merge", "london", "byzantium", "homestead"} {
+		if _, err := BuildChainConfigForFork(fork, big.NewInt(1)); err == nil {
+			t.Errorf("BuildChainConfigForFork(%q) should reject pre-Prague fork, got nil err", fork)
+		}
+	}
+}
+
+func TestBuildChainConfigForFork_OsakaActivatesOsaka(t *testing.T) {
+	cfg, err := BuildChainConfigForFork("osaka", big.NewInt(1))
 	if err != nil {
-		t.Fatalf("BuildChainConfigForFork: %v", err)
+		t.Fatalf("BuildChainConfigForFork(osaka): %v", err)
 	}
 	zero := big.NewInt(0)
-	if !cfg.IsLondon(zero) {
-		t.Error("London should still be active for shanghai (earlier fork)")
+	if !cfg.IsPrague(zero, 0) {
+		t.Error("Prague should still be active under osaka (earlier fork)")
 	}
-	if !cfg.IsShanghai(zero, 0) {
-		t.Error("Shanghai should be active")
-	}
-	if cfg.IsCancun(zero, 0) {
-		t.Error("Cancun must NOT be active when --fork=shanghai")
+	if !cfg.IsOsaka(zero, 0) {
+		t.Error("Osaka should be active")
 	}
 }
 
@@ -73,11 +79,14 @@ func TestBuildChainConfigForFork_UnknownReturnsError(t *testing.T) {
 	}
 }
 
-func TestListForks_ContainsCanonicalNames(t *testing.T) {
+func TestListForks_OnlyUserSelectable(t *testing.T) {
 	got := ListForks()
 	want := map[string]bool{
+		"prague": true, "osaka": true,
+	}
+	rejected := map[string]bool{
 		"homestead": true, "london": true, "merge": true,
-		"shanghai": true, "cancun": true, "prague": true, "osaka": true,
+		"shanghai": true, "cancun": true,
 	}
 	have := make(map[string]bool, len(got))
 	for _, n := range got {
@@ -85,7 +94,12 @@ func TestListForks_ContainsCanonicalNames(t *testing.T) {
 	}
 	for w := range want {
 		if !have[w] {
-			t.Errorf("ListForks() missing %q", w)
+			t.Errorf("ListForks() missing user-selectable %q", w)
+		}
+	}
+	for r := range rejected {
+		if have[r] {
+			t.Errorf("ListForks() should not surface pre-Prague %q", r)
 		}
 	}
 }
