@@ -1,0 +1,116 @@
+name: cgo-suite
+description: |
+  Build a per-client cgo builder image, install spamoor, run the e2e
+  TestE2ESuite (+ writer-side TestDifferentialOracle for besu/neth, all
+  cgo_X tests for reth) inside the image via DinD, upload the result
+  artifact for the cross-client aggregator.
+
+  Replaces the previously-duplicated besu-suite / nethermind-suite /
+  reth-suite jobs in ci.yml — they shared ~95% of their structure.
+  Geth stays a separate job because it's pure-Go (no Docker image to
+  build).
+
+inputs:
+  client:
+    description: Client name (besu | nethermind | reth) — used in volume names + result filename
+    required: true
+  dockerfile:
+    description: Dockerfile path for this client's builder image
+    required: true
+  image-tag:
+    description: Local Docker tag for the loaded builder image
+    required: true
+  cache-scope:
+    description: GHA buildx cache scope (per-client to avoid eviction)
+    required: true
+  env-prefix:
+    description: 'Prefix for ORACLE_DATADIR / ORACLE_VOL / DOCKER_PLATFORM env vars (BESU | NETH | RETH)'
+    required: true
+  test-tags:
+    description: 'go test -tags string (e.g. "cgo_besu oracle")'
+    required: true
+  test-pkg:
+    description: 'go test package path (e.g. "./client/besu/")'
+    required: true
+  test-run-filter:
+    description: |
+      Optional `-run` regex. Empty → run all tests in the package
+      (used by reth so cgo_reth unit tests + golden hash all execute).
+    required: false
+    default: ''
+  spamoor-ref:
+    description: Pinned spamoor commit SHA for the actions/cache key
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - uses: docker/setup-buildx-action@v3
+    - uses: actions/setup-go@v5
+      with:
+        go-version-file: go.mod
+        cache: true
+
+    - name: Cache spamoor binary
+      id: spamoor-cache
+      uses: actions/cache@v4
+      with:
+        path: /usr/local/bin/spamoor
+        key: spamoor-${{ inputs.spamoor-ref }}-${{ runner.os }}
+    - name: Build spamoor (cache miss)
+      if: steps.spamoor-cache.outputs.cache-hit != 'true'
+      shell: bash
+      run: make spamoor-install SPAMOOR_COMMIT=${{ inputs.spamoor-ref }}
+
+    - uses: docker/build-push-action@v5
+      with:
+        context: .
+        file: ${{ inputs.dockerfile }}
+        target: builder
+        tags: ${{ inputs.image-tag }}
+        load: true
+        cache-from: type=gha,scope=${{ inputs.cache-scope }}
+        cache-to: type=gha,scope=${{ inputs.cache-scope }},mode=max
+
+    - name: Run e2e suite
+      shell: bash
+      env:
+        CLIENT: ${{ inputs.client }}
+        IMAGE_TAG: ${{ inputs.image-tag }}
+        ENV_PREFIX: ${{ inputs.env-prefix }}
+        TEST_TAGS: ${{ inputs.test-tags }}
+        TEST_PKG: ${{ inputs.test-pkg }}
+        TEST_RUN_FILTER: ${{ inputs.test-run-filter }}
+      run: |
+        set -euo pipefail
+        mkdir -p _artifacts
+        VOL="${CLIENT}-suite-datadir"
+        docker volume rm -f "$VOL" >/dev/null 2>&1 || true
+        docker volume create "$VOL"
+        # All 3 cgo builder images now share WORKDIR=/app + no
+        # ENTRYPOINT, so the docker run is uniform: <image> go test ...
+        # No more `--entrypoint bash -c 'cd /app && ...'` workaround.
+        run_filter=()
+        if [ -n "$TEST_RUN_FILTER" ]; then
+          run_filter=(-run "$TEST_RUN_FILTER")
+        fi
+        docker run --rm \
+          -v "$VOL":/oracle-data \
+          -v "$PWD/_artifacts":/result \
+          -v /usr/local/bin/spamoor:/usr/local/bin/spamoor:ro \
+          -v /var/run/docker.sock:/var/run/docker.sock \
+          -e "${ENV_PREFIX}_ORACLE_DATADIR=/oracle-data" \
+          -e "${ENV_PREFIX}_ORACLE_VOL=$VOL" \
+          -e "RESULT_PATH=/result/${CLIENT}-result.json" \
+          -e SPAMOOR=/usr/local/bin/spamoor \
+          -e REQUIRE_SPAMOOR=1 \
+          "$IMAGE_TAG" \
+          go test -tags "$TEST_TAGS" "$TEST_PKG" "${run_filter[@]}" -v -timeout 45m
+        docker volume rm -f "$VOL" >/dev/null 2>&1 || true
+
+    - uses: actions/upload-artifact@v4
+      if: always()
+      with:
+        name: ${{ inputs.client }}-result
+        path: _artifacts/${{ inputs.client }}-result.json
+        if-no-files-found: warn

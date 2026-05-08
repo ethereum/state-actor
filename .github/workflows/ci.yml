@@ -1,31 +1,40 @@
 # CI — per-client end-to-end suites + cross-client genesis-root aggregator.
 #
-# Five client-jobs in parallel + one tiny aggregator that downloads each
-# job's result JSON and asserts the canonical-MPT cross-client invariant:
+# Three top-level jobs (one is a 3-leg matrix) + an aggregator:
 #
 #   default                       — go vet/build/test under the default
 #                                   tag set. Catches compile + non-cgo
 #                                   regressions early.
-#   besu-suite, nethermind-suite,
-#   reth-suite                    — per-client end-to-end suite. Each
-#                                   runs db-gen → boot → genesis-root
-#                                   capture → oracle re-query → spamoor
-#                                   (~100 blocks) → post-spamoor RPC
-#                                   re-query, with GHA-natural fail-fast
-#                                   between phases. Uploads
-#                                   {client}-result.json artifact.
+#   cgo-suite (matrix: besu,
+#     nethermind, reth)           — per-client e2e suite for the 3 cgo
+#                                   clients. Each leg runs db-gen → boot
+#                                   → genesis-root capture → oracle
+#                                   re-query @ "0x0" → spamoor (~100
+#                                   blocks) → oracle re-query @ "latest"
+#                                   → write result JSON. besu/neth also
+#                                   run TestDifferentialOracle; reth
+#                                   runs all `cgo_reth oracle` tests
+#                                   (TestE2ESuite + TestRethDbStats* +
+#                                   TestRethNodeBootEmptyAlloc). Per-leg
+#                                   logic lives in the cgo-suite
+#                                   composite action at
+#                                   .github/actions/cgo-suite/.
 #   geth-suite                    — same shape; geth runs in --dev mode
 #                                   (PoA + self-emulated CL) so Phase
 #                                   5-7 spamoor advances the chain
-#                                   without an engine-API mock.
-#   cross-client-genesis-root     — needs all 4 *-suite jobs. Downloads
-#                                   the artifact from each, asserts every
-#                                   genesis_state_root is identical.
-#                                   30-second job; ~free.
+#                                   without an engine-API mock. Stays
+#                                   its own job (pure-Go, no Docker
+#                                   build step).
+#   cross-client-genesis-root     — needs cgo-suite + geth-suite.
+#                                   Downloads each artifact; validates
+#                                   the genesis_state_root regex +
+#                                   rejects all-zero; asserts all 4
+#                                   clients agree. ~30 sec.
 #
-# This replaces the previous 9-job layout (default + reth-cgo + 3 oracles
-# + 4-client boot matrix). Each per-client suite now runs back-to-back in
-# one cgo image build instead of forking the same build across 2-3 jobs.
+# Replaces the previous 9-job layout (default + reth-cgo + 3 oracles +
+# 4-client boot matrix). Per-client suite logic that was duplicated 3×
+# now lives in the cgo-suite composite action; bumps to spamoor
+# wiring / Docker flags / cache strategy land in one place.
 #
 # Why we don't `make test-<X>-suite` directly inside the cgo jobs: each
 # Make target depends on `image-<X>` which unconditionally re-runs
@@ -75,197 +84,76 @@ jobs:
       - run: go test -count=1 -timeout=10m ./...
 
   # ---------------------------------------------------------------------------
-  # Per-client end-to-end suites.
+  # Per-client cgo end-to-end suites — collapsed into a single matrix job
+  # that calls the cgo-suite composite action. Geth is its own job (pure
+  # Go, no Docker build).
   #
-  # Each job:
-  #  1. Builds the client's builder-stage Docker image (where applicable —
-  #     geth is pure Go) with a per-client GHA cache scope.
-  #  2. Installs spamoor via cache+build (cache-key includes SPAMOOR_REF).
-  #  3. Runs the e2e Go test inside the builder image (or natively for
-  #     geth) with $RESULT_PATH pointing at /result/{client}-result.json
-  #     so the test writes its SuiteResult artifact.
-  #  4. Uploads {client}-result.json for the cross-client-genesis-root
-  #     aggregator to download.
+  # Each matrix leg:
+  #  1. Builds the client's builder-stage Docker image (per-client GHA
+  #     cache scope, unchanged).
+  #  2. Installs spamoor via cache+build (cache-key includes SPAMOOR_REF;
+  #     all 3 legs share the same cache).
+  #  3. Runs the per-client TestE2ESuite (+ TestDifferentialOracle for
+  #     besu/neth, all `cgo_reth oracle` tests for reth) inside the
+  #     builder image.
+  #  4. Uploads {client}-result.json for the cross-client aggregator.
+  #
+  # Was: 3 separate ~60-LOC jobs sharing ~95% of their structure. Now:
+  # one matrix + 3 entries. Single bump-point for cache strategy /
+  # spamoor wiring / Docker flags. Composite action lives in
+  # .github/actions/cgo-suite/.
   # ---------------------------------------------------------------------------
 
-  besu-suite:
-    name: besu · e2e suite (boot + spamoor + re-query)
+  cgo-suite:
+    name: ${{ matrix.client }} · e2e suite (boot + spamoor + re-query)
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - client: besu
+            dockerfile: Dockerfile.besu
+            image-tag: state-actor-besu-builder:latest
+            cache-scope: besu-builder
+            env-prefix: BESU
+            test-tags: 'cgo_besu oracle'
+            test-pkg: ./client/besu/
+            test-run-filter: 'TestE2ESuite|TestDifferentialOracle'
+          - client: nethermind
+            dockerfile: Dockerfile.nethermind
+            image-tag: state-actor-nethermind-builder:latest
+            cache-scope: neth-builder
+            env-prefix: NETH
+            test-tags: 'cgo_neth oracle'
+            test-pkg: ./client/nethermind/
+            test-run-filter: 'TestE2ESuite|TestDifferentialOracle'
+          - client: reth
+            dockerfile: Dockerfile.reth
+            image-tag: state-actor-reth:latest
+            cache-scope: reth-builder
+            env-prefix: RETH
+            test-tags: 'cgo_reth oracle'
+            test-pkg: ./client/reth/
+            # Empty filter → runs ALL cgo_reth+oracle tests (TestE2ESuite +
+            # TestRethDbStats + TestRethDbStatsSyntheticEOAs +
+            # TestRethNodeBootEmptyAlloc). Restores the cgo_reth unit-
+            # test coverage that the previous `-run TestE2ESuite` filter
+            # silently dropped.
+            test-run-filter: ''
     steps:
       - uses: actions/checkout@v4
-      - uses: docker/setup-buildx-action@v3
-      - uses: actions/setup-go@v5
+      - uses: ./.github/actions/cgo-suite
         with:
-          go-version-file: go.mod
-          cache: true
-
-      # Spamoor binary — cached across runs by upstream commit ref. The
-      # binary lives in /usr/local/bin so the e2e test inside the builder
-      # image can find it on PATH (the bind mount below shares it in).
-      - name: Cache spamoor binary
-        id: spamoor-cache
-        uses: actions/cache@v4
-        with:
-          path: /usr/local/bin/spamoor
-          key: spamoor-${{ env.SPAMOOR_REF }}-${{ runner.os }}
-      - name: Build spamoor (cache miss)
-        if: steps.spamoor-cache.outputs.cache-hit != 'true'
-        run: make spamoor-install SPAMOOR_COMMIT=${{ env.SPAMOOR_REF }}
-
-      - uses: docker/build-push-action@v5
-        with:
-          context: .
-          file: Dockerfile.besu
-          target: builder
-          tags: state-actor-besu-builder:latest
-          load: true
-          cache-from: type=gha,scope=besu-builder
-          cache-to: type=gha,scope=besu-builder,mode=max
-
-      - name: Run e2e suite
-        run: |
-          mkdir -p _artifacts
-          SUITE_VOL=besu-suite-datadir
-          docker volume rm -f "$SUITE_VOL" >/dev/null 2>&1 || true
-          docker volume create "$SUITE_VOL"
-          docker run --rm \
-            -v "$SUITE_VOL":/oracle-data \
-            -v "$PWD/_artifacts":/result \
-            -v /usr/local/bin/spamoor:/usr/local/bin/spamoor:ro \
-            -v /var/run/docker.sock:/var/run/docker.sock \
-            -e BESU_ORACLE_DATADIR=/oracle-data \
-            -e BESU_ORACLE_VOL="$SUITE_VOL" \
-            -e RESULT_PATH=/result/besu-result.json \
-            -e SPAMOOR=/usr/local/bin/spamoor \
-            -e REQUIRE_SPAMOOR=1 \
-            --entrypoint bash state-actor-besu-builder:latest \
-            -c 'cd /app && go test -tags '"'"'cgo_besu oracle'"'"' ./client/besu/ -run '"'"'TestE2ESuite|TestDifferentialOracle'"'"' -v -timeout 30m'
-          docker volume rm -f "$SUITE_VOL" >/dev/null 2>&1 || true
-
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: besu-result
-          path: _artifacts/besu-result.json
-          if-no-files-found: warn
-
-  nethermind-suite:
-    name: nethermind · e2e suite (boot + spamoor + re-query)
-    runs-on: ubuntu-latest
-    timeout-minutes: 60
-    steps:
-      - uses: actions/checkout@v4
-      - uses: docker/setup-buildx-action@v3
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: go.mod
-          cache: true
-
-      - name: Cache spamoor binary
-        id: spamoor-cache
-        uses: actions/cache@v4
-        with:
-          path: /usr/local/bin/spamoor
-          key: spamoor-${{ env.SPAMOOR_REF }}-${{ runner.os }}
-      - name: Build spamoor (cache miss)
-        if: steps.spamoor-cache.outputs.cache-hit != 'true'
-        run: make spamoor-install SPAMOOR_COMMIT=${{ env.SPAMOOR_REF }}
-
-      - uses: docker/build-push-action@v5
-        with:
-          context: .
-          file: Dockerfile.nethermind
-          target: builder
-          tags: state-actor-nethermind-builder:latest
-          load: true
-          cache-from: type=gha,scope=neth-builder
-          cache-to: type=gha,scope=neth-builder,mode=max
-
-      - name: Run e2e suite
-        run: |
-          mkdir -p _artifacts
-          SUITE_VOL=neth-suite-datadir
-          docker volume rm -f "$SUITE_VOL" >/dev/null 2>&1 || true
-          docker volume create "$SUITE_VOL"
-          docker run --rm \
-            -v "$SUITE_VOL":/oracle-data \
-            -v "$PWD/_artifacts":/result \
-            -v /usr/local/bin/spamoor:/usr/local/bin/spamoor:ro \
-            -v /var/run/docker.sock:/var/run/docker.sock \
-            -e NETH_ORACLE_DATADIR=/oracle-data \
-            -e NETH_ORACLE_VOL="$SUITE_VOL" \
-            -e RESULT_PATH=/result/nethermind-result.json \
-            -e SPAMOOR=/usr/local/bin/spamoor \
-            -e REQUIRE_SPAMOOR=1 \
-            --entrypoint bash state-actor-nethermind-builder:latest \
-            -c 'cd /app && go test -tags '"'"'cgo_neth oracle'"'"' ./client/nethermind/ -run '"'"'TestE2ESuite|TestDifferentialOracle'"'"' -v -timeout 30m'
-          docker volume rm -f "$SUITE_VOL" >/dev/null 2>&1 || true
-
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: nethermind-result
-          path: _artifacts/nethermind-result.json
-          if-no-files-found: warn
-
-  reth-suite:
-    name: reth · e2e suite (boot + spamoor + re-query)
-    runs-on: ubuntu-latest
-    timeout-minutes: 60
-    steps:
-      - uses: actions/checkout@v4
-      - uses: docker/setup-buildx-action@v3
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: go.mod
-          cache: true
-
-      - name: Cache spamoor binary
-        id: spamoor-cache
-        uses: actions/cache@v4
-        with:
-          path: /usr/local/bin/spamoor
-          key: spamoor-${{ env.SPAMOOR_REF }}-${{ runner.os }}
-      - name: Build spamoor (cache miss)
-        if: steps.spamoor-cache.outputs.cache-hit != 'true'
-        run: make spamoor-install SPAMOOR_COMMIT=${{ env.SPAMOOR_REF }}
-
-      - uses: docker/build-push-action@v5
-        with:
-          context: .
-          file: Dockerfile.reth
-          target: builder
-          tags: state-actor-reth:latest
-          load: true
-          cache-from: type=gha,scope=reth-builder
-          cache-to: type=gha,scope=reth-builder,mode=max
-
-      - name: Run e2e suite
-        run: |
-          mkdir -p _artifacts
-          SUITE_VOL=reth-suite-datadir
-          docker volume rm -f "$SUITE_VOL" >/dev/null 2>&1 || true
-          docker volume create "$SUITE_VOL"
-          docker run --rm \
-            -v "$SUITE_VOL":/oracle-data \
-            -v "$PWD/_artifacts":/result \
-            -v /usr/local/bin/spamoor:/usr/local/bin/spamoor:ro \
-            -v /var/run/docker.sock:/var/run/docker.sock \
-            -e RETH_ORACLE_DATADIR=/oracle-data \
-            -e RETH_ORACLE_VOL="$SUITE_VOL" \
-            -e RESULT_PATH=/result/reth-result.json \
-            -e SPAMOOR=/usr/local/bin/spamoor \
-            -e REQUIRE_SPAMOOR=1 \
-            state-actor-reth go test -tags 'cgo_reth oracle' ./client/reth/ -v -timeout 45m
-          docker volume rm -f "$SUITE_VOL" >/dev/null 2>&1 || true
-
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: reth-result
-          path: _artifacts/reth-result.json
-          if-no-files-found: warn
+          client: ${{ matrix.client }}
+          dockerfile: ${{ matrix.dockerfile }}
+          image-tag: ${{ matrix.image-tag }}
+          cache-scope: ${{ matrix.cache-scope }}
+          env-prefix: ${{ matrix.env-prefix }}
+          test-tags: ${{ matrix.test-tags }}
+          test-pkg: ${{ matrix.test-pkg }}
+          test-run-filter: ${{ matrix.test-run-filter }}
+          spamoor-ref: ${{ env.SPAMOOR_REF }}
 
   geth-suite:
     name: geth · e2e suite (boot + spamoor + re-query)
@@ -318,7 +206,11 @@ jobs:
   cross-client-genesis-root:
     name: cross-client · genesis state-root invariant
     runs-on: ubuntu-latest
-    needs: [besu-suite, geth-suite, nethermind-suite, reth-suite]
+    needs: [cgo-suite, geth-suite]
+    # cgo-suite is a matrix; needs: [cgo-suite] implicitly waits on every
+    # matrix leg. always() && !cancelled() lets the aggregator still run
+    # if some legs failed (so the missing-result check fires loudly with
+    # exactly which clients are absent rather than silently skipping).
     if: always() && !cancelled()
     timeout-minutes: 5
     steps:

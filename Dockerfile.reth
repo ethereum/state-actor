@@ -68,7 +68,10 @@ ENV CGO_ENABLED=1 \
     CGO_CFLAGS="-I/usr/local/include" \
     CGO_LDFLAGS="-L/usr/local/lib -lrocksdb -lstdc++ -lm -lz -lbz2 -lsnappy -llz4 -lzstd"
 
-WORKDIR /src
+# WORKDIR /app standardizes against Dockerfile.besu and Dockerfile.nethermind
+# so the CI composite action can run `<image> go test ...` uniformly without
+# per-client `--entrypoint bash -c 'cd /app && ...'` workarounds.
+WORKDIR /app
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
