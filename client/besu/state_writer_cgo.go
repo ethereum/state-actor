@@ -143,6 +143,46 @@ func writeStateAndCollectRoot(
 		}
 	}
 
+	// Genesis-alloc accounts (cfg.GenesisAccounts/GenesisCode/GenesisStorage):
+	// the e2e test path uses these to deploy EIP-4788/7002/7251/2935 system
+	// contracts at their canonical addresses (otherwise besu's
+	// CancunPreExecutionProcessor + PraguePreExecutionProcessor reject every
+	// block with "Invalid system call address"). Geth + nethermind already
+	// read these fields in their writers; this brings besu to parity.
+	for addr, acc := range cfg.GenesisAccounts {
+		if err := ctx.Err(); err != nil {
+			pdb.Close()
+			return common.Hash{}, nil, nil, err
+		}
+		if _, dup := seenInjected[addr]; dup {
+			continue // InjectAddresses takes precedence (preserves the canonical EOA balance)
+		}
+		seenInjected[addr] = struct{}{}
+		addrHash := crypto.Keccak256Hash(addr[:])
+		balance := acc.Balance
+		if balance == nil {
+			balance = uint256.NewInt(0)
+		}
+		code := cfg.GenesisCode[addr]
+		var blob []byte
+		if len(code) == 0 && len(cfg.GenesisStorage[addr]) == 0 {
+			blob = encodeEntityEOA(acc.Nonce, balance)
+		} else {
+			blob = encodeEntityContract(acc.Nonce, balance, code, cfg.GenesisStorage[addr])
+		}
+		if err := batch.Set(addrHash[:], blob, nil); err != nil {
+			pdb.Close()
+			return common.Hash{}, nil, nil, err
+		}
+		pendingBytes += 32 + len(blob)
+		if pendingBytes >= phase1FlushBytes {
+			if err := flush(); err != nil {
+				pdb.Close()
+				return common.Hash{}, nil, nil, err
+			}
+		}
+	}
+
 	codeSize := cfg.CodeSize
 	if codeSize <= 0 {
 		codeSize = 1024

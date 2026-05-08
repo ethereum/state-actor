@@ -81,6 +81,11 @@ func TestE2ESuite(t *testing.T) {
 		Genesis:         g,
 		InjectAddresses: []common.Address{oracle.SpamoorSenderAddr},
 	}
+	// Deploy EIP-4788/7002/7251/2935 system contracts at their canonical
+	// addresses — besu refuses to boot a Prague-active chain without
+	// them ("Withdrawal Request Contract Address not found"), and on
+	// each block "Invalid system call address" if their code is missing.
+	oracle.AddPragueSystemContracts(&cfg)
 	if _, err := Run(context.Background(), cfg, Options{}); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -128,7 +133,10 @@ func TestE2ESuite(t *testing.T) {
 		"--min-gas-price", "0",
 		"--engine-rpc-enabled",
 		"--engine-rpc-port", "8551",
-		"--engine-host-allowlist", "*",
+		// Literal "all" — passing "*" would glob-expand against
+		// /opt/besu's contents in besu's entrypoint script (same bug
+		// the --host-allowlist comment above documents).
+		"--engine-host-allowlist", "all",
 		"--engine-jwt-disabled",
 		"--logging", "INFO",
 	)

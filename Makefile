@@ -302,12 +302,14 @@ test-besu-suite: image-besu
 	docker run --rm \
 	  -v $(BESU_SUITE_VOL):/oracle-data \
 	  -v $(RESULT_DIR):/result \
+	  -v $(shell command -v $(SPAMOOR) 2>/dev/null || echo /dev/null):/usr/local/bin/spamoor:ro \
 	  -v /var/run/docker.sock:/var/run/docker.sock \
 	  -e BESU_ORACLE_DATADIR=/oracle-data \
 	  -e BESU_ORACLE_VOL=$(BESU_SUITE_VOL) \
 	  -e BESU_DOCKER_PLATFORM \
 	  -e RESULT_PATH=/result/besu-result.json \
-	  -e SPAMOOR=$(SPAMOOR) \
+	  -e SPAMOOR=/usr/local/bin/spamoor \
+	  -e REQUIRE_SPAMOOR=1 \
 	  state-actor-besu-builder:latest \
 	  go test -tags 'cgo_besu oracle' ./client/besu/ -run 'TestE2ESuite|TestDifferentialOracle' -v -timeout 1800s
 	docker volume rm -f $(BESU_SUITE_VOL) >/dev/null 2>&1 || true
@@ -321,12 +323,14 @@ test-nethermind-suite: image-nethermind
 	docker run --rm \
 	  -v $(NETH_SUITE_VOL):/oracle-data \
 	  -v $(RESULT_DIR):/result \
+	  -v $(shell command -v $(SPAMOOR) 2>/dev/null || echo /dev/null):/usr/local/bin/spamoor:ro \
 	  -v /var/run/docker.sock:/var/run/docker.sock \
 	  -e NETH_ORACLE_DATADIR=/oracle-data \
 	  -e NETH_ORACLE_VOL=$(NETH_SUITE_VOL) \
 	  -e NETH_DOCKER_PLATFORM \
 	  -e RESULT_PATH=/result/nethermind-result.json \
-	  -e SPAMOOR=$(SPAMOOR) \
+	  -e SPAMOOR=/usr/local/bin/spamoor \
+	  -e REQUIRE_SPAMOOR=1 \
 	  state-actor-nethermind-builder:latest \
 	  go test -tags 'cgo_neth oracle' ./client/nethermind/ -run 'TestE2ESuite|TestDifferentialOracle' -v -timeout 1800s
 	docker volume rm -f $(NETH_SUITE_VOL) >/dev/null 2>&1 || true
@@ -340,12 +344,14 @@ test-reth-suite: image-reth
 	docker run --rm \
 	  -v $(RETH_SUITE_VOL):/oracle-data \
 	  -v $(RESULT_DIR):/result \
+	  -v $(shell command -v $(SPAMOOR) 2>/dev/null || echo /dev/null):/usr/local/bin/spamoor:ro \
 	  -v /var/run/docker.sock:/var/run/docker.sock \
 	  -e RETH_ORACLE_DATADIR=/oracle-data \
 	  -e RETH_ORACLE_VOL=$(RETH_SUITE_VOL) \
 	  -e RETH_DOCKER_PLATFORM \
 	  -e RESULT_PATH=/result/reth-result.json \
-	  -e SPAMOOR=$(SPAMOOR) \
+	  -e SPAMOOR=/usr/local/bin/spamoor \
+	  -e REQUIRE_SPAMOOR=1 \
 	  state-actor-reth go test -tags 'cgo_reth oracle' ./client/reth/ -v -timeout 2700s
 	docker volume rm -f $(RETH_SUITE_VOL) >/dev/null 2>&1 || true
 

@@ -66,13 +66,29 @@ func writeChainSpec(dbPath string, g *genesis.Genesis) (string, error) {
 	}
 
 	cfg := map[string]any{
-		"chainId":                 chainID,
-		"londonBlock":             0,
-		"contractSizeLimit":       2147483647,
-		"terminalTotalDifficulty": "0x0",
+		"chainId":           chainID,
+		"londonBlock":       0,
+		"contractSizeLimit": 2147483647,
+		// Empty `ethash: {}` satisfies besu's "consensus mechanism
+		// defined" check at parse without configuring PoW (the chain
+		// transitions to engine API immediately because TTD=0). Same
+		// shape besu's bundled future.json / experimental.json use:
+		// ethash{} + terminalTotalDifficulty=0.
+		"ethash": map[string]any{},
+		// JSON integer (NOT hex string) — besu's getOptionalBigInteger
+		// parses as base-10. "0x0" → NumberFormatException at boot.
+		"terminalTotalDifficulty": 0,
 		"shanghaiTime":            *g.Config.ShanghaiTime,
 		"cancunTime":              *g.Config.CancunTime,
 		"pragueTime":              *g.Config.PragueTime,
+		// Prague (EIP-6110/7002/7251) requires these system contract
+		// addresses — besu refuses to boot a Prague-active chain
+		// without them ("Withdrawal Request Contract Address not found").
+		// Mainnet values per the EIPs; same as besu's ephemery + lukso
+		// configs ship.
+		"depositContractAddress":              "0x00000000219ab540356cbb839cbe05303d7705fa",
+		"withdrawalRequestContractAddress":    "0x00000961ef480eb55e80d19ad83579a64c007002",
+		"consolidationRequestContractAddress": "0x0000bbddc7ce488642fb579f8b00f3a590007251",
 	}
 	if g.Config.OsakaTime != nil {
 		cfg["osakaTime"] = *g.Config.OsakaTime

@@ -12,6 +12,7 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/hexutil"
+	"github.com/ethereum/go-ethereum/params"
 	"github.com/linxGnu/grocksdb"
 
 	"github.com/nerolation/state-actor/genesis"
@@ -163,12 +164,16 @@ func loadFixtureAllocs(t *testing.T, path string) map[common.Address]genesis.Gen
 // test). Post-Pre-C-v2, header construction goes through
 // internal/genesisheader.Build which takes *genesis.Genesis directly.
 //
-// Fixtures are pre-Shanghai (London-era), so the chain config we
-// synthesize stays minimal: g.Config is left nil, which means
-// genesisheader.Build skips every IsX check and produces a London-shape
-// header with whatever BaseFee the fixture had (if any). That matches
-// what besu's GenesisState.buildHeader would produce for the same
-// fixture — load-bearing for the differential oracle's pinned hashes.
+// Fixtures are pre-London (homestead/constantinople-era), so we attach
+// an empty *params.ChainConfig with NO fork blocks/times set —
+// IsLondon/IsShanghai/IsCancun/etc all return false, so Build emits a
+// pre-London header (no BaseFee, no WithdrawalsHash, no Cancun blob
+// fields, no RequestsHash). That matches what besu's
+// GenesisState.buildHeader produces for these fixtures — load-bearing
+// for the differential oracle's pinned hashes.
+//
+// genesisheader.Build panics on g.Config == nil, hence the empty
+// non-nil ChainConfig (vs leaving Config nil).
 func loadFixtureGenesis(t *testing.T, path string) (*genesis.Genesis, map[common.Address]genesis.GenesisAccount) {
 	t.Helper()
 	allocs := loadFixtureAllocs(t, path)
@@ -196,7 +201,7 @@ func loadFixtureGenesis(t *testing.T, path string) (*genesis.Genesis, map[common
 		t.Fatalf("unmarshal header: %v", err)
 	}
 
-	g := &genesis.Genesis{}
+	g := &genesis.Genesis{Config: &params.ChainConfig{}}
 	g.Coinbase = common.HexToAddress(h.Coinbase)
 	g.Difficulty = (*hexutil.Big)(testhex.Big(t, "difficulty", h.Difficulty))
 	if h.ExtraData != "" && h.ExtraData != "0x" {

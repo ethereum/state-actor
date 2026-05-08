@@ -43,8 +43,9 @@ func TestChainSpec_PostMergeFieldsAlwaysEmitted(t *testing.T) {
 	}
 
 	// Post-Merge marker — TTD=0 means besu boots in engine-API mode.
-	if got, want := cfg["terminalTotalDifficulty"], "0x0"; got != want {
-		t.Errorf("terminalTotalDifficulty = %v, want %q", got, want)
+	// JSON integer literal (not hex string) — see chainspec.go for why.
+	if got := cfg["terminalTotalDifficulty"]; got != float64(0) {
+		t.Errorf("terminalTotalDifficulty = %v (%T), want 0 (integer literal)", got, got)
 	}
 	// Mandatory fork-activation timestamps (cascaded from prague).
 	for _, k := range []string{"shanghaiTime", "cancunTime", "pragueTime"} {
@@ -63,10 +64,20 @@ func TestChainSpec_PostMergeFieldsAlwaysEmitted(t *testing.T) {
 		}
 	}
 
-	// No PoW path. ethash is removed; clique is broken post-Shanghai
-	// per hyperledger/besu#8532. No consensus engine block at all —
-	// besu defaults to engine-API for post-Merge chains.
-	for _, banned := range []string{"ethash", "clique", "qbft", "ibft2"} {
+	// Empty `ethash: {}` is required to satisfy besu's parser
+	// ("Unknown consensus mechanism defined" otherwise). PoW never
+	// activates because TTD=0 → immediate engine-API transition.
+	// Same pattern besu's bundled future.json / experimental.json use.
+	ethash, ok := cfg["ethash"].(map[string]any)
+	if !ok {
+		t.Errorf("config[ethash] missing or wrong type — besu requires the empty stanza for parser to accept the chainspec")
+	} else if len(ethash) != 0 {
+		t.Errorf("config[ethash] must be EMPTY object (no fixeddifficulty etc), got %v", ethash)
+	}
+
+	// PoA engines are not declared. Clique is broken post-Shanghai
+	// per hyperledger/besu#8532; QBFT/IBFT2 don't fit our use case.
+	for _, banned := range []string{"clique", "qbft", "ibft2"} {
 		if _, ok := cfg[banned]; ok {
 			t.Errorf("config[%q] should not be emitted (post-Merge engine-API only)", banned)
 		}
