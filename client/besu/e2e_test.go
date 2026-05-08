@@ -4,6 +4,7 @@ package besu
 
 import (
 	"context"
+	"errors"
 	"math/big"
 	"os"
 	"os/exec"
@@ -100,6 +101,12 @@ func TestE2ESuite(t *testing.T) {
 	// RocksDB). --host-allowlist=all (literal "all" — using "*" would
 	// glob-expand against /opt/besu's contents in besu's entrypoint
 	// script).
+	//
+	// Engine API is enabled (port 8551) so the EngineDriver goroutine
+	// below can drive block production via engine_forkchoiceUpdated /
+	// getPayload / newPayload — besu has no native post-Merge dev mode
+	// (clique broken post-Shanghai per hyperledger/besu#8532, removed
+	// in 26.4.0). JWT is disabled for tests.
 	imageRef := besuImageRef()
 	containerName := "state-actor-besu-boot-" + oracle.RandSuffix(8)
 	chainspecPath := dd.ContainerDatadir + "/" + ChainSpecFileName
@@ -119,6 +126,10 @@ func TestE2ESuite(t *testing.T) {
 		"--rpc-http-api", "ETH,NET,WEB3",
 		"--host-allowlist", "all",
 		"--min-gas-price", "0",
+		"--engine-rpc-enabled",
+		"--engine-rpc-port", "8551",
+		"--engine-host-allowlist", "*",
+		"--engine-jwt-disabled",
 		"--logging", "INFO",
 	)
 	runOut, err := exec.Command("docker", runArgs...).CombinedOutput()
@@ -145,6 +156,23 @@ func TestE2ESuite(t *testing.T) {
 	if err := rpcprobe.WaitForRPC(rpcURL, 180*time.Second); err != nil {
 		t.Fatalf("RPC never came up (logs captured in t.Cleanup): %v", err)
 	}
+
+	// Mock CL: drive block production via engine API. Modeled after besu's
+	// own PragueAcceptanceTestHelper.java. Runs as a goroutine for the
+	// rest of the test so spamoor's txs (Phase 5) get included in blocks.
+	driver := &oracle.EngineDriver{
+		EngineURL: "http://" + containerIP + ":8551",
+		EthRPCURL: rpcURL,
+		BlockTime: time.Second,
+		Fork:      "osaka",
+	}
+	driverCtx, driverCancel := context.WithCancel(context.Background())
+	t.Cleanup(driverCancel)
+	go func() {
+		if err := driver.DriveLoop(driverCtx); err != nil && !errors.Is(err, context.Canceled) {
+			t.Logf("EngineDriver exited: %v", err)
+		}
+	}()
 
 	// Phases 3-7: shared via internal/oracle.RunSuitePhases.
 	oracle.RunSuitePhases(t, oracle.SuitePhasesCfg{
