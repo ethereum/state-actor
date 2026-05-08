@@ -1,4 +1,4 @@
-.PHONY: all build test clean install lint fmt help \
+.PHONY: all build test test-race test-coverage bench clean install lint fmt tidy deps help \
 	image-reth image-besu image-nethermind \
 	docker-nethermind smoke-nethermind smoke-nethermind-spamoor \
 	docker-besu smoke-besu smoke-besu-spamoor \

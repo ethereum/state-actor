@@ -45,12 +45,15 @@ type SuiteResult struct {
 }
 
 // WriteResult marshals r to $RESULT_PATH. If RESULT_PATH is unset,
-// returns nil (local runs without artifact upload). Errors during write
-// are returned — the suite test should t.Fatalf on them so CI uploads
-// don't get stale results.
+// logs a one-line stderr warning and returns nil (local runs without
+// artifact upload — the warning surfaces visibly so a dev who skipped
+// the `make` wrapper sees their suite isn't producing the artifact CI
+// would consume). Errors during write are returned — the suite test
+// should t.Fatalf on them so CI uploads don't get stale results.
 func WriteResult(r SuiteResult) error {
 	path := os.Getenv("RESULT_PATH")
 	if path == "" {
+		fmt.Fprintln(os.Stderr, "oracle: RESULT_PATH unset; skipping artifact write (set RESULT_PATH=/tmp/result.json or use `make test-{client}-suite`)")
 		return nil
 	}
 	data, err := json.MarshalIndent(r, "", "  ")

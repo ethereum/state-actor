@@ -5,14 +5,15 @@
 // The exported helpers cover the read-side surface every "the node booted
 // and serves the state we wrote" oracle test needs:
 //
-//   - Call             — generic JSON-RPC call returning the raw result blob.
-//   - WaitForRPC       — polls eth_blockNumber until the endpoint responds.
-//   - EthGetBalance    — typed eth_getBalance, parsed to *big.Int.
-//   - EthGetCode       — typed eth_getCode, returned as raw []byte.
-//   - EthGetStorageAt  — typed eth_getStorageAt, returned as common.Hash.
-//   - EthBlockNumber   — typed eth_blockNumber, parsed to uint64.
-//   - BlockByNumber    — eth_getBlockByNumber returning Block (stateRoot, etc).
-//   - GenesisStateRoot — convenience: BlockByNumber("0x0").StateRoot.
+//   - Call                 — generic JSON-RPC call returning the raw result blob.
+//   - WaitForRPC           — polls eth_blockNumber until the endpoint responds.
+//   - EthGetBalance        — typed eth_getBalance, parsed to *big.Int.
+//   - EthGetCode           — typed eth_getCode, returned as raw []byte.
+//   - EthGetStorageAt      — typed eth_getStorageAt, returned as common.Hash.
+//   - EthGetTransactionCount — typed eth_getTransactionCount, parsed to uint64.
+//   - EthBlockNumber       — typed eth_blockNumber, parsed to uint64.
+//   - BlockByNumber        — eth_getBlockByNumber returning Block (stateRoot, etc).
+//   - GenesisStateRoot     — convenience: BlockByNumber("0x0").StateRoot.
 //
 // Caller passes a fully-qualified URL ("http://host:port") and a block tag
 // per the JSON-RPC spec ("0x0", "latest", "earliest", or a hex height).
@@ -119,8 +120,11 @@ func EthGetBalance(url string, addr common.Address, block string) (*big.Int, err
 	if err := json.Unmarshal(raw, &hexStr); err != nil {
 		return nil, fmt.Errorf("unmarshal balance: %w (raw: %s)", err, raw)
 	}
+	// Canonical "0x0" only — short-circuiting on bare "0" (no 0x prefix)
+	// would silently treat malformed inputs as zero. MEMORY.md rule:
+	// "no silent-zero hex parsers — bug bit twice on this project".
 	hexStr = strings.TrimPrefix(hexStr, "0x")
-	if hexStr == "" || hexStr == "0" {
+	if hexStr == "" {
 		return new(big.Int), nil
 	}
 	n := new(big.Int)
