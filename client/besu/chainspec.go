@@ -94,14 +94,14 @@ func writeChainSpec(dbPath string, g *genesis.Genesis) (string, error) {
 		"prague": map[string]any{
 			"target":                6,
 			"max":                   9,
-			"baseFeeUpdateFraction": 5007109,
+			"baseFeeUpdateFraction": 5007716,
 		},
 	}
 	if g.Config.OsakaTime != nil {
 		blobSchedule["osaka"] = map[string]any{
 			"target":                9,
 			"max":                   12,
-			"baseFeeUpdateFraction": 5007109,
+			"baseFeeUpdateFraction": 5007716,
 		}
 	}
 	cfg["blobSchedule"] = blobSchedule

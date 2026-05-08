@@ -55,7 +55,15 @@ var forks = []forkSpec{
 		c.MergeNetsplitBlock = big.NewInt(0)
 	}},
 	{"shanghai", true, func(c *params.ChainConfig) { c.ShanghaiTime = newUint64Ptr(0) }},
-	{"cancun", true, func(c *params.ChainConfig) { c.CancunTime = newUint64Ptr(0) }},
+	{"cancun", true, func(c *params.ChainConfig) {
+		c.CancunTime = newUint64Ptr(0)
+		// go-ethereum v1.17.2+ requires BlobScheduleConfig once Cancun
+		// is active, otherwise core.SetupGenesisBlock fails with
+		// "missing entry for fork \"cancun\" in blobSchedule". Default
+		// schedule covers Cancun + Prague + Osaka with mainnet-current
+		// target/max/updateFraction values.
+		c.BlobScheduleConfig = params.DefaultBlobSchedule
+	}},
 	{"prague", true, func(c *params.ChainConfig) { c.PragueTime = newUint64Ptr(0) }},
 	{"osaka", true, func(c *params.ChainConfig) { c.OsakaTime = newUint64Ptr(0) }},
 }
