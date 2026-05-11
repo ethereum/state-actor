@@ -2,8 +2,11 @@
 	"name": "StateActorDev",
 	"dataDir": "sa-dev",
 	"engine": {
-		"NethDev": {
+		"Ethash": {
 			"params": {
+				"minimumDifficulty": "0x1",
+				"difficultyBoundDivisor": "0x800",
+				"durationLimit": "0xd"
 			}
 		}
 	},
@@ -50,6 +53,7 @@
 		"eip4895TransitionTimestamp": "0x0",
 		"eip4788TransitionTimestamp": "0x0",
 		"eip4844TransitionTimestamp": "0x0",
+		"eip1153TransitionTimestamp": "0x0",
 		"eip5656TransitionTimestamp": "0x0",
 		"eip6780TransitionTimestamp": "0x0",
 		"eip2537TransitionTimestamp": "0x0",
