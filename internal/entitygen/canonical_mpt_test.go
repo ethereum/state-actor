@@ -7,20 +7,29 @@ import (
 	"testing"
 
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto"
+	"github.com/ethereum/go-ethereum/params"
 	gethrlp "github.com/ethereum/go-ethereum/rlp"
 	"github.com/ethereum/go-ethereum/trie"
+	"github.com/holiman/uint256"
 )
 
-// TestCanonicalEntitygenMPTRoot pins the canonical hexary-MPT state root
-// computed via go-ethereum's StackTrie for a known entitygen config. Every
-// MPT-mode client adapter (nethermind, besu, reth) MUST match — same RNG
-// draws → same state → same root, regardless of on-disk node layout.
-// Drift here requires a coordinated update across all client adapters.
+// TestCanonicalOsakaMPTRoot pins the canonical hexary-MPT state root for
+// the e2e config — entitygen synthetic entities PLUS the 4 EIP system
+// contracts (BeaconRoots/HistoryStorage/WithdrawalQueue/ConsolidationQueue)
+// at their canonical addresses. Every MPT-mode client adapter
+// (geth, nethermind, besu, reth) MUST match — same RNG draws + same
+// system contracts → same state → same root, regardless of on-disk node
+// layout. Drift here requires a coordinated update across all 4 client
+// adapter golden tests.
 //
-// (geth-MPT in generator/generator.go uses inline RNG draws that don't match
-// entitygen — known pre-existing inconsistency, tracked separately.)
-func TestCanonicalEntitygenMPTRoot(t *testing.T) {
+// The hash is exported as entitygen.CanonicalOsakaMPTRoot so all 4
+// client goldens + this test pin against a single source of truth.
+//
+// (geth-MPT in generator/generator.go uses inline RNG draws that don't
+// match entitygen — known pre-existing inconsistency, tracked separately.)
+func TestCanonicalOsakaMPTRoot(t *testing.T) {
 	const (
 		seed         = int64(12345)
 		numAccounts  = 10
@@ -29,7 +38,7 @@ func TestCanonicalEntitygenMPTRoot(t *testing.T) {
 		maxSlots     = 100
 		codeSize     = 256
 	)
-	const expected = "0xddbfa7c1941ff70fe5a692f7552149adc1ae29ebb2b5dc8bb3544c1368bcb0c3"
+	expected := CanonicalOsakaMPTRoot.Hex()
 
 	rng := mrand.New(mrand.NewSource(seed))
 
@@ -89,6 +98,38 @@ func TestCanonicalEntitygenMPTRoot(t *testing.T) {
 		accts = append(accts, acctEntry{c.AddrHash, buf})
 	}
 
+	// 4 EIP system contracts at canonical addresses — match
+	// oracle.AddPragueSystemContracts (Nonce=1, Balance=0,
+	// Root=EmptyRootHash, CodeHash=keccak256(code)). The 4 per-client
+	// golden tests also call AddPragueSystemContracts before computing
+	// state root, so this canonical hash matches what all 4 writers
+	// produce for the canonical config.
+	sysContracts := []struct {
+		addr common.Address
+		code []byte
+	}{
+		{params.BeaconRootsAddress, params.BeaconRootsCode},
+		{params.HistoryStorageAddress, params.HistoryStorageCode},
+		{params.WithdrawalQueueAddress, params.WithdrawalQueueCode},
+		{params.ConsolidationQueueAddress, params.ConsolidationQueueCode},
+	}
+	for _, sc := range sysContracts {
+		sa := &types.StateAccount{
+			Nonce:    1,
+			Balance:  uint256.NewInt(0),
+			Root:     types.EmptyRootHash,
+			CodeHash: crypto.Keccak256Hash(sc.code).Bytes(),
+		}
+		buf, err := gethrlp.EncodeToBytes(sa)
+		if err != nil {
+			t.Fatalf("encode system contract %s: %v", sc.addr.Hex(), err)
+		}
+		accts = append(accts, acctEntry{
+			addrHash: crypto.Keccak256Hash(sc.addr[:]),
+			rlp:      buf,
+		})
+	}
+
 	sort.Slice(accts, func(i, j int) bool {
 		return bytes.Compare(accts[i].addrHash[:], accts[j].addrHash[:]) < 0
 	})
@@ -99,7 +140,7 @@ func TestCanonicalEntitygenMPTRoot(t *testing.T) {
 	}
 	got := acctTrie.Hash().Hex()
 	if got != expected {
-		t.Fatalf("canonical entitygen-MPT root mismatch:\n  got:  %s\n  want: %s\n  (any drift here means a coordinated update across all entitygen-using client adapters is required)",
-			got, expected)
+		t.Fatalf("canonical Osaka-MPT root mismatch:\n  got:  %s\n  want: %s\n  To accept this update intentionally, set CanonicalOsakaMPTRoot in canonical.go to %s and re-run the 4 client goldens.",
+			got, expected, got)
 	}
 }

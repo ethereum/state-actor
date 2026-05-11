@@ -63,7 +63,7 @@ func TestRethDbStats(t *testing.T) {
 		t.Skip("oracle test in short mode")
 	}
 
-	dd, cleanup := oracle.AcquireDatadir(t, "RETH", "RETH_ORACLE_VOL")
+	dd, cleanup := oracle.AcquireDatadir(t, "RETH")
 	defer cleanup()
 
 	cfg := generator.Config{DBPath: dd.HostPath}
@@ -97,7 +97,7 @@ func TestRethDbStatsSyntheticEOAs(t *testing.T) {
 	}
 	const numAccounts = 100
 
-	dd, cleanup := oracle.AcquireDatadir(t, "RETH", "RETH_ORACLE_VOL")
+	dd, cleanup := oracle.AcquireDatadir(t, "RETH")
 	defer cleanup()
 
 	cfg := generator.Config{DBPath: dd.HostPath, NumAccounts: numAccounts, Seed: 12345}
@@ -148,7 +148,7 @@ func TestRethNodeBootEmptyAlloc(t *testing.T) {
 		t.Skip("oracle boot test skipped in short mode")
 	}
 
-	dd, cleanup := oracle.AcquireDatadir(t, "RETH", "RETH_ORACLE_VOL")
+	dd, cleanup := oracle.AcquireDatadir(t, "RETH")
 	defer cleanup()
 
 	cfg := generator.Config{DBPath: dd.HostPath} // empty alloc
@@ -199,7 +199,7 @@ func TestRethNodeBootEmptyAlloc(t *testing.T) {
 
 // TestE2ESuite — see client/besu/e2e_test.go for the full phase
 // description. reth-specific bits:
-//   - --fork=osaka (reth's MaxForkForClient ceiling, post-PR-Pre-C).
+//   - --fork=osaka (reth's MaxForkForClient ceiling, after the writer migration to internal/genesisheader.Build).
 //   - 60M gas matches mainnet-current.
 //   - DinD via the `oracle` build tag.
 //   - Pinned image: paradigmxyz/reth:nightly (post-#23919, supports
@@ -227,7 +227,7 @@ func TestE2ESuite(t *testing.T) {
 		t.Fatalf("BuildSynthetic: %v", err)
 	}
 
-	dd, cleanup := oracle.AcquireDatadir(t, "RETH", "RETH_ORACLE_VOL")
+	dd, cleanup := oracle.AcquireDatadir(t, "RETH")
 	defer cleanup()
 
 	cfg := generator.Config{
@@ -241,6 +241,10 @@ func TestE2ESuite(t *testing.T) {
 		Genesis:         g,
 		InjectAddresses: []common.Address{oracle.SpamoorSenderAddr},
 	}
+	// Deploy EIP-4788/2935/7002/7251 system contracts at their canonical
+	// addresses — required for the cross-client genesis-root invariant.
+	oracle.AddPragueSystemContracts(&cfg)
+
 	if _, err := RunCgo(context.Background(), cfg, Options{}); err != nil {
 		t.Fatalf("RunCgo: %v", err)
 	}
@@ -298,9 +302,10 @@ func TestE2ESuite(t *testing.T) {
 
 	// Phases 3-7: shared via internal/oracle.RunSuitePhases.
 	oracle.RunSuitePhases(t, oracle.SuitePhasesCfg{
-		ClientName: "reth",
-		RPCURL:     rpcURL,
-		EOAs:       eoas,
-		Contracts:  contracts,
+		ClientName:      "reth",
+		RPCURL:          rpcURL,
+		EOAs:            eoas,
+		Contracts:       contracts,
+		GeneratorConfig: &cfg,
 	})
 }

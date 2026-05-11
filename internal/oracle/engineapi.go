@@ -58,13 +58,27 @@ type EngineDriver struct {
 	// effective block interval ≈ BlockTime. Zero → 1s default.
 	BlockTime time.Duration
 
-	// Fork picks the engine method versions. One of "cancun", "prague",
-	// "osaka". Empty defaults to "prague".
-	Fork string
+	// Fork picks the engine method versions. Use one of the package
+	// constants (ForkCancun / ForkPrague / ForkOsaka); empty defaults
+	// to ForkPrague. Unknown values cause versions() to return
+	// Prague-style methods (back-compat), but new callers should use
+	// the typed constants to avoid the silent-default footgun.
+	Fork Fork
 
 	// httpClient is lazily created with a 30s timeout on first call.
 	httpClient *http.Client
 }
+
+// Fork is the engine-API method-version dispatch key. Typed (rather
+// than bare string) so a typo like "osakaa" is a compile error instead
+// of silently falling into the Prague default at runtime.
+type Fork string
+
+const (
+	ForkCancun Fork = "cancun"
+	ForkPrague Fork = "prague"
+	ForkOsaka  Fork = "osaka"
+)
 
 // engineFeeRecipient is the suggestedFeeRecipient passed to every
 // forkchoiceUpdated call. Block fees stay on this address; we don't
@@ -90,14 +104,28 @@ func (d *EngineDriver) DriveLoop(ctx context.Context) error {
 	headHash := head.Hash
 	blockTS := head.Time
 
+	// Permanent-rejection guard: if Step fails this many times in a row
+	// (no recovery in between), surface the latest error instead of
+	// spinning forever. Spamoor's 5-min deadline would otherwise be the
+	// only signal, mis-attributing chain rejection to "spamoor too slow".
+	const maxConsecutiveStepErrors = 5
+	consecutiveErrors := 0
+
 	for {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
 		blockTS++
-		newHash, err := d.Step(ctx, headHash, blockTS)
-		if err == nil {
+		newHash, stepErr := d.Step(ctx, headHash, blockTS)
+		if stepErr == nil {
 			headHash = newHash
+			consecutiveErrors = 0
+		} else {
+			consecutiveErrors++
+			if consecutiveErrors >= maxConsecutiveStepErrors {
+				return fmt.Errorf("EngineDriver: %d consecutive Step failures (chain rejecting payloads?); last err: %w",
+					consecutiveErrors, stepErr)
+			}
 		}
 		// Sleep regardless of success — failure path is "EL not ready,
 		// try again next tick"; success path is "block produced, wait
@@ -202,10 +230,10 @@ func (d *EngineDriver) Step(ctx context.Context, headHash common.Hash, ts uint64
 }
 
 func (d *EngineDriver) versions() (getVer, newVer string) {
-	switch strings.ToLower(strings.TrimSpace(d.Fork)) {
-	case "cancun":
+	switch Fork(strings.ToLower(strings.TrimSpace(string(d.Fork)))) {
+	case ForkCancun:
 		return "engine_getPayloadV3", "engine_newPayloadV3"
-	case "osaka":
+	case ForkOsaka:
 		// besu 25.11.0 ForkSupportHelper bounds:
 		//   getPayloadV5: [Osaka, Amsterdam)
 		//   newPayloadV5: [Amsterdam, ...)  ← requires blockAccessList field

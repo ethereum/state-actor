@@ -14,15 +14,19 @@ import (
 
 	"github.com/nerolation/state-actor/generator"
 	"github.com/nerolation/state-actor/internal/besu/keys"
+	"github.com/nerolation/state-actor/internal/entitygen"
+	"github.com/nerolation/state-actor/internal/oracle"
 )
 
 // TestBesuGoldenStateRoot pins the state root the full cgo_besu pipeline
-// produces for seed=12345/10/5/PowerLaw/MaxSlots=100/CodeSize=256. The hash
-// MUST equal internal/entitygen.TestCanonicalEntitygenMPTRoot — every
-// entitygen-using MPT adapter shares this constant. Drift requires a
-// coordinated update across nethermind, besu, reth.
+// produces for the canonical Osaka-bootable config: 10 EOAs + 5 contracts
+// (seed=12345, PowerLaw, MaxSlots=100, CodeSize=256) + 4 EIP system
+// contracts via oracle.AddPragueSystemContracts. The hash MUST equal
+// entitygen.CanonicalOsakaMPTRoot — every MPT-mode client adapter
+// (geth, nethermind, besu, reth) pins the same constant. Drift requires
+// a coordinated update across all 4 + the pure-Go canonical_mpt_test.
 func TestBesuGoldenStateRoot(t *testing.T) {
-	const expectedRoot = "0xddbfa7c1941ff70fe5a692f7552149adc1ae29ebb2b5dc8bb3544c1368bcb0c3"
+	expectedRoot := entitygen.CanonicalOsakaMPTRoot.Hex()
 
 	tmpDir := t.TempDir()
 	dbPath := filepath.Join(tmpDir, "besu-golden")
@@ -43,6 +47,10 @@ func TestBesuGoldenStateRoot(t *testing.T) {
 		CodeSize:     256,
 		Verbose:      false,
 	}
+	// Deploy EIP-4788/2935/7002/7251 system contracts — match the
+	// Osaka-bootable canonical computed by canonical_mpt_test.go and
+	// produced by the e2e suites.
+	oracle.AddPragueSystemContracts(&cfg)
 
 	stats, err := Run(context.Background(), cfg, Options{})
 	if err != nil {

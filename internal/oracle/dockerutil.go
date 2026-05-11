@@ -30,13 +30,13 @@ type Datadir struct {
 // mount): {ENV_BASE}_ORACLE_DATADIR and {ENV_BASE}_ORACLE_VOL.
 //
 // envBase is the per-client prefix — "BESU" / "NETH" / "RETH" / "GETH".
-// envVol is the volume-name env var, typically envBase + "_ORACLE_VOL".
+// The volume-name env var is derived as envBase + "_ORACLE_VOL".
 //
 // Falls back to t.TempDir() for direct host runs.
 //
 // Replaces the 4 per-client `acquireOracleDatadir` functions that
 // previously duplicated this logic.
-func AcquireDatadir(t *testing.T, envBase, envVol string) (Datadir, func()) {
+func AcquireDatadir(t *testing.T, envBase string) (Datadir, func()) {
 	t.Helper()
 	baseDir := os.Getenv(envBase + "_ORACLE_DATADIR")
 	if baseDir == "" {
@@ -54,7 +54,7 @@ func AcquireDatadir(t *testing.T, envBase, envVol string) (Datadir, func()) {
 	}
 	t.Logf("using datadir=%s", hostPath)
 
-	vol := os.Getenv(envVol)
+	vol := os.Getenv(envBase + "_ORACLE_VOL")
 	volMount := hostPath + ":/data"
 	containerDatadir := "/data"
 	if vol != "" {

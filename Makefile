@@ -293,6 +293,13 @@ image-reth:
 
 RESULT_DIR ?= $(PWD)/_artifacts
 
+# All cgo test suites bind-mount the host's spamoor binary at
+# /usr/local/bin/spamoor inside the container (read-only) and override
+# the SPAMOOR env var to point at it. The $(shell command -v ...)
+# fallback to /dev/null keeps `make` from erroring when SPAMOOR is
+# unset on the host — the test then fails loud via REQUIRE_SPAMOOR=1
+# rather than silently t.Skipping.
+
 ## test-besu-suite: Run the besu end-to-end suite (db-gen → boot → spamoor → re-query)
 BESU_SUITE_VOL ?= besu-suite-datadir
 test-besu-suite: image-besu
@@ -358,7 +365,7 @@ test-reth-suite: image-reth
 ## test-geth-suite: Run the geth end-to-end suite (pure Go, no Docker build)
 test-geth-suite:
 	mkdir -p $(RESULT_DIR)
-	RESULT_PATH=$(RESULT_DIR)/geth-result.json SPAMOOR=$(SPAMOOR) \
+	RESULT_PATH=$(RESULT_DIR)/geth-result.json SPAMOOR=$(SPAMOOR) REQUIRE_SPAMOOR=1 \
 	  $(GOTEST) -tags oracle -run TestE2ESuite -v -timeout 1800s ./client/geth/...
 
 ## help: Show this help

@@ -165,7 +165,7 @@ func TestEngineDriver_Step_OsakaUsesV5GetV4New(t *testing.T) {
 	d := &EngineDriver{
 		EngineURL: mock.server.URL,
 		EthRPCURL: mock.server.URL,
-		Fork:      "osaka",
+		Fork:      ForkOsaka,
 		BlockTime: 20 * time.Millisecond, // fast for unit test
 	}
 
@@ -202,7 +202,7 @@ func TestEngineDriver_Step_PragueUsesV4(t *testing.T) {
 	d := &EngineDriver{
 		EngineURL: mock.server.URL,
 		EthRPCURL: mock.server.URL,
-		Fork:      "prague",
+		Fork:      ForkPrague,
 		BlockTime: 20 * time.Millisecond,
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -224,7 +224,7 @@ func TestEngineDriver_Step_CancunUsesV3(t *testing.T) {
 	d := &EngineDriver{
 		EngineURL: mock.server.URL,
 		EthRPCURL: mock.server.URL,
-		Fork:      "cancun",
+		Fork:      ForkCancun,
 		BlockTime: 20 * time.Millisecond,
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -246,7 +246,7 @@ func TestEngineDriver_DriveLoop_ProducesBlocksUntilCanceled(t *testing.T) {
 	d := &EngineDriver{
 		EngineURL: mock.server.URL,
 		EthRPCURL: mock.server.URL,
-		Fork:      "osaka",
+		Fork:      ForkOsaka,
 		BlockTime: 40 * time.Millisecond,
 	}
 
@@ -294,7 +294,7 @@ func TestEngineDriver_Step_RejectsNonVALIDStatus(t *testing.T) {
 	d := &EngineDriver{
 		EngineURL: srv.URL,
 		EthRPCURL: srv.URL,
-		Fork:      "osaka",
+		Fork:      ForkOsaka,
 		BlockTime: 10 * time.Millisecond,
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)

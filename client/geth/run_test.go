@@ -126,42 +126,6 @@ func TestPopulateRootMatchesEntitygen(t *testing.T) {
 	}
 }
 
-// TestPopulateCanonicalEntitygenRoot pins the geth-MPT state root for
-// the same fixed config that internal/entitygen/canonical_mpt_test.go
-// pins as the cross-client canonical. Drift between this test and the
-// canonical means geth's Populate diverged from the shared entitygen
-// contract — coordinated update required across all client adapters.
-//
-// This is the load-bearing cross-client invariant test for geth-MPT.
-func TestPopulateCanonicalEntitygenRoot(t *testing.T) {
-	const expected = "0xddbfa7c1941ff70fe5a692f7552149adc1ae29ebb2b5dc8bb3544c1368bcb0c3"
-
-	dir := t.TempDir()
-	cfg := generator.Config{
-		DBPath:         filepath.Join(dir, "geth", "chaindata"),
-		NumAccounts:    10,
-		NumContracts:   5,
-		MaxSlots:       100,
-		MinSlots:       1,
-		Distribution:   generator.PowerLaw,
-		Seed:           12345,
-		BatchSize:      1000,
-		Workers:        1,
-		CodeSize:       256,
-		TrieMode:       generator.TrieModeMPT,
-		WriteTrieNodes: true,
-	}
-
-	stats, err := Populate(context.Background(), cfg, Options{})
-	if err != nil {
-		t.Fatalf("Populate: %v", err)
-	}
-	if got := stats.StateRoot.Hex(); got != expected {
-		t.Fatalf("geth-MPT state root drift from canonical entitygen MPT root:\n  got:  %s\n  want: %s\n  Diverging here means coordinated update across all entitygen-using adapters (see internal/entitygen/canonical_mpt_test.go).",
-			got, expected)
-	}
-}
-
 // TestPopulateTargetSizeStopsAccurately verifies Phase 2's dirSize
 // sampling stops production-DB writes when cfg.TargetSize is reached,
 // landing the on-disk size within a reasonable tolerance of the target.

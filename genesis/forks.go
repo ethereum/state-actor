@@ -143,7 +143,7 @@ func SortedForks() []string {
 // ceiling should be rejected at parse time so the resulting DB doesn't
 // boot with a "wrong genesis hash" mismatch.
 //
-// Today's ceilings (all 4 clients on Osaka post-Pre-C-v2):
+// Today's ceilings (all 4 clients on Osaka after the writer migration to internal/genesisheader.Build):
 //   - geth, reth, besu, nethermind: osaka. Header construction flows
 //     through internal/genesisheader.Build for besu/reth/nethermind
 //     (geth uses go-ethereum's native genesis builder, which handles

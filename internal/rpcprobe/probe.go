@@ -186,9 +186,10 @@ func EthBlockNumber(url string) (uint64, error) {
 	if err := json.Unmarshal(raw, &hexStr); err != nil {
 		return 0, fmt.Errorf("unmarshal blockNumber: %w (raw: %s)", err, raw)
 	}
+	// Canonical "0x0" only — see EthGetBalance for the rationale.
 	hexStr = strings.TrimPrefix(hexStr, "0x")
 	if hexStr == "" {
-		return 0, nil
+		return 0, fmt.Errorf("eth_blockNumber returned empty hex (after 0x trim)")
 	}
 	n := new(big.Int)
 	if _, ok := n.SetString(hexStr, 16); !ok {
@@ -209,9 +210,10 @@ func EthGetTransactionCount(url string, addr common.Address, block string) (uint
 	if err := json.Unmarshal(raw, &hexStr); err != nil {
 		return 0, fmt.Errorf("unmarshal txCount: %w (raw: %s)", err, raw)
 	}
+	// Canonical "0x0" only — see EthGetBalance for the rationale.
 	hexStr = strings.TrimPrefix(hexStr, "0x")
 	if hexStr == "" {
-		return 0, nil
+		return 0, fmt.Errorf("eth_getTransactionCount returned empty hex (after 0x trim)")
 	}
 	n := new(big.Int)
 	if _, ok := n.SetString(hexStr, 16); !ok {

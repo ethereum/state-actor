@@ -36,6 +36,10 @@ type Options struct{}
 func Populate(ctx context.Context, cfg generator.Config, opts Options) (*generator.Stats, error) {
 	_ = opts // reserved for future tuning knobs
 
+	if err := cfg.Validate(); err != nil {
+		return nil, err
+	}
+
 	if cfg.TrieMode == generator.TrieModeBinary {
 		return nil, fmt.Errorf("client/geth.Populate: binary-trie mode goes through generator.New, not this entry point")
 	}

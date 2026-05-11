@@ -56,7 +56,7 @@ func TestE2ESuite(t *testing.T) {
 		maxSlots     = 2
 	)
 
-	// All 4 clients pin --fork=osaka post-Pre-C-v2. state-actor's
+	// All 4 clients pin --fork=osaka after the writer migration to internal/genesisheader.Build. state-actor's
 	// MaxForkForClient(c)=="osaka" for every client; pre-Prague forks
 	// are EOL and rejected at parse. 60M gas tracks current mainnet.
 	g, err := stategenesis.BuildSynthetic("osaka", big.NewInt(1337), 60_000_000, 0, nil)
@@ -64,7 +64,7 @@ func TestE2ESuite(t *testing.T) {
 		t.Fatalf("BuildSynthetic: %v", err)
 	}
 
-	dd, cleanup := oracle.AcquireDatadir(t, "BESU", "BESU_ORACLE_VOL")
+	dd, cleanup := oracle.AcquireDatadir(t, "BESU")
 	defer cleanup()
 
 	cfg := generator.Config{
@@ -172,21 +172,29 @@ func TestE2ESuite(t *testing.T) {
 		EngineURL: "http://" + containerIP + ":8551",
 		EthRPCURL: rpcURL,
 		BlockTime: time.Second,
-		Fork:      "osaka",
+		Fork:      oracle.ForkOsaka,
 	}
 	driverCtx, driverCancel := context.WithCancel(context.Background())
 	t.Cleanup(driverCancel)
 	go func() {
 		if err := driver.DriveLoop(driverCtx); err != nil && !errors.Is(err, context.Canceled) {
-			t.Logf("EngineDriver exited: %v", err)
+			// Goroutine context — use t.Errorf (not t.Fatalf, which is
+			// not safe outside the test goroutine). DriveLoop only
+			// returns non-context-Canceled errors when something is
+			// permanently wrong (fetchLatestBlock at startup, or K
+			// consecutive Step failures); surfacing it loud lets the
+			// suite fail with the right diagnostic instead of timing
+			// out on spamoor's deadline.
+			t.Errorf("EngineDriver exited: %v", err)
 		}
 	}()
 
 	// Phases 3-7: shared via internal/oracle.RunSuitePhases.
 	oracle.RunSuitePhases(t, oracle.SuitePhasesCfg{
-		ClientName: "besu",
-		RPCURL:     rpcURL,
-		EOAs:       eoas,
-		Contracts:  contracts,
+		ClientName:      "besu",
+		RPCURL:          rpcURL,
+		EOAs:            eoas,
+		Contracts:       contracts,
+		GeneratorConfig: &cfg,
 	})
 }

@@ -1,6 +1,7 @@
 package generator
 
 import (
+	"fmt"
 	"time"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -90,10 +91,14 @@ type Config struct {
 	// pre-funded accounts come from --inject-accounts, not the genesis JSON.
 	Genesis *genesis.Genesis
 
-	// GenesisAccounts / GenesisStorage / GenesisCode are kept for tests
-	// (oracle differential tests construct an in-memory alloc programmatically
-	// and rely on the alloc-walking code paths in client/* writers). The
-	// production CLI never sets these — main.go does not touch them.
+	// GenesisAccounts / GenesisStorage / GenesisCode carry pre-allocated
+	// state — post-Merge EIP system contracts (deployed via
+	// oracle.AddPragueSystemContracts in e2e suites) and any other
+	// alloc entries tests need. All 4 client writers consume these
+	// fields (geth/nethermind/besu/reth) — Config.Validate() enforces
+	// that no address appears in both InjectAddresses and GenesisAccounts,
+	// and that GenesisStorage/GenesisCode have no orphan entries.
+	// Production CLI doesn't set these directly; the oracle helper does.
 	GenesisAccounts map[common.Address]*types.StateAccount
 	GenesisStorage  map[common.Address]map[common.Hash]common.Hash
 	GenesisCode     map[common.Address][]byte
@@ -128,6 +133,49 @@ type Config struct {
 	// GroupDepth is the binary trie group depth (1-8, default 8).
 	// Controls how many trie levels are serialized per DB entry.
 	GroupDepth int
+}
+
+// Validate rejects malformed Config combinations at command start, before
+// any DB write happens. Centralized so all 4 client writers enforce the
+// same invariants — silently picking one side of an ambiguity used to
+// silently corrupt state (e.g. besu writes InjectAddresses first, geth
+// writes GenesisAccounts first; same cfg → different outcomes).
+//
+// Rejects:
+//   - InjectAddresses ∩ GenesisAccounts ≠ ∅ — ambiguous precedence.
+//   - GenesisCode address not in GenesisAccounts — orphan code (would
+//     silently disappear in writers that lookup by account first).
+//   - GenesisStorage address not in GenesisAccounts — orphan storage.
+//
+// Called by client writers as the first non-trivial step of
+// Run() / Populate() / runImpl().
+func (c *Config) Validate() error {
+	if len(c.InjectAddresses) > 0 && len(c.GenesisAccounts) > 0 {
+		injectSet := make(map[common.Address]struct{}, len(c.InjectAddresses))
+		for _, a := range c.InjectAddresses {
+			injectSet[a] = struct{}{}
+		}
+		var collisions []common.Address
+		for a := range c.GenesisAccounts {
+			if _, dup := injectSet[a]; dup {
+				collisions = append(collisions, a)
+			}
+		}
+		if len(collisions) > 0 {
+			return fmt.Errorf("Config: addresses appear in both InjectAddresses and GenesisAccounts (ambiguous precedence): %v", collisions)
+		}
+	}
+	for a := range c.GenesisCode {
+		if _, ok := c.GenesisAccounts[a]; !ok {
+			return fmt.Errorf("Config: GenesisCode[%s] has no corresponding GenesisAccounts entry (orphan code)", a.Hex())
+		}
+	}
+	for a := range c.GenesisStorage {
+		if _, ok := c.GenesisAccounts[a]; !ok {
+			return fmt.Errorf("Config: GenesisStorage[%s] has no corresponding GenesisAccounts entry (orphan storage)", a.Hex())
+		}
+	}
+	return nil
 }
 
 // Stats holds statistics about the generation process.

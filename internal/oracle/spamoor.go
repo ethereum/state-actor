@@ -1,10 +1,10 @@
 package oracle
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
-	"strings"
 	"syscall"
 	"time"
 
@@ -154,7 +154,10 @@ func SpamoorRun(cfg SpamoorRunCfg) (uint64, error) {
 		go func() { done <- cmd.Wait() }()
 		select {
 		case err := <-done:
-			if err != nil && !strings.Contains(err.Error(), "signal: terminated") {
+			// Expected on graceful kill: ExitError with status holding
+			// signal=SIGTERM. Anything else is unexpected and worth
+			// surfacing to stderr (e.g. process panicked mid-shutdown).
+			if err != nil && !isTerminatedBySIGTERM(err) {
 				fmt.Fprintf(os.Stderr, "SpamoorRun cleanup: Wait: %v\n", err)
 			}
 		case <-time.After(10 * time.Second):
@@ -200,4 +203,21 @@ func SpamoorRun(cfg SpamoorRunCfg) (uint64, error) {
 			}
 		}
 	}
+}
+
+// isTerminatedBySIGTERM reports whether err is an *exec.ExitError whose
+// exit was caused by SIGTERM — the expected outcome of our graceful
+// cleanup. Uses errors.As + syscall.WaitStatus rather than substring
+// matching the error text, which is brittle across Go versions /
+// platforms.
+func isTerminatedBySIGTERM(err error) bool {
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) {
+		return false
+	}
+	ws, ok := exitErr.Sys().(syscall.WaitStatus)
+	if !ok {
+		return false
+	}
+	return ws.Signaled() && ws.Signal() == syscall.SIGTERM
 }

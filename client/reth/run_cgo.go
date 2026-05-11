@@ -64,6 +64,9 @@ func RunCgo(ctx context.Context, cfg generator.Config, opts Options) (*generator
 	if cfg.DBPath == "" {
 		return nil, fmt.Errorf("RunCgo: cfg.DBPath required")
 	}
+	if err := cfg.Validate(); err != nil {
+		return nil, err
+	}
 	if err := os.MkdirAll(cfg.DBPath, 0o755); err != nil {
 		return nil, fmt.Errorf("RunCgo: mkdir datadir: %w", err)
 	}
@@ -132,6 +135,27 @@ func RunCgo(ctx context.Context, cfg generator.Config, opts Options) (*generator
 			}
 		}
 		accountsCreated += len(cfg.InjectAddresses)
+	}
+
+	// Phase 4a.5: genesis-alloc accounts (cfg.GenesisAccounts/Code/Storage).
+	// The e2e suite uses these to deploy EIP-4788/2935/7002/7251 system
+	// contracts at their canonical addresses via oracle.AddPragueSystemContracts
+	// — without them, post-Prague block processing fails system calls.
+	// Geth + besu + nethermind already weave these in; this brings reth to
+	// parity. WriteContracts recomputes StateAccount.Root + .CodeHash from
+	// the Storage + Code we supply, so the per-account RLP-encode below
+	// captures the correct global-state-trie values.
+	if len(cfg.GenesisAccounts) > 0 {
+		allocAccounts := buildAllocAccounts(cfg)
+		if err := WriteContracts(envs, allocAccounts, 0); err != nil {
+			return nil, fmt.Errorf("RunCgo: WriteContracts(alloc): %w", err)
+		}
+		for _, acc := range allocAccounts {
+			if err := putAccountRLP(acc); err != nil {
+				return nil, fmt.Errorf("RunCgo: putAccountRLP(alloc): %w", err)
+			}
+		}
+		accountsCreated += len(allocAccounts)
 	}
 
 	if cfg.NumAccounts > 0 || cfg.NumContracts > 0 {

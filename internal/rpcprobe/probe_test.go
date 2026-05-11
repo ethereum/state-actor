@@ -167,7 +167,7 @@ func TestEthBlockNumber(t *testing.T) {
 }
 
 func TestBlockByNumber(t *testing.T) {
-	root := "0xddbfa7c1941ff70fe5a692f7552149adc1ae29ebb2b5dc8bb3544c1368bcb0c3"
+	root := "0xabcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234" // arbitrary fixture; RPC plumbing test only
 	srv := fakeRPCServer(t, map[string]any{
 		"eth_getBlockByNumber": map[string]any{
 			"number":     "0x0",
@@ -210,7 +210,7 @@ func TestBlockByNumber_NotFound(t *testing.T) {
 }
 
 func TestGenesisStateRoot(t *testing.T) {
-	root := "0xddbfa7c1941ff70fe5a692f7552149adc1ae29ebb2b5dc8bb3544c1368bcb0c3"
+	root := "0xabcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234" // arbitrary fixture; RPC plumbing test only
 	srv := fakeRPCServer(t, map[string]any{
 		"eth_getBlockByNumber": map[string]any{
 			"number":    "0x0",

@@ -77,7 +77,7 @@ func (b *besuDB) writeGenesisBlock(header *types.Header, totalDifficulty *big.In
 }
 
 // supportedForkChainConfig was previously a Shanghai-ceiling gate; post-
-// Pre-C-v2 the besu writer goes through internal/genesisheader.Build
+// after the writer migration the besu writer goes through internal/genesisheader.Build
 // which handles every fork up through Osaka. Function kept as a nil-
 // input sanity check so callers still get a clear error if they pass
 // an empty Genesis (would otherwise nil-deref later).

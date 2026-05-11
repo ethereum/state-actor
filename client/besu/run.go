@@ -34,6 +34,9 @@ var errNotImplemented = errors.New(
 // The split keeps macOS/Linux dev builds free of cgo and librocksdb while
 // the Docker image carries the real writer.
 func Run(ctx context.Context, cfg generator.Config, opts Options) (*generator.Stats, error) {
+	if err := cfg.Validate(); err != nil {
+		return nil, err
+	}
 	return runImpl(ctx, cfg, opts)
 }
 

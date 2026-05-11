@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/nerolation/state-actor/generator"
 	"github.com/nerolation/state-actor/internal/entitygen"
 	"github.com/nerolation/state-actor/internal/rpcprobe"
 )
@@ -34,6 +35,14 @@ type SuitePhasesCfg struct {
 	// same seed/counts the writer used.
 	EOAs      []*entitygen.Account
 	Contracts []*entitygen.Account
+
+	// GeneratorConfig is the generator.Config the writer was driven with.
+	// RunSuitePhases reads InjectAddresses + GenesisAccounts/Code from it
+	// during Phase 4 (via CheckInjections) to verify the writer didn't
+	// silently drop any pre-allocated state — catches the class of bug
+	// where a client writer ignores a cfg field, surfaces locally
+	// instead of only via the cross-client genesis-root aggregator.
+	GeneratorConfig *generator.Config
 
 	// SpamoorSlotDuration overrides the default 1s slot pacing — neth's
 	// e2e historically used 250ms (matches smoke-nethermind-spamoor).
@@ -71,8 +80,15 @@ func RunSuitePhases(t *testing.T, cfg SuitePhasesCfg) {
 	}
 
 	// ---- Phase 4: oracle re-query at "0x0" ----
+	// 4a — entitygen synthetic entities (RNG-driven).
 	if !CheckEntities(t, cfg.RPCURL, cfg.EOAs, cfg.Contracts, "0x0") {
-		t.Fatalf("genesis-state oracle re-query failed; aborting before spamoor phase")
+		t.Fatalf("genesis-state oracle re-query (entitygen) failed; aborting before spamoor phase")
+	}
+	// 4b — InjectAddresses (eth_getBalance > 0) + GenesisAccounts
+	// (eth_getCode matches). Catches writer-level drops of either
+	// field — see CheckInjections docstring for the bug class.
+	if !CheckInjections(t, cfg.RPCURL, cfg.GeneratorConfig, "0x0") {
+		t.Fatalf("genesis-state oracle re-query (injections + alloc) failed; aborting before spamoor phase")
 	}
 
 	// ---- Phase 5: spamoor for ~100 blocks ----

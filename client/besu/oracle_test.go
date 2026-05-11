@@ -161,7 +161,7 @@ func loadFixtureAllocs(t *testing.T, path string) map[common.Address]genesis.Gen
 
 // loadFixtureGenesis loads both the alloc and a minimal *genesis.Genesis
 // from a Besu fixture JSON (for header construction in genesisNonce
-// test). Post-Pre-C-v2, header construction goes through
+// test). After the writer migration, header construction goes through
 // internal/genesisheader.Build which takes *genesis.Genesis directly.
 //
 // Fixtures are pre-London (homestead/constantinople-era), so we attach

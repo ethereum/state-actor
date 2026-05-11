@@ -51,7 +51,7 @@ func freeTCPPort(t *testing.T) int {
 
 // TestE2ESuite — see client/besu/e2e_test.go for the full phase
 // description. geth-specific bits:
-//   - --fork=osaka (geth's MaxForkForClient ceiling, post-PR-Pre-C).
+//   - --fork=osaka (geth's MaxForkForClient ceiling, after the writer migration to internal/genesisheader.Build).
 //   - 60M gas matches mainnet-current.
 //   - geth runs in --dev mode (PoA + self-emulated CL); --dev.period=1
 //     for 1s blocks; --dev.gaslimit=60000000 to match the genesis
@@ -98,6 +98,12 @@ func TestE2ESuite(t *testing.T) {
 		Genesis:         g,
 		InjectAddresses: []common.Address{oracle.SpamoorSenderAddr},
 	}
+	// Deploy EIP-4788/2935/7002/7251 system contracts at their canonical
+	// addresses — required for the cross-client genesis-root invariant
+	// (besu refuses to boot without them; geth/neth/reth tolerate but
+	// would compute a different state root than besu without them).
+	oracle.AddPragueSystemContracts(&cfg)
+
 	if _, err := Populate(context.Background(), cfg, Options{}); err != nil {
 		t.Fatalf("Populate: %v", err)
 	}
@@ -170,9 +176,10 @@ func TestE2ESuite(t *testing.T) {
 
 	// Phases 3-7: shared via internal/oracle.RunSuitePhases.
 	oracle.RunSuitePhases(t, oracle.SuitePhasesCfg{
-		ClientName: "geth",
-		RPCURL:     rpcURL,
-		EOAs:       eoas,
-		Contracts:  contracts,
+		ClientName:      "geth",
+		RPCURL:          rpcURL,
+		EOAs:            eoas,
+		Contracts:       contracts,
+		GeneratorConfig: &cfg,
 	})
 }

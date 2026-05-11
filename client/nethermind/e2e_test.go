@@ -84,7 +84,7 @@ const nethermindE2EConfigTemplate = `{
 // Phase 3-7 is internal/oracle.RunSuitePhases.
 //
 // nethermind-specific bits:
-//   - --fork=osaka (unified across all 4 clients post-Pre-C-v2)
+//   - --fork=osaka (unified across all 4 clients after the writer migration to internal/genesisheader.Build)
 //   - inline boot.cfg with Mining.Enabled=true (NethDev produces blocks)
 //   - SlotDuration=250ms in Phase 5 (matches smoke-nethermind-spamoor pacing)
 func TestE2ESuite(t *testing.T) {
@@ -101,7 +101,7 @@ func TestE2ESuite(t *testing.T) {
 		maxSlots     = 2
 	)
 
-	// All 4 clients pin --fork=osaka post-Pre-C-v2. state-actor's
+	// All 4 clients pin --fork=osaka after the writer migration to internal/genesisheader.Build. state-actor's
 	// MaxForkForClient(c)=="osaka" for every client; pre-Prague forks
 	// are EOL and rejected at parse. 60M gas tracks current mainnet.
 	g, err := stategenesis.BuildSynthetic("osaka", big.NewInt(1337), 60_000_000, 0, nil)
@@ -109,7 +109,7 @@ func TestE2ESuite(t *testing.T) {
 		t.Fatalf("BuildSynthetic: %v", err)
 	}
 
-	dd, cleanup := oracle.AcquireDatadir(t, "NETH", "NETH_ORACLE_VOL")
+	dd, cleanup := oracle.AcquireDatadir(t, "NETH")
 	defer cleanup()
 
 	cfg := generator.Config{
@@ -126,6 +126,10 @@ func TestE2ESuite(t *testing.T) {
 		Genesis:         g,
 		InjectAddresses: []common.Address{oracle.SpamoorSenderAddr},
 	}
+	// Deploy EIP-4788/2935/7002/7251 system contracts at their canonical
+	// addresses — required for the cross-client genesis-root invariant.
+	oracle.AddPragueSystemContracts(&cfg)
+
 	if _, err := Run(context.Background(), cfg, Options{}); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -194,6 +198,7 @@ func TestE2ESuite(t *testing.T) {
 		RPCURL:              rpcURL,
 		EOAs:                eoas,
 		Contracts:           contracts,
+		GeneratorConfig:     &cfg,
 		SpamoorSlotDuration: 250 * time.Millisecond,
 	})
 }

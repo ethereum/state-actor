@@ -35,7 +35,7 @@ func runImpl(ctx context.Context, cfg generator.Config, opts Options) (*generato
 	// follow-up that makes --chain-id take effect end-to-end.
 	//
 	// Tests can leave cfg.Genesis nil; synthesize an Osaka default
-	// (besu's writer ceiling post-Pre-C-v2 — see
+	// (besu's writer ceiling after the writer migration to internal/genesisheader.Build — see
 	// genesis.MaxForkForClient("besu")). Header construction goes
 	// through internal/genesisheader.Build, which handles every fork
 	// up through Osaka uniformly across all 4 clients.
@@ -91,7 +91,7 @@ func runImpl(ctx context.Context, cfg generator.Config, opts Options) (*generato
 }
 
 // Header construction now flows through internal/genesisheader.Build
-// — same path as geth/reth/(post-Pre-C-v2) nethermind. Per-fork field
+// — same path as geth/reth/(after the writer migration to internal/genesisheader.Build) nethermind. Per-fork field
 // activation (BaseFee/WithdrawalsHash/ParentBeaconRoot/ExcessBlobGas/
 // BlobGasUsed/RequestsHash) is centralized there. The previous hand-
 // rolled *besuGenesis struct + buildGenesisHeader func are gone.
