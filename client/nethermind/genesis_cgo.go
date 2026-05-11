@@ -11,7 +11,6 @@ import (
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/linxGnu/grocksdb"
 
-	"github.com/nerolation/state-actor/internal/neth"
 	nethrlp "github.com/nerolation/state-actor/internal/neth/rlp"
 )
 

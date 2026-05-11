@@ -48,6 +48,15 @@ type SuitePhasesCfg struct {
 	// e2e historically used 250ms (matches smoke-nethermind-spamoor).
 	// Zero → 1s default.
 	SpamoorSlotDuration time.Duration
+
+	// SkipBlockProduction returns from RunSuitePhases after Phase 4
+	// (genesis re-query). Use when the client's block-production path
+	// is known-broken AND tracked as a separate issue — the
+	// cross-client genesis-root invariant gate (Phase 3) still runs
+	// and result.json gets the partial GenesisStateRoot. Currently
+	// set by nethermind because NethDev doesn't produce blocks on a
+	// post-Prague chain with system contracts (issue #56).
+	SkipBlockProduction bool
 }
 
 // RunSuitePhases executes phases 3-7 of the per-client e2e suite. Each
@@ -89,6 +98,13 @@ func RunSuitePhases(t *testing.T, cfg SuitePhasesCfg) {
 	// field — see CheckInjections docstring for the bug class.
 	if !CheckInjections(t, cfg.RPCURL, cfg.GeneratorConfig, "0x0") {
 		t.Fatalf("genesis-state oracle re-query (injections + alloc) failed; aborting before spamoor phase")
+	}
+
+	if cfg.SkipBlockProduction {
+		// Partial result.json already written in Phase 3. The
+		// cross-client genesis-root aggregator job uses that.
+		t.Logf("Phase 5-7 skipped (SkipBlockProduction=true)")
+		return
 	}
 
 	// ---- Phase 5: spamoor for ~100 blocks ----
