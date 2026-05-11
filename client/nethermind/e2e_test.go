@@ -87,7 +87,7 @@ const nethermindE2EConfigTemplate = `{
   },
   "Metrics": {"Enabled": false},
   "Merge": {"Enabled": true, "TerminalTotalDifficulty": "0"},
-  "Mining": {"Enabled": true}
+  "Mining": {"Enabled": false}
 }`
 
 // TestE2ESuite — see client/besu/e2e_test.go for the full phase
