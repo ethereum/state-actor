@@ -4,7 +4,6 @@ package nethermind
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"math/big"
 	"os"
@@ -34,21 +33,15 @@ func nethImageRef() string {
 	return pinnedNethImage
 }
 
-// nethermindE2EConfigTemplate is the Nethermind config for the e2e suite
-// (boot + engine-API-driven block production). Mirrors client/nethermind/
-// testdata/configs/sa-dev-v2.json but inlined here so the test is
-// self-contained — written into the datadir at runtime with the
-// chainspec / DB paths plugged in, so DinD mode (where the test
-// container places state-actor data at /data/<testName>/) and direct
-// mode (/data) both resolve correctly.
+// nethermindE2EConfigTemplate is the Nethermind config for the e2e suite.
+// Inlined rather than loaded from testdata so DinD mode (container sees
+// /data/<testName>) and direct mode (/data) can both resolve at runtime.
 //
 // Engine RPC on port 8551 + UnsecureDevNoRpcAuthentication=true is the
 // symmetric equivalent of besu's --engine-rpc-enabled / --engine-jwt-disabled.
-// EngineDriver (the mock CL in internal/oracle) connects there to drive
-// block production via engine_forkchoiceUpdated / getPayload / newPayload.
 // Merge.Enabled + TerminalTotalDifficulty=0 + the Ethash chainspec engine
-// (cf. ethereum/state-actor#56) make MergePlugin take over from
-// EthashPlugin so every block is engine-API-driven from genesis.
+// hand block production to MergePlugin via the engine API from genesis;
+// EthashPlugin's PoW path never runs.
 //
 // Two %s placeholders, in order:
 //  1. ChainSpecPath  — full path to state-actor's parity-chainspec.json
@@ -96,10 +89,8 @@ const nethermindE2EConfigTemplate = `{
 //
 // nethermind-specific bits:
 //   - --fork=osaka (unified across all 4 clients after the writer migration to internal/genesisheader.Build)
-//   - Ethash-from-genesis chainspec + Merge.Enabled → engine-API-driven block
-//     production via the EngineDriver mock CL (mirrors besu). NethDev was
-//     removed because it's not in MergePlugin's seal-engine allowlist
-//     (cf. state-actor#56).
+//   - Ethash-from-genesis chainspec + Merge.Enabled → engine-API-driven
+//     block production via the EngineDriver mock CL (mirrors besu).
 //   - SlotDuration=250ms in Phase 5 (matches smoke-nethermind-spamoor pacing)
 func TestE2ESuite(t *testing.T) {
 	if testing.Short() {
@@ -205,33 +196,12 @@ func TestE2ESuite(t *testing.T) {
 		t.Fatalf("RPC never came up (logs captured in t.Cleanup): %v", err)
 	}
 
-	// Mock CL: drive block production via engine API. Same pattern besu
-	// uses — NethDev was the old dev consensus engine but it's not in
-	// MergePlugin's seal-engine allowlist {BeaconChain, Clique, Ethash},
-	// so on a post-Prague chain with system contracts it silently fails
-	// to seal (state-actor#56). The Ethash-from-genesis chainspec + this
-	// driver replace NethDev's role. Runs as a goroutine for the rest of
+	// Mock CL: drive block production via engine API. MergePlugin's
+	// seal-engine allowlist is {BeaconChain, Clique, Ethash}, so on an
+	// Ethash chainspec with Merge.Enabled + TTD=0 the engine API is the
+	// only path that produces blocks. Goroutine runs for the rest of
 	// the test so spamoor's txs (Phase 5) get included in blocks.
-	driver := &oracle.EngineDriver{
-		EngineURL: "http://" + containerIP + ":8551",
-		EthRPCURL: rpcURL,
-		BlockTime: time.Second,
-		Fork:      oracle.ForkOsaka,
-	}
-	driverCtx, driverCancel := context.WithCancel(context.Background())
-	t.Cleanup(driverCancel)
-	go func() {
-		if err := driver.DriveLoop(driverCtx); err != nil && !errors.Is(err, context.Canceled) {
-			// Goroutine context — use t.Errorf (not t.Fatalf, which is
-			// not safe outside the test goroutine). DriveLoop only
-			// returns non-context-Canceled errors when something is
-			// permanently wrong (fetchLatestBlock at startup, or K
-			// consecutive Step failures); surfacing it loud lets the
-			// suite fail with the right diagnostic instead of timing
-			// out on spamoor's deadline.
-			t.Errorf("EngineDriver exited: %v", err)
-		}
-	}()
+	oracle.StartEngineDriver(t, containerIP, rpcURL, oracle.ForkOsaka)
 
 	// Phases 3-7: shared via internal/oracle.RunSuitePhases.
 	oracle.RunSuitePhases(t, oracle.SuitePhasesCfg{

@@ -3,11 +3,7 @@
 	"dataDir": "sa-dev",
 	"engine": {
 		"Ethash": {
-			"params": {
-				"minimumDifficulty": "0x1",
-				"difficultyBoundDivisor": "0x800",
-				"durationLimit": "0xd"
-			}
+			"params": {}
 		}
 	},
 	"params": {

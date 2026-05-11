@@ -4,7 +4,6 @@ package besu
 
 import (
 	"context"
-	"errors"
 	"math/big"
 	"os"
 	"os/exec"
@@ -166,28 +165,9 @@ func TestE2ESuite(t *testing.T) {
 	}
 
 	// Mock CL: drive block production via engine API. Modeled after besu's
-	// own PragueAcceptanceTestHelper.java. Runs as a goroutine for the
+	// own PragueAcceptanceTestHelper.java. The goroutine runs for the
 	// rest of the test so spamoor's txs (Phase 5) get included in blocks.
-	driver := &oracle.EngineDriver{
-		EngineURL: "http://" + containerIP + ":8551",
-		EthRPCURL: rpcURL,
-		BlockTime: time.Second,
-		Fork:      oracle.ForkOsaka,
-	}
-	driverCtx, driverCancel := context.WithCancel(context.Background())
-	t.Cleanup(driverCancel)
-	go func() {
-		if err := driver.DriveLoop(driverCtx); err != nil && !errors.Is(err, context.Canceled) {
-			// Goroutine context — use t.Errorf (not t.Fatalf, which is
-			// not safe outside the test goroutine). DriveLoop only
-			// returns non-context-Canceled errors when something is
-			// permanently wrong (fetchLatestBlock at startup, or K
-			// consecutive Step failures); surfacing it loud lets the
-			// suite fail with the right diagnostic instead of timing
-			// out on spamoor's deadline.
-			t.Errorf("EngineDriver exited: %v", err)
-		}
-	}()
+	oracle.StartEngineDriver(t, containerIP, rpcURL, oracle.ForkOsaka)
 
 	// Phases 3-7: shared via internal/oracle.RunSuitePhases.
 	oracle.RunSuitePhases(t, oracle.SuitePhasesCfg{

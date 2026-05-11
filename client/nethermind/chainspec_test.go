@@ -1,6 +1,7 @@
 package nethermind
 
 import (
+	"bytes"
 	"encoding/json"
 	"math/big"
 	"os"
@@ -10,9 +11,6 @@ import (
 	"github.com/nerolation/state-actor/genesis"
 )
 
-// readWrittenSpec runs writeChainSpec into a temp dir and returns the
-// re-parsed JSON tree. Centralizes setup + parse so each test below
-// stays focused on its specific assertion.
 func readWrittenSpec(t *testing.T, fork string) map[string]any {
 	t.Helper()
 	g, err := genesis.BuildSynthetic(fork, big.NewInt(1337), 30_000_000, 0, nil)
@@ -44,59 +42,33 @@ func paramsBlock(t *testing.T, spec map[string]any) map[string]any {
 	return params
 }
 
-// TestWriteChainSpec_OsakaIncludesAllForkKeys locks in #55: with --fork=osaka
-// every gated EIP timestamp (cancun + prague + osaka) and every gated
-// system-contract address is emitted. Catches accidental removal of a
-// known-active EIP, and would have caught the pre-existing eip1153 drift
-// if it had been on the gated list.
-func TestWriteChainSpec_OsakaIncludesAllForkKeys(t *testing.T) {
-	params := paramsBlock(t, readWrittenSpec(t, "osaka"))
-	for fork, keys := range nethEIPsByFork {
-		for _, k := range keys {
-			if _, ok := params[k]; !ok {
-				t.Errorf("osaka spec missing %s key %q", fork, k)
-			}
-		}
+// TestWriteChainSpec_OsakaGating drives both gating branches: the keys in
+// osakaParamKeys must be present when --fork=osaka and absent when --fork=prague.
+func TestWriteChainSpec_OsakaGating(t *testing.T) {
+	cases := []struct {
+		fork    string
+		present bool
+	}{
+		{"osaka", true},
+		{"prague", false},
 	}
-	for fork, keys := range nethSystemContractAddressesByFork {
-		for _, k := range keys {
-			if _, ok := params[k]; !ok {
-				t.Errorf("osaka spec missing %s contract address %q", fork, k)
+	for _, tc := range cases {
+		t.Run(tc.fork, func(t *testing.T) {
+			params := paramsBlock(t, readWrittenSpec(t, tc.fork))
+			for _, k := range osakaParamKeys {
+				_, ok := params[k]
+				if ok != tc.present {
+					if tc.present {
+						t.Errorf("--fork=%s spec missing osaka key %q", tc.fork, k)
+					} else {
+						t.Errorf("--fork=%s spec unexpectedly contains osaka key %q", tc.fork, k)
+					}
+				}
 			}
-		}
+		})
 	}
 }
 
-// TestWriteChainSpec_PragueStripsOsakaKeys verifies that --fork=prague
-// produces a Prague-only spec — cancun + prague keys present, osaka keys
-// stripped. This is the regression #55 was filed to prevent.
-func TestWriteChainSpec_PragueStripsOsakaKeys(t *testing.T) {
-	params := paramsBlock(t, readWrittenSpec(t, "prague"))
-	for _, k := range nethEIPsByFork["cancun"] {
-		if _, ok := params[k]; !ok {
-			t.Errorf("prague spec unexpectedly missing cancun key %q", k)
-		}
-	}
-	for _, k := range nethEIPsByFork["prague"] {
-		if _, ok := params[k]; !ok {
-			t.Errorf("prague spec unexpectedly missing prague key %q", k)
-		}
-	}
-	for _, k := range nethEIPsByFork["osaka"] {
-		if _, ok := params[k]; ok {
-			t.Errorf("prague spec unexpectedly contains osaka key %q", k)
-		}
-	}
-	for _, k := range nethSystemContractAddressesByFork["prague"] {
-		if _, ok := params[k]; !ok {
-			t.Errorf("prague spec missing prague contract address %q", k)
-		}
-	}
-}
-
-// TestWriteChainSpec_OverrideChainID asserts the chainID + networkID
-// fields flow from g.Config.ChainID rather than the template's literal
-// value. Regression test for the existing behavior.
 func TestWriteChainSpec_OverrideChainID(t *testing.T) {
 	g, err := genesis.BuildSynthetic("osaka", big.NewInt(0xbeef), 30_000_000, 0, nil)
 	if err != nil {
@@ -123,21 +95,20 @@ func TestWriteChainSpec_OverrideChainID(t *testing.T) {
 	}
 }
 
-// TestWriteChainSpec_Eip1153PresentInCancun explicitly checks the key
-// that was missing from the template before this fix. EIP-1153 is
-// Cancun's transient storage (TSTORE/TLOAD); its absence is a silent
-// chainspec drift that doesn't surface until a contract uses TSTORE.
+// TestWriteChainSpec_Eip1153PresentInCancun guards against silent template
+// drift: EIP-1153 (TSTORE/TLOAD) is Cancun-active but a missing key here
+// would only surface when a contract actually uses transient storage.
 func TestWriteChainSpec_Eip1153PresentInCancun(t *testing.T) {
 	params := paramsBlock(t, readWrittenSpec(t, "osaka"))
 	if _, ok := params["eip1153TransitionTimestamp"]; !ok {
-		t.Error("eip1153TransitionTimestamp absent — template drift bug regressed")
+		t.Error("eip1153TransitionTimestamp absent — template drift")
 	}
 }
 
-// TestWriteChainSpec_EngineIsEthash locks in #56's chainspec swap: the
-// engine block is Ethash (with mainnet difficulty params for parser
-// acceptance) and NethDev is no longer present. NethDev was incompatible
-// with MergePlugin's seal-engine allowlist {BeaconChain, Clique, Ethash}.
+// TestWriteChainSpec_EngineIsEthash guards the MergePlugin SealEngineType
+// allowlist {BeaconChain, Clique, Ethash} — using NethDev (the legacy
+// dev engine, not on the allowlist) would silently fail to seal blocks
+// on a post-Prague chain with system contracts.
 func TestWriteChainSpec_EngineIsEthash(t *testing.T) {
 	spec := readWrittenSpec(t, "osaka")
 	engine, ok := spec["engine"].(map[string]any)
@@ -148,7 +119,7 @@ func TestWriteChainSpec_EngineIsEthash(t *testing.T) {
 		t.Errorf("engine.Ethash missing; engine block = %v", engine)
 	}
 	if _, ok := engine["NethDev"]; ok {
-		t.Errorf("engine.NethDev still present — chainspec swap regressed")
+		t.Errorf("engine.NethDev still present")
 	}
 	params := paramsBlock(t, spec)
 	if ttd := params["terminalTotalDifficulty"]; ttd != "0x0" {
@@ -156,9 +127,9 @@ func TestWriteChainSpec_EngineIsEthash(t *testing.T) {
 	}
 }
 
-// TestWriteChainSpec_ParityChainIDFormat asserts the chainID hex string
-// uses lowercase Go-default formatting. Locking in the format avoids
-// surprises if a future refactor switches to strconv.FormatInt(16) etc.
+// TestWriteChainSpec_ParityChainIDFormat pins lowercase Go-default hex
+// formatting — Nethermind's parser would silently misread a strconv.FormatInt(16)
+// "beef" (no 0x prefix) as decimal.
 func TestWriteChainSpec_ParityChainIDFormat(t *testing.T) {
 	params := paramsBlock(t, readWrittenSpec(t, "osaka"))
 	if got := params["chainID"]; got != "0x539" {
@@ -166,17 +137,14 @@ func TestWriteChainSpec_ParityChainIDFormat(t *testing.T) {
 	}
 }
 
-// TestWriteChainSpec_NilGenesisRejected verifies the writer errors on
-// nil input rather than producing a garbage file.
 func TestWriteChainSpec_NilGenesisRejected(t *testing.T) {
 	if _, err := writeChainSpec(t.TempDir(), nil); err == nil {
 		t.Error("writeChainSpec(nil) returned no error")
 	}
 }
 
-// TestWriteChainSpec_FilePathIsConventional verifies the writer puts the
-// output at <dbPath>/parity-chainspec.json — smoke scripts depend on this
-// hardcoded filename.
+// TestWriteChainSpec_FilePathIsConventional locks the output filename —
+// smoke scripts hardcode parity-chainspec.json.
 func TestWriteChainSpec_FilePathIsConventional(t *testing.T) {
 	g, _ := genesis.BuildSynthetic("osaka", big.NewInt(1337), 30_000_000, 0, nil)
 	dir := t.TempDir()
@@ -187,5 +155,30 @@ func TestWriteChainSpec_FilePathIsConventional(t *testing.T) {
 	want := filepath.Join(dir, ChainSpecFileName)
 	if out != want {
 		t.Errorf("writeChainSpec returned %q; want %q", out, want)
+	}
+}
+
+// TestWriteChainSpec_ByteForByteDeterministic catches encoder-order drift.
+// The Osaka-gating loop iterates a slice (already deterministic), and
+// json.MarshalIndent sorts map keys today — but a future encoder swap
+// could silently break the cross-client genesis-root invariant.
+func TestWriteChainSpec_ByteForByteDeterministic(t *testing.T) {
+	read := func() []byte {
+		g, err := genesis.BuildSynthetic("osaka", big.NewInt(1337), 30_000_000, 0, nil)
+		if err != nil {
+			t.Fatalf("BuildSynthetic: %v", err)
+		}
+		out, err := writeChainSpec(t.TempDir(), g)
+		if err != nil {
+			t.Fatalf("writeChainSpec: %v", err)
+		}
+		raw, err := os.ReadFile(out)
+		if err != nil {
+			t.Fatalf("read: %v", err)
+		}
+		return raw
+	}
+	if a, b := read(), read(); !bytes.Equal(a, b) {
+		t.Errorf("writeChainSpec is non-deterministic\nfirst:\n%s\nsecond:\n%s", a, b)
 	}
 }
