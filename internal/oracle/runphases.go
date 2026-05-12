@@ -88,6 +88,15 @@ func RunSuitePhases(t *testing.T, cfg SuitePhasesCfg) {
 		t.Fatalf("WriteResult (pre-spamoor): %v", err)
 	}
 
+	// ---- Phase 3a: chainspec/header unification round-trip (#51) ----
+	// Asserts the EL's RPC view of the genesis header matches the *Genesis
+	// we wrote — catches any residual chainspec/header divergence (a
+	// per-client writer hardcoding a literal would surface as a per-field
+	// mismatch here, not as a confusing boot failure 20 lines later).
+	if cfg.GeneratorConfig != nil && cfg.GeneratorConfig.Genesis != nil {
+		AssertGenesisHeaderMatches(t, cfg.RPCURL, cfg.GeneratorConfig.Genesis)
+	}
+
 	// ---- Phase 4: oracle re-query at "0x0" ----
 	// 4a — entitygen synthetic entities (RNG-driven).
 	if !CheckEntities(t, cfg.RPCURL, cfg.EOAs, cfg.Contracts, "0x0") {

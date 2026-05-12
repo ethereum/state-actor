@@ -230,7 +230,9 @@ type Block struct {
 	Hash       common.Hash `json:"hash"`
 	StateRoot  common.Hash `json:"stateRoot"`
 	ParentHash common.Hash `json:"parentHash"`
-	Timestamp  string      `json:"timestamp"` // hex unix seconds
+	Timestamp  string      `json:"timestamp"`  // hex unix seconds
+	GasLimit   string      `json:"gasLimit"`   // hex
+	ExtraData  string      `json:"extraData"`  // "0x" + hex bytes
 }
 
 // BlockByNumber calls eth_getBlockByNumber(blockTag, false) and returns the
