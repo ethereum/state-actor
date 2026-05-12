@@ -4,8 +4,11 @@ import (
 	_ "embed"
 	"encoding/json"
 	"fmt"
+	"math/big"
 	"os"
 	"path/filepath"
+
+	"github.com/ethereum/go-ethereum/common/hexutil"
 
 	"github.com/nerolation/state-actor/genesis"
 )
@@ -37,9 +40,13 @@ var osakaParamKeys = []string{
 }
 
 // writeChainSpec emits the embedded sa-dev Parity chainspec to
-// <dbPath>/<ChainSpecFileName>, with chainID + networkID overridden from
-// g.Config.ChainID and Osaka-only keys stripped if g.Config.OsakaTime is
-// unset.
+// <dbPath>/<ChainSpecFileName>. Everything that varies per-run flows from g:
+// chainID/networkID from g.Config.ChainID, the Osaka-only param keys gated
+// by g.Config.OsakaTime, and the genesis block (gasLimit/timestamp/extraData/
+// nonce/mixHash/difficulty/author/parentHash) materialized from g.* so the
+// chainspec and the on-disk header agree byte-for-byte — otherwise Nethermind
+// rejects the DB at boot with "Supplied genesis block does not match chain
+// data stored".
 //
 // Engine is Ethash + terminalTotalDifficulty=0 — the Kiln/Kintsugi merge-
 // from-genesis recipe. MergePlugin wraps EthashPlugin and routes every
@@ -77,6 +84,8 @@ func writeChainSpec(dbPath string, g *genesis.Genesis) (string, error) {
 		}
 	}
 
+	spec["genesis"] = genesisBlockFromG(g)
+
 	out, err := json.MarshalIndent(spec, "", "  ")
 	if err != nil {
 		return "", fmt.Errorf("nethermind writeChainSpec marshal: %w", err)
@@ -86,4 +95,32 @@ func writeChainSpec(dbPath string, g *genesis.Genesis) (string, error) {
 		return "", fmt.Errorf("nethermind writeChainSpec write: %w", err)
 	}
 	return outPath, nil
+}
+
+// genesisBlockFromG renders the Parity-style "genesis" sub-object from g.
+// Field shape matches Nethermind.Specs.ChainSpecStyle.Json.ChainSpecGenesisJson —
+// seal.ethereum.{nonce,mixHash} nested, author for coinbase, fixed 8-byte
+// nonce width. Every value is sourced from g so the chainspec and the
+// on-disk header (built by internal/genesisheader.Build from the same g)
+// cannot diverge.
+func genesisBlockFromG(g *genesis.Genesis) map[string]any {
+	difficulty := big.NewInt(0)
+	if g.Difficulty != nil {
+		difficulty = g.Difficulty.ToInt()
+	}
+	return map[string]any{
+		"seal": map[string]any{
+			"ethereum": map[string]any{
+				// Nethermind's parser requires exactly 8 bytes / 16 hex chars.
+				"nonce":   fmt.Sprintf("0x%016x", uint64(g.Nonce)),
+				"mixHash": g.Mixhash.Hex(),
+			},
+		},
+		"difficulty": fmt.Sprintf("0x%x", difficulty),
+		"author":     g.Coinbase.Hex(),
+		"timestamp":  fmt.Sprintf("0x%x", uint64(g.Timestamp)),
+		"parentHash": g.ParentHash.Hex(),
+		"extraData":  hexutil.Encode([]byte(g.ExtraData)),
+		"gasLimit":   fmt.Sprintf("0x%x", uint64(g.GasLimit)),
+	}
 }

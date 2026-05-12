@@ -6,7 +6,12 @@ import (
 	"math/big"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"testing"
+
+	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/common/hexutil"
 
 	"github.com/nerolation/state-actor/genesis"
 )
@@ -180,5 +185,92 @@ func TestWriteChainSpec_ByteForByteDeterministic(t *testing.T) {
 	}
 	if a, b := read(), read(); !bytes.Equal(a, b) {
 		t.Errorf("writeChainSpec is non-deterministic\nfirst:\n%s\nsecond:\n%s", a, b)
+	}
+}
+
+func parseHexUint(t *testing.T, v any) uint64 {
+	t.Helper()
+	s, ok := v.(string)
+	if !ok {
+		t.Fatalf("expected hex string, got %T (%v)", v, v)
+	}
+	n, err := strconv.ParseUint(strings.TrimPrefix(s, "0x"), 16, 64)
+	if err != nil {
+		t.Fatalf("parse hex %q: %v", s, err)
+	}
+	return n
+}
+
+// TestWriteChainSpec_GenesisBlockFromG locks the unification contract: every
+// genesis-block field the on-disk header carries is also emitted to the
+// chainspec from the same g. Drives every customizable field with a non-
+// default value so a regression that re-introduces a literal in the template
+// (or short-circuits the override) shows up here.
+func TestWriteChainSpec_GenesisBlockFromG(t *testing.T) {
+	const (
+		wantGasLimit  uint64 = 20_000_000
+		wantTimestamp uint64 = 1_700_000_000
+	)
+	wantExtraData := []byte("hello state-actor")
+
+	g, err := genesis.BuildSynthetic("osaka", big.NewInt(0xc0de), wantGasLimit, wantTimestamp, wantExtraData)
+	if err != nil {
+		t.Fatalf("BuildSynthetic: %v", err)
+	}
+	// Set the legacy fields that have no CLI flag but are still part of
+	// the chainspec/header contract — POTENTIAL-divergence coverage.
+	g.Mixhash = common.HexToHash("0x1111222233334444555566667777888899990000aaaabbbbccccddddeeeeffff")
+	g.Coinbase = common.HexToAddress("0xcafe000000000000000000000000000000000000")
+
+	outPath, err := writeChainSpec(t.TempDir(), g)
+	if err != nil {
+		t.Fatalf("writeChainSpec: %v", err)
+	}
+	raw, err := os.ReadFile(outPath)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	var spec map[string]any
+	if err := json.Unmarshal(raw, &spec); err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	gen, ok := spec["genesis"].(map[string]any)
+	if !ok {
+		t.Fatalf("spec missing genesis block; got %T", spec["genesis"])
+	}
+
+	if got := parseHexUint(t, gen["gasLimit"]); got != wantGasLimit {
+		t.Errorf("gasLimit = %d; want %d", got, wantGasLimit)
+	}
+	if got := parseHexUint(t, gen["timestamp"]); got != wantTimestamp {
+		t.Errorf("timestamp = %d; want %d", got, wantTimestamp)
+	}
+	if got := gen["extraData"]; got != hexutil.Encode(wantExtraData) {
+		t.Errorf("extraData = %v; want %s", got, hexutil.Encode(wantExtraData))
+	}
+	if got := gen["author"]; got != g.Coinbase.Hex() {
+		t.Errorf("author = %v; want %s", got, g.Coinbase.Hex())
+	}
+	if got := gen["parentHash"]; got != g.ParentHash.Hex() {
+		t.Errorf("parentHash = %v; want %s", got, g.ParentHash.Hex())
+	}
+	if got := gen["difficulty"]; got != "0x0" {
+		t.Errorf("difficulty = %v; want 0x0 (BuildSynthetic fixes to 0)", got)
+	}
+
+	seal, ok := gen["seal"].(map[string]any)
+	if !ok {
+		t.Fatalf("genesis.seal missing or wrong type")
+	}
+	eth, ok := seal["ethereum"].(map[string]any)
+	if !ok {
+		t.Fatalf("genesis.seal.ethereum missing or wrong type")
+	}
+	if got := eth["mixHash"]; got != g.Mixhash.Hex() {
+		t.Errorf("mixHash = %v; want %s", got, g.Mixhash.Hex())
+	}
+	// Nethermind's parser requires fixed 8-byte / 16-hex-char nonce width.
+	if got, _ := eth["nonce"].(string); got != "0x0000000000000000" || len(got) != 18 {
+		t.Errorf("nonce = %q; want exactly %q (18 chars / 0x + 16 hex)", got, "0x0000000000000000")
 	}
 }
