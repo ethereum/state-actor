@@ -50,11 +50,12 @@
 // instead of recomputing the genesis hash from chainspec.alloc.
 //
 // The `--debug.skip-genesis-validation` flag is an upstream paradigmxyz/reth
-// addition (currently SHA-pinned via internal/reth/constants.go to a
-// CPerezz/reth fork branch with the patch). Without that flag, reth's
-// init_genesis_with_settings will reject the boot with GenesisHashMismatch
-// because the alloc-derived genesis hash (empty MPT root) differs from the
-// DB-resident genesis hash.
+// addition (currently digest-pinned via internal/reth/constants.go to a
+// nightly snapshot containing #23919, which landed on 2026-05-06 —
+// formerly the CPerezz/reth fork before the upstream merge). Without that
+// flag, reth's init_genesis_with_settings will reject the boot with
+// GenesisHashMismatch because the alloc-derived genesis hash (empty MPT
+// root) differs from the DB-resident genesis hash.
 //
 // # Build tag gating
 //

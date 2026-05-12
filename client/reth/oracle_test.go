@@ -203,8 +203,10 @@ func TestRethNodeBootEmptyAlloc(t *testing.T) {
 //   - --fork=osaka (reth's MaxForkForClient ceiling, after the writer migration to internal/genesisheader.Build).
 //   - 60M gas matches mainnet-current.
 //   - DinD via the `oracle` build tag.
-//   - Pinned image: paradigmxyz/reth:nightly (post-#23919, supports
-//     --debug.skip-genesis-validation; previously the CPerezz/reth fork).
+//   - Pinned image: paradigmxyz/reth digest-pinned via
+//     internal/reth.PinnedRethRelease (post-#23919, supports
+//     --debug.skip-genesis-validation; previously the CPerezz/reth fork
+//     before the upstream merge on 2026-05-06).
 //   - --dev mode auto-mines on tx, so spamoor advances the chain without
 //     an external CL.
 //
