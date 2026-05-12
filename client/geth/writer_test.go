@@ -25,7 +25,7 @@ func TestWriterBasic(t *testing.T) {
 	}
 	defer os.RemoveAll(tmpDir)
 
-	w, err := NewWriter(tmpDir, 1000, 4)
+	w, err := NewWriter(tmpDir)
 	if err != nil {
 		t.Fatalf("Failed to create geth writer: %v", err)
 	}
@@ -80,7 +80,7 @@ func TestSetStateRootMPT(t *testing.T) {
 	}
 	defer os.RemoveAll(tmpDir)
 
-	w, err := NewWriter(tmpDir, 1000, 4)
+	w, err := NewWriter(tmpDir)
 	if err != nil {
 		t.Fatalf("NewWriter: %v", err)
 	}
@@ -123,7 +123,7 @@ func TestSetStateRootBinaryTrie(t *testing.T) {
 	}
 	defer os.RemoveAll(tmpDir)
 
-	w, err := NewWriter(tmpDir, 1000, 4)
+	w, err := NewWriter(tmpDir)
 	if err != nil {
 		t.Fatalf("NewWriter: %v", err)
 	}

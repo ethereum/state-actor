@@ -43,7 +43,7 @@ func populateForGenerator(cfg generator.Config) (*generator.Stats, error) {
 // on the default registered by init().
 func NewWriterFactory() generator.WriterFactory {
 	return func(cfg generator.Config) (generator.Writer, error) {
-		w, err := NewWriter(cfg.DBPath, cfg.BatchSize, cfg.Workers)
+		w, err := NewWriter(cfg.DBPath)
 		if err != nil {
 			return nil, fmt.Errorf("create geth writer: %w", err)
 		}

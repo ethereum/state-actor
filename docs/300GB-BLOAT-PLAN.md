@@ -70,8 +70,6 @@ Distribution parameters for power-law (alpha=1.5):
     --binary-trie \
     --commit-interval 100000 \
     --seed 42 \
-    --batch-size 100000 \
-    --workers $(nproc) \
     --benchmark \
     --verbose
 ```
@@ -131,6 +129,5 @@ plus ~100K StemNodes × ~8KB ≈ 800MB. After commit + reopen, memory resets via
 | `--code-size`   | 24,000          | Near Ethereum's 24,576 max             |
 | `--binary-trie` | (flag)          | EIP-7864 binary trie mode              |
 | `--commit-interval` | 100,000     | Periodic trie commits; bounds RAM to ~2 GB |
-| `--batch-size`  | 100,000         | Fewer Pebble commits                   |
 | `--seed`        | 42              | Reproducible generation                |
 | `--genesis`     | path            | Writes genesis block, skips geth init  |

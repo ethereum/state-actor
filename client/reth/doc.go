@@ -30,7 +30,7 @@
 //
 // # Streaming Phase 4
 //
-// Phase 4 generates entities in batches of cfg.BatchSize (default 100K).
+// Phase 4 generates entities in 100K batches.
 // Each batch flows through WriteEOAs/WriteContracts to MDBX; the
 // per-account RLP is then keyed by AddrHash and written into a
 // Pebble-backed temp sorter (mirrors client/nethermind/entitygen_cgo.go).

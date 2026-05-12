@@ -47,8 +47,6 @@ func TestGethOracleBootReadable(t *testing.T) {
 		MinSlots:       3,
 		Distribution:   generator.PowerLaw,
 		Seed:           4242,
-		BatchSize:      1000,
-		Workers:        1,
 		CodeSize:       96,
 		TrieMode:       generator.TrieModeMPT,
 		WriteTrieNodes: true,
@@ -62,7 +60,7 @@ func TestGethOracleBootReadable(t *testing.T) {
 		t.Fatal("state root unexpectedly zero")
 	}
 
-	w, err := NewWriter(cfg.DBPath, cfg.BatchSize, cfg.Workers)
+	w, err := NewWriter(cfg.DBPath)
 	if err != nil {
 		t.Fatalf("reopen writer: %v", err)
 	}

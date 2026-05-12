@@ -204,6 +204,4 @@ If geth can't find genesis block:
 ### Performance Issues
 
 For faster generation:
-- Increase `--batch-size` (e.g., 100000)
-- Increase `--workers` (up to 2x CPU cores)
 - Use SSD storage

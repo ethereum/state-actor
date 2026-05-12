@@ -70,10 +70,7 @@ const defaultFlushBytes = 64 * 1024 * 1024
 // enabled for the production DB so a crash doesn't lose the post-import
 // metadata writes (Phase 1's scratch DB, opened separately in
 // state_writer.go, disables WAL — that's what the speed delta buys).
-func NewWriter(dbPath string, batchSize, workers int) (*Writer, error) {
-	_ = batchSize // honoured implicitly via flushBytes; see comment above
-	_ = workers   // worker pool removed; signature kept for compatibility
-
+func NewWriter(dbPath string) (*Writer, error) {
 	db, err := pebble.Open(dbPath, prodPebbleOptions())
 	if err != nil {
 		return nil, fmt.Errorf("open pebble at %q: %w", dbPath, err)

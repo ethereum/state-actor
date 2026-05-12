@@ -25,8 +25,6 @@ func TestGenerateSmallState(t *testing.T) {
 		MinSlots:     10,
 		Distribution: Uniform,
 		Seed:         12345,
-		BatchSize:    100,
-		Workers:      2,
 		CodeSize:     256,
 		Verbose:      false,
 	}
@@ -83,8 +81,6 @@ func TestStorageDistributions(t *testing.T) {
 				MinSlots:     1,
 				Distribution: tc.dist,
 				Seed:         42,
-				BatchSize:    100,
-				Workers:      2,
 				CodeSize:     128,
 				Verbose:      false,
 			}
@@ -120,8 +116,6 @@ func TestDatabaseContent(t *testing.T) {
 		MinSlots:     5,
 		Distribution: Uniform,
 		Seed:         99,
-		BatchSize:    100,
-		Workers:      1,
 		CodeSize:     64,
 		Verbose:      false,
 	}
@@ -270,8 +264,6 @@ func TestReproducibility(t *testing.T) {
 			MinSlots:     10,
 			Distribution: PowerLaw,
 			Seed:         54321,
-			BatchSize:    100,
-			Workers:      1, // Single worker for determinism
 			CodeSize:     128,
 			Verbose:      false,
 		}
@@ -339,8 +331,6 @@ func benchmarkGenerate(b *testing.B, accounts, contracts, maxSlots int) {
 			MinSlots:     10,
 			Distribution: PowerLaw,
 			Seed:         int64(i),
-			BatchSize:    10000,
-			Workers:      4,
 			CodeSize:     512,
 			Verbose:      false,
 		}
@@ -377,8 +367,6 @@ func TestGenerateBinaryTrie(t *testing.T) {
 		MinSlots:     1,
 		Distribution: PowerLaw,
 		Seed:         12345,
-		BatchSize:    1000,
-		Workers:      1,
 		CodeSize:     256,
 		TrieMode:     TrieModeBinary,
 	}
@@ -441,8 +429,6 @@ func TestDatabaseContentBinaryTrie(t *testing.T) {
 		MinSlots:     5,
 		Distribution: Uniform,
 		Seed:         99,
-		BatchSize:    100,
-		Workers:      1,
 		CodeSize:     64,
 		TrieMode:     TrieModeBinary,
 	}
@@ -624,8 +610,6 @@ func TestBinaryTrieReproducibility(t *testing.T) {
 			MinSlots:     10,
 			Distribution: PowerLaw,
 			Seed:         54321,
-			BatchSize:    100,
-			Workers:      1,
 			CodeSize:     128,
 			TrieMode:     TrieModeBinary,
 		}
@@ -664,8 +648,6 @@ func TestBinaryTrieStateRootValue(t *testing.T) {
 		MinSlots:     1,
 		Distribution: PowerLaw,
 		Seed:         12345,
-		BatchSize:    1000,
-		Workers:      1,
 		CodeSize:     256,
 		TrieMode:     TrieModeBinary,
 	}
@@ -705,8 +687,6 @@ func TestBinaryTrieCommitIntervalRootEquivalence(t *testing.T) {
 		MinSlots:     1,
 		Distribution: PowerLaw,
 		Seed:         7777,
-		BatchSize:    1000,
-		Workers:      1,
 		CodeSize:     128,
 		TrieMode:     TrieModeBinary,
 	}
@@ -781,8 +761,6 @@ func TestBinaryTrieCommitIntervalGoldenHash(t *testing.T) {
 		MinSlots:       1,
 		Distribution:   PowerLaw,
 		Seed:           12345,
-		BatchSize:      1000,
-		Workers:        1,
 		CodeSize:       256,
 		TrieMode:       TrieModeBinary,
 		CommitInterval: 3, // Commit every 3 accounts
@@ -822,8 +800,6 @@ func TestTargetSizeStopsEarly(t *testing.T) {
 		MinSlots:     10,
 		Distribution: PowerLaw,
 		Seed:         42,
-		BatchSize:    1000,
-		Workers:      1,
 		CodeSize:     256,
 		TrieMode:     TrieModeBinary,
 	}
@@ -857,8 +833,6 @@ func TestTargetSizeStopsEarly(t *testing.T) {
 		MinSlots:     10,
 		Distribution: PowerLaw,
 		Seed:         42,
-		BatchSize:    1000,
-		Workers:      1,
 		CodeSize:     256,
 		TrieMode:     TrieModeBinary,
 		TargetSize:   5 * 1024 * 1024, // 5 MB target
@@ -947,8 +921,6 @@ func TestTargetSizeStopsAccurately_Bintrie(t *testing.T) {
 		MinSlots:     10,
 		Distribution: PowerLaw,
 		Seed:         42,
-		BatchSize:    1000,
-		Workers:      1,
 		CodeSize:     256,
 		TrieMode:     TrieModeBinary,
 		TargetSize:   target,
@@ -995,8 +967,6 @@ func TestTargetSizeStopsAccurately_MPT(t *testing.T) {
 		MinSlots:       10,
 		Distribution:   PowerLaw,
 		Seed:           43,
-		BatchSize:      1000,
-		Workers:        1,
 		CodeSize:       256,
 		TrieMode:       TrieModeMPT,
 		WriteTrieNodes: true,
@@ -1043,8 +1013,6 @@ func TestTargetSizeApproxDeterministic(t *testing.T) {
 			MinSlots:     10,
 			Distribution: PowerLaw,
 			Seed:         777,
-			BatchSize:    1000,
-			Workers:      1,
 			CodeSize:     256,
 			TrieMode:     TrieModeBinary,
 			TargetSize:   target,

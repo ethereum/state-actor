@@ -30,8 +30,6 @@ func TestPopulateReproducibility(t *testing.T) {
 			MinSlots:       2,
 			Distribution:   generator.PowerLaw,
 			Seed:           123,
-			BatchSize:      1000,
-			Workers:        1,
 			CodeSize:       64,
 			TrieMode:       generator.TrieModeMPT,
 			WriteTrieNodes: true,
@@ -80,8 +78,6 @@ func TestPopulateRootMatchesEntitygen(t *testing.T) {
 		MinSlots:       1,
 		Distribution:   generator.PowerLaw,
 		Seed:           777,
-		BatchSize:      1000,
-		Workers:        1,
 		CodeSize:       32,
 		TrieMode:       generator.TrieModeMPT,
 		WriteTrieNodes: true,
@@ -100,7 +96,7 @@ func TestPopulateRootMatchesEntitygen(t *testing.T) {
 	// reads: every recorded SampleEOA must have a snapshot account
 	// entry under the "a" prefix, and decoded fields must match what
 	// entitygen would produce for the same seed.
-	w, err := NewWriter(cfg.DBPath, cfg.BatchSize, cfg.Workers)
+	w, err := NewWriter(cfg.DBPath)
 	if err != nil {
 		t.Fatalf("reopen: %v", err)
 	}
@@ -152,8 +148,6 @@ func TestPopulateTargetSizeStopsAccurately(t *testing.T) {
 		MinSlots:       5,
 		Distribution:   generator.PowerLaw,
 		Seed:           42,
-		BatchSize:      1000,
-		Workers:        1,
 		CodeSize:       128,
 		TrieMode:       generator.TrieModeMPT,
 		WriteTrieNodes: true,
@@ -205,8 +199,6 @@ func TestPopulateGenesisAlloc(t *testing.T) {
 	cfg := generator.Config{
 		DBPath:         filepath.Join(dir, "geth", "chaindata"),
 		Seed:           1,
-		BatchSize:      100,
-		Workers:        1,
 		Distribution:   generator.PowerLaw,
 		TrieMode:       generator.TrieModeMPT,
 		WriteTrieNodes: true,
@@ -223,7 +215,7 @@ func TestPopulateGenesisAlloc(t *testing.T) {
 		t.Fatal("state root unexpectedly zero")
 	}
 
-	w, err := NewWriter(cfg.DBPath, cfg.BatchSize, cfg.Workers)
+	w, err := NewWriter(cfg.DBPath)
 	if err != nil {
 		t.Fatalf("reopen: %v", err)
 	}

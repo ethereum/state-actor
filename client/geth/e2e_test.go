@@ -93,8 +93,6 @@ func TestE2ESuite(t *testing.T) {
 		MinSlots:        minSlots,
 		MaxSlots:        maxSlots,
 		Seed:            seed,
-		BatchSize:       1000,
-		Workers:         1,
 		TrieMode:        generator.TrieModeMPT,
 		Genesis:         g,
 		InjectAddresses: []common.Address{oracle.SpamoorSenderAddr},

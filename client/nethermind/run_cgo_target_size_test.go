@@ -50,8 +50,6 @@ func TestRunTargetSizeStopsAccurately(t *testing.T) {
 		MinSlots:     5,
 		Distribution: generator.PowerLaw,
 		Seed:         42,
-		BatchSize:    1000,
-		Workers:      1,
 		CodeSize:     128,
 		TrieMode:     generator.TrieModeMPT,
 		Genesis:      g,

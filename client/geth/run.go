@@ -44,7 +44,7 @@ func Populate(ctx context.Context, cfg generator.Config, opts Options) (*generat
 		return nil, fmt.Errorf("client/geth.Populate: binary-trie mode goes through generator.New, not this entry point")
 	}
 
-	w, err := NewWriter(cfg.DBPath, cfg.BatchSize, cfg.Workers)
+	w, err := NewWriter(cfg.DBPath)
 	if err != nil {
 		return nil, fmt.Errorf("client/geth.Populate: open writer: %w", err)
 	}

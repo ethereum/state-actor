@@ -18,10 +18,10 @@ import (
 	"github.com/nerolation/state-actor/internal/entitygen"
 )
 
-// defaultStreamBatchSize is the per-iteration generation batch when
-// cfg.BatchSize is zero. Sized so one batch of pointers ≈ 20 MiB
-// (100_000 × ~200 B) — comfortably below the 64 MiB Pebble flush
-// threshold so even worst-case allocator slack stays in budget.
+// defaultStreamBatchSize is the per-iteration generation batch.
+// Sized so one batch of pointers ≈ 20 MiB (100_000 × ~200 B) —
+// comfortably below the 64 MiB Pebble flush threshold so even
+// worst-case allocator slack stays in budget.
 const defaultStreamBatchSize = 100_000
 
 // runCgoNotAvailableError is nil under -tags cgo_reth. Kept as a symbol so
@@ -40,11 +40,11 @@ var emptyMPTRoot = common.HexToHash("0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b9
 //  2. OpenEnvs (MDBX env + RocksDB CFs)
 //  3. WriteDatabaseVersion sidecar
 //  4. Streaming synthetic-account generation. Memory bounded by one batch
-//     (~cfg.BatchSize accounts) plus Pebble's 64 MiB write buffer,
-//     regardless of total N. Mirrors client/nethermind/entitygen_cgo.go.
+//     (~100K accounts) plus Pebble's 64 MiB write buffer, regardless of
+//     total N. Mirrors client/nethermind/entitygen_cgo.go.
 //     a. Inject pre-funded accounts (cfg.InjectAddresses).
-//     b. Synthetic EOAs in batches of cfg.BatchSize (default 100K).
-//     c. Synthetic contracts in batches of cfg.BatchSize. WriteContracts
+//     b. Synthetic EOAs in 100K batches.
+//     c. Synthetic contracts in 100K batches. WriteContracts
 //        mutates each contract's StateAccount.Root + .CodeHash IN-PLACE
 //        before the per-account RLP is written into the sorter, so the
 //        global state root sees the correct trie/code linkage.
@@ -113,10 +113,7 @@ func RunCgo(ctx context.Context, cfg generator.Config, opts Options) (*generator
 		return sorter.Put(acc.AddrHash[:], rlpBytes)
 	}
 
-	batchSize := cfg.BatchSize
-	if batchSize <= 0 {
-		batchSize = defaultStreamBatchSize
-	}
+	const batchSize = defaultStreamBatchSize
 
 	// Phase 4a: inject pre-funded accounts (e.g. Anvil dev account
 	// 0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266) so spamoor and other test

@@ -32,8 +32,6 @@ func TestGethGoldenStateRoot(t *testing.T) {
 		MinSlots:       1,
 		Distribution:   generator.PowerLaw,
 		Seed:           12345,
-		BatchSize:      1000,
-		Workers:        1,
 		CodeSize:       256,
 		TrieMode:       generator.TrieModeMPT,
 		WriteTrieNodes: true,

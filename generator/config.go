@@ -65,12 +65,6 @@ type Config struct {
 	// Seed is the random seed for reproducible generation.
 	Seed int64
 
-	// BatchSize is the number of operations per database batch.
-	BatchSize int
-
-	// Workers is the number of parallel workers for generation.
-	Workers int
-
 	// CodeSize is the average contract code size in bytes.
 	CodeSize int
 
@@ -125,10 +119,6 @@ type Config struct {
 	// generated until the projected on-disk size reaches this target.
 	// NumContracts serves as a safety upper bound. 0 means no size limit.
 	TargetSize uint64
-
-	// LiveStats is an optional live stats tracker for real-time monitoring.
-	// When set, the generator updates stats during generation.
-	LiveStats *LiveStats
 
 	// GroupDepth is the binary trie group depth (1-8, default 8).
 	// Controls how many trie levels are serialized per DB entry.

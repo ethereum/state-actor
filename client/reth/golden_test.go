@@ -45,8 +45,6 @@ func TestRethGoldenStateRoot(t *testing.T) {
 		MinSlots:     1,
 		Distribution: generator.PowerLaw,
 		Seed:         12345,
-		BatchSize:    100,
-		Workers:      1,
 		CodeSize:     256,
 		Verbose:      false,
 	}

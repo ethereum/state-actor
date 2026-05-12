@@ -95,8 +95,6 @@ func TestEndToEndWithGenesis(t *testing.T) {
 		MinSlots:        10,
 		Distribution:    generator.PowerLaw,
 		Seed:            12345,
-		BatchSize:       10000,
-		Workers:         4,
 		CodeSize:        512,
 		Verbose:         false,
 		GenesisAccounts: gen.ToStateAccounts(),
@@ -125,7 +123,7 @@ func TestEndToEndWithGenesis(t *testing.T) {
 	// flow visible.
 	stateGen.Close()
 
-	w, err := geth.NewWriter(config.DBPath, config.BatchSize, config.Workers)
+	w, err := geth.NewWriter(config.DBPath)
 	if err != nil {
 		t.Fatalf("Reopen geth writer: %v", err)
 	}
@@ -287,8 +285,6 @@ func TestEndToEndWithGenesisBinaryTrie(t *testing.T) {
 		MinSlots:        5,
 		Distribution:    generator.PowerLaw,
 		Seed:            12345,
-		BatchSize:       10000,
-		Workers:         1,
 		CodeSize:        256,
 		Verbose:         false,
 		TrieMode:        generator.TrieModeBinary,

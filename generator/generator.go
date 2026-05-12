@@ -316,9 +316,6 @@ func (g *Generator) generateStreamingBinary() (retStats *Stats, retErr error) {
 	}
 
 	// 1b. EOA generation.
-	if g.config.LiveStats != nil {
-		g.config.LiveStats.SetPhase("accounts")
-	}
 	for i := 0; i < g.config.NumAccounts; i++ {
 		acc := g.generateEOA()
 		for genesisAddrs[acc.address] {
@@ -331,13 +328,6 @@ func (g *Generator) generateStreamingBinary() (retStats *Stats, retErr error) {
 		}
 		snapCh <- snapshotWork{acc: acc}
 		stats.AccountsCreated++
-		if g.config.LiveStats != nil {
-			g.config.LiveStats.AddAccount()
-			// Sync byte stats every 1000 accounts
-			if stats.AccountsCreated%1000 == 0 {
-				g.config.LiveStats.SyncBytes(g.writer.Stats())
-			}
-		}
 		if len(stats.SampleEOAs) < 3 {
 			stats.SampleEOAs = append(stats.SampleEOAs, acc.address)
 		}
@@ -380,9 +370,6 @@ func (g *Generator) generateStreamingBinary() (retStats *Stats, retErr error) {
 		}
 	}()
 
-	if g.config.LiveStats != nil {
-		g.config.LiveStats.SetPhase("contracts")
-	}
 	contractIdx := 0
 	targetReached := false
 	for contract := range contractCh {
@@ -399,13 +386,6 @@ func (g *Generator) generateStreamingBinary() (retStats *Stats, retErr error) {
 		snapCh <- snapshotWork{acc: contract}
 		stats.ContractsCreated++
 		stats.StorageSlotsCreated += len(contract.storage)
-		if g.config.LiveStats != nil {
-			g.config.LiveStats.AddContract(len(contract.storage))
-			// Sync byte stats every 100 contracts
-			if stats.ContractsCreated%100 == 0 {
-				g.config.LiveStats.SyncBytes(g.writer.Stats())
-			}
-		}
 		if len(stats.SampleContracts) < 3 {
 			stats.SampleContracts = append(stats.SampleContracts, contract.address)
 		}

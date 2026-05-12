@@ -57,8 +57,6 @@ func TestRunCgoTargetSizeStopsAccurately(t *testing.T) {
 		// overhead). 2000-batch ≈ 15 MiB → at most one batch (7.5% of
 		// target) of overshoot. Production users running with 10 GiB+
 		// targets at the default 100K-batch only see ~1% overshoot.
-		BatchSize:  2_000,
-		Workers:    1,
 		CodeSize:   128,
 		TrieMode:   generator.TrieModeMPT,
 		Genesis:    g,

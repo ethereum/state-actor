@@ -104,8 +104,6 @@ state-actor \
 | `--min-slots` | 1 | Min storage slots per contract |
 | `--distribution` | power-law | Distribution: `power-law`, `uniform`, `exponential` |
 | `--seed` | 0 | Random seed (0 = random) |
-| `--batch-size` | 10000 | DB batch size |
-| `--workers` | NumCPU | Parallel workers |
 | `--code-size` | 1024 | Average contract code size |
 | `--binary-trie` | false | Generate state for EIP-7864 binary trie mode |
 | `--inject-accounts` | - | Comma-separated hex addresses to pre-fund with 999999999 ETH |
@@ -168,8 +166,7 @@ state-actor --db ./chaindata --genesis genesis.json \
 #### Maximum Throughput
 ```bash
 state-actor --db ./chaindata --genesis genesis.json \
-    --accounts 100000 --contracts 50000 --max-slots 10000 \
-    --batch-size 100000 --workers 16
+    --accounts 100000 --contracts 50000 --max-slots 10000
 ```
 
 ## Genesis Integration

@@ -198,9 +198,6 @@ func writeStateAndCollectRoot(
 	}
 
 	// 1c. Synthetic EOAs.
-	if cfg.LiveStats != nil {
-		cfg.LiveStats.SetPhase("accounts")
-	}
 	for i := 0; i < cfg.NumAccounts && !targetReached; i++ {
 		if err := ctx.Err(); err != nil {
 			return common.Hash{}, nil, err
@@ -218,15 +215,9 @@ func writeStateAndCollectRoot(
 		if len(stats.SampleEOAs) < 3 {
 			stats.SampleEOAs = append(stats.SampleEOAs, acc.Address)
 		}
-		if cfg.LiveStats != nil {
-			cfg.LiveStats.AddAccount()
-		}
 	}
 
 	// 1d. Synthetic contracts.
-	if cfg.LiveStats != nil {
-		cfg.LiveStats.SetPhase("contracts")
-	}
 	codeSize := cfg.CodeSize
 	if codeSize <= 0 {
 		codeSize = 1024
@@ -264,9 +255,6 @@ func writeStateAndCollectRoot(
 		if len(stats.SampleContracts) < 3 {
 			stats.SampleContracts = append(stats.SampleContracts, contract.Address)
 		}
-		if cfg.LiveStats != nil {
-			cfg.LiveStats.AddContract(len(contract.Storage))
-		}
 	}
 
 	if err := flush(); err != nil {
@@ -286,9 +274,6 @@ func writeStateAndCollectRoot(
 	// --- Phase 2: forward iterate temp Pebble → write production DB. ---
 
 	phase2Start := time.Now()
-	if cfg.LiveStats != nil {
-		cfg.LiveStats.SetPhase("phase2-trie")
-	}
 
 	// Outer account trie. OnTrieNode emits each completed branch/extension
 	// node; we persist under PathScheme TrieNodeAccountPrefix. Always
@@ -387,9 +372,6 @@ func writeStateAndCollectRoot(
 		}
 
 		count++
-		if cfg.LiveStats != nil && count%1024 == 0 {
-			cfg.LiveStats.SyncBytes(w.Stats())
-		}
 
 		// Phase 2 target-size precise stop: every N entities, flush the
 		// writer's batch so all queued bytes are on disk, then sample
@@ -425,10 +407,6 @@ func writeStateAndCollectRoot(
 	stats.StorageBytes = writerStats.StorageBytes
 	stats.CodeBytes = writerStats.CodeBytes
 	stats.TotalBytes = stats.AccountBytes + stats.StorageBytes + stats.CodeBytes
-	if cfg.LiveStats != nil {
-		cfg.LiveStats.SyncBytes(writerStats)
-		cfg.LiveStats.SetStateRoot(stateRoot.Hex())
-	}
 
 	return stateRoot, stats, nil
 }

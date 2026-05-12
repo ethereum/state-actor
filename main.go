@@ -19,12 +19,10 @@ import (
 	"log"
 	"math/big"
 	"os"
-	"os/signal"
 	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -46,7 +44,6 @@ var (
 	minSlots     = flag.Int("min-slots", 1, "Minimum storage slots per contract")
 	distribution = flag.String("distribution", "power-law", "Storage distribution: 'power-law', 'uniform', or 'exponential'")
 	seed         = flag.Int64("seed", 1, "Random seed (deterministic; default 1). Pass --seed=0 to use the current wall-clock time (NON-reproducible).")
-	batchSize    = flag.Int("batch-size", 100000, "Database batch size. For --client=reth: per-batch generation size in the streaming Phase 4 (each batch is generated, written to MDBX, RLP-keyed by AddrHash into a temp Pebble sorter, then dropped — Phase 4 RAM stays bounded by one batch + Pebble's 64 MiB buffer regardless of total N).")
 	codeSize     = flag.Int("code-size", 1024, "Average contract code size in bytes")
 	verbose      = flag.Bool("verbose", false, "Verbose output")
 	benchmark    = flag.Bool("benchmark", false, "Run in benchmark mode (print detailed stats)")
@@ -69,9 +66,6 @@ var (
 
 	// Binary trie group depth
 	groupDepth = flag.Int("group-depth", 8, "Binary trie group depth (1-8, default 8). Controls serialization unit size.")
-
-	// Stats server
-	statsPort = flag.Int("stats-port", 0, "Port for live stats HTTP server (0 = disabled)")
 
 	// Client selection (multi-client support). Each client uses its own
 	// self-contained machinery inside client/<name>/; only the CLI is shared.
@@ -141,20 +135,6 @@ func main() {
 		}
 	}
 
-	// Start stats server if requested
-	var statsServer *generator.StatsServer
-	var liveStats *generator.LiveStats
-	if *statsPort > 0 {
-		statsServer = generator.NewStatsServer(*statsPort)
-		liveStats = statsServer.Stats()
-		liveStats.SetConfig(*accounts, *contracts, *distribution, *seed)
-		if err := statsServer.Start(); err != nil {
-			log.Fatalf("Failed to start stats server: %v", err)
-		}
-		log.Printf("Stats server running on http://localhost:%d", *statsPort)
-		defer statsServer.Stop()
-	}
-
 	// --target-size is a stop condition, not an auto-scaler. The previous
 	// auto-scaling block (which silently rewrote --accounts/--contracts/
 	// --min-slots/--max-slots and multiplied --contracts by 5) was removed;
@@ -171,8 +151,6 @@ func main() {
 		MinSlots:        *minSlots,
 		Distribution:    generator.ParseDistribution(*distribution),
 		Seed:            *seed,
-		BatchSize:       *batchSize,
-		Workers:         runtime.NumCPU(),
 		CodeSize:        *codeSize,
 		Verbose:         *verbose,
 		TrieMode:        trieMode,
@@ -180,7 +158,6 @@ func main() {
 		WriteTrieNodes:  true, // Always write trie nodes — DB is unusable without them
 		InjectAddresses: injectAddrs,
 		TargetSize:      parsedTargetSize,
-		LiveStats:       liveStats,
 		GroupDepth:      *groupDepth,
 	}
 
@@ -223,7 +200,6 @@ func main() {
 		log.Printf("  Min Slots:    %d", config.MinSlots)
 		log.Printf("  Distribution: %s", *distribution)
 		log.Printf("  Seed:         %d", config.Seed)
-		log.Printf("  Batch Size:   %d", config.BatchSize)
 		log.Printf("  Code Size:    %d bytes", config.CodeSize)
 		log.Printf("  Trie Mode:    %s", config.TrieMode)
 		if config.GroupDepth > 0 {
@@ -264,10 +240,6 @@ func main() {
 			if err != nil {
 				log.Fatalf("Failed to populate Geth DB: %v", err)
 			}
-			if liveStats != nil && stats != nil {
-				liveStats.AddBytes(int64(stats.AccountBytes), int64(stats.StorageBytes), int64(stats.CodeBytes))
-				liveStats.SetStateRoot(stats.StateRoot.Hex())
-			}
 		} else {
 			gen, err := generator.New(config)
 			if err != nil {
@@ -278,11 +250,6 @@ func main() {
 			stats, err = gen.Generate()
 			if err != nil {
 				log.Fatalf("Failed to generate state: %v", err)
-			}
-
-			if liveStats != nil {
-				liveStats.AddBytes(int64(stats.AccountBytes), int64(stats.StorageBytes), int64(stats.CodeBytes))
-				liveStats.SetStateRoot(stats.StateRoot.Hex())
 			}
 
 			// Write genesis block (binary-trie path only — the MPT
@@ -309,9 +276,6 @@ func main() {
 		if err != nil {
 			log.Fatalf("Failed to populate Nethermind DB: %v", err)
 		}
-		if liveStats != nil && stats != nil {
-			liveStats.SetStateRoot(stats.StateRoot.Hex())
-		}
 
 	case "besu":
 		// Besu path: same — writer reads config.Genesis directly.
@@ -320,9 +284,6 @@ func main() {
 		if err != nil {
 			log.Fatalf("Failed to populate Besu DB: %v", err)
 		}
-		if liveStats != nil && stats != nil {
-			liveStats.SetStateRoot(stats.StateRoot.Hex())
-		}
 
 	case "reth":
 		// Reth path: same — writer reads config.Genesis directly.
@@ -330,9 +291,6 @@ func main() {
 		stats, err = reth.RunCgo(context.Background(), config, reth.Options{})
 		if err != nil {
 			log.Fatalf("Failed to populate Reth DB: %v", err)
-		}
-		if liveStats != nil {
-			liveStats.SetStateRoot(stats.StateRoot.Hex())
 		}
 	}
 
@@ -400,16 +358,6 @@ func main() {
 		for i, addr := range stats.SampleContracts {
 			fmt.Printf("  Contract #%d: %s\n", i+1, addr.Hex())
 		}
-	}
-
-	// Keep stats server running after completion if enabled
-	if statsServer != nil {
-		fmt.Printf("\n=== Stats server still running at http://localhost:%d ===\n", *statsPort)
-		fmt.Printf("Press Ctrl+C to exit...\n")
-		sigCh := make(chan os.Signal, 1)
-		signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
-		<-sigCh
-		fmt.Println("\nShutting down...")
 	}
 }
 
