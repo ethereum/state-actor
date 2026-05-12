@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/ethereum/go-ethereum/common"
+
 	"github.com/nerolation/state-actor/genesis"
 )
 
@@ -109,5 +111,39 @@ func TestChainSpec_RejectsPrePrague(t *testing.T) {
 	}
 	if _, err := writeChainSpec(t.TempDir(), g); err == nil {
 		t.Error("writeChainSpec should reject genesis without post-Prague config")
+	}
+}
+
+// TestChainSpec_MixHashAndCoinbaseFromG locks the unification contract: the
+// chainspec writer reads mixHash and coinbase from g rather than hardcoding
+// zero literals. The shared header builder (internal/genesisheader.Build)
+// already reads g.Mixhash and g.Coinbase, so a non-zero value here would
+// otherwise produce a chainspec/header divergence that breaks besu boot.
+func TestChainSpec_MixHashAndCoinbaseFromG(t *testing.T) {
+	g, err := genesis.BuildSynthetic("osaka", big.NewInt(1337), 30_000_000, 0, nil)
+	if err != nil {
+		t.Fatalf("BuildSynthetic: %v", err)
+	}
+	g.Mixhash = common.HexToHash("0x1111222233334444555566667777888899990000aaaabbbbccccddddeeeeffff")
+	g.Coinbase = common.HexToAddress("0xcafe000000000000000000000000000000000000")
+
+	path, err := writeChainSpec(t.TempDir(), g)
+	if err != nil {
+		t.Fatalf("writeChainSpec: %v", err)
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	var spec map[string]any
+	if err := json.Unmarshal(b, &spec); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+
+	if got := spec["mixHash"]; got != g.Mixhash.Hex() {
+		t.Errorf("mixHash = %v; want %s", got, g.Mixhash.Hex())
+	}
+	if got := spec["coinbase"]; got != g.Coinbase.Hex() {
+		t.Errorf("coinbase = %v; want %s", got, g.Coinbase.Hex())
 	}
 }

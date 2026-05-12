@@ -129,8 +129,8 @@ func writeChainSpec(dbPath string, g *genesis.Genesis) (string, error) {
 		"extraData":  extraDataHex,
 		"gasLimit":   fmt.Sprintf("0x%x", gasLimit),
 		"difficulty": diffHex,
-		"mixHash":    "0x0000000000000000000000000000000000000000000000000000000000000000",
-		"coinbase":   "0x0000000000000000000000000000000000000000",
+		"mixHash":    g.Mixhash.Hex(),
+		"coinbase":   g.Coinbase.Hex(),
 		"alloc":      map[string]any{},
 	}
 	if baseFeeHex != "" {
