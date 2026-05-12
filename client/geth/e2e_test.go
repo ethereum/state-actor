@@ -76,7 +76,8 @@ func TestE2ESuite(t *testing.T) {
 
 	// Pin --fork=osaka (geth's MaxForkForClient ceiling). 60M gas matches
 	// mainnet-current.
-	g, err := stategenesis.BuildSynthetic("osaka", big.NewInt(1337), 60_000_000, 0, nil)
+	g, err := stategenesis.BuildSynthetic("osaka", big.NewInt(1337), 60_000_000,
+		1_700_000_000, []byte{0xde, 0xad, 0xbe, 0xef})
 	if err != nil {
 		t.Fatalf("BuildSynthetic: %v", err)
 	}
@@ -93,6 +94,7 @@ func TestE2ESuite(t *testing.T) {
 		MinSlots:        minSlots,
 		MaxSlots:        maxSlots,
 		Seed:            seed,
+		Verbose:         true,
 		TrieMode:        generator.TrieModeMPT,
 		Genesis:         g,
 		InjectAddresses: []common.Address{oracle.SpamoorSenderAddr},

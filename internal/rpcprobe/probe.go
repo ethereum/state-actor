@@ -226,13 +226,16 @@ func EthGetTransactionCount(url string, addr common.Address, block string) (uint
 // purposes. JSON-RPC returns many more fields; we deliberately only
 // surface what callers need so adding a new field is an explicit decision.
 type Block struct {
-	Number     string      `json:"number"`     // hex height ("0x0", "0x65")
-	Hash       common.Hash `json:"hash"`
-	StateRoot  common.Hash `json:"stateRoot"`
-	ParentHash common.Hash `json:"parentHash"`
-	Timestamp  string      `json:"timestamp"`  // hex unix seconds
-	GasLimit   string      `json:"gasLimit"`   // hex
-	ExtraData  string      `json:"extraData"`  // "0x" + hex bytes
+	Number     string         `json:"number"`     // hex height ("0x0", "0x65")
+	Hash       common.Hash    `json:"hash"`
+	StateRoot  common.Hash    `json:"stateRoot"`
+	ParentHash common.Hash    `json:"parentHash"`
+	Timestamp  string         `json:"timestamp"`  // hex unix seconds
+	GasLimit   string         `json:"gasLimit"`   // hex
+	ExtraData  string         `json:"extraData"`  // "0x" + hex bytes
+	MixHash    common.Hash    `json:"mixHash"`
+	Miner      common.Address `json:"miner"` // coinbase / fee recipient
+	Difficulty string         `json:"difficulty"` // hex
 }
 
 // BlockByNumber calls eth_getBlockByNumber(blockTag, false) and returns the

@@ -2,6 +2,7 @@ package e2e_testing
 
 import (
 	"fmt"
+	"math/big"
 	"strconv"
 	"strings"
 	"testing"
@@ -19,12 +20,16 @@ import (
 // writer, short-circuited override, parser quirk — surfaces here instead
 // of as a confusing boot failure further down the test.
 //
-// Asserts on the four flag-driven fields:
+// Asserts the eight fields that have a corresponding *Genesis field:
 //
-//   - eth_chainId                                  == g.Config.ChainID
-//   - eth_getBlockByNumber("0x0").gasLimit         == g.GasLimit
-//   - eth_getBlockByNumber("0x0").timestamp        == g.Timestamp
-//   - eth_getBlockByNumber("0x0").extraData (hex)  == g.ExtraData
+//   - eth_chainId                                   == g.Config.ChainID
+//   - eth_getBlockByNumber("0x0").gasLimit          == g.GasLimit
+//   - eth_getBlockByNumber("0x0").timestamp         == g.Timestamp
+//   - eth_getBlockByNumber("0x0").extraData (hex)   == g.ExtraData
+//   - eth_getBlockByNumber("0x0").parentHash        == g.ParentHash    (zero in our pipeline)
+//   - eth_getBlockByNumber("0x0").mixHash           == g.Mixhash       (zero in our pipeline)
+//   - eth_getBlockByNumber("0x0").miner             == g.Coinbase      (zero in our pipeline)
+//   - eth_getBlockByNumber("0x0").difficulty        == g.Difficulty    (0 in our pipeline)
 //
 // All mismatches are reported in one call via t.Errorf so callers see
 // every field's status, not just the first failure.
@@ -51,7 +56,7 @@ func AssertGenesisHeaderMatches(t *testing.T, rpcURL string, g *genesis.Genesis)
 		}
 	}
 
-	// Genesis block header — the four customizable fields.
+	// Genesis block header — the eight fields with a *Genesis counterpart.
 	block, err := rpcprobe.BlockByNumber(rpcURL, "0x0")
 	if err != nil {
 		t.Fatalf("eth_getBlockByNumber(0x0): %v", err)
@@ -72,6 +77,27 @@ func AssertGenesisHeaderMatches(t *testing.T, rpcURL string, g *genesis.Genesis)
 	wantExtraData := hexutil.Encode([]byte(g.ExtraData))
 	if !strings.EqualFold(block.ExtraData, wantExtraData) {
 		t.Errorf("block.extraData = %q; want %q", block.ExtraData, wantExtraData)
+	}
+
+	if block.ParentHash != g.ParentHash {
+		t.Errorf("block.parentHash = %s; want %s", block.ParentHash.Hex(), g.ParentHash.Hex())
+	}
+	if block.MixHash != g.Mixhash {
+		t.Errorf("block.mixHash = %s; want %s", block.MixHash.Hex(), g.Mixhash.Hex())
+	}
+	if block.Miner != g.Coinbase {
+		t.Errorf("block.miner = %s; want %s", block.Miner.Hex(), g.Coinbase.Hex())
+	}
+
+	wantDifficulty := big.NewInt(0)
+	if g.Difficulty != nil {
+		wantDifficulty = g.Difficulty.ToInt()
+	}
+	gotDifficulty, perr := hexutil.DecodeBig(block.Difficulty)
+	if perr != nil {
+		t.Errorf("block.difficulty %q: %v", block.Difficulty, perr)
+	} else if gotDifficulty.Cmp(wantDifficulty) != 0 {
+		t.Errorf("block.difficulty = %s; want %s", gotDifficulty.String(), wantDifficulty.String())
 	}
 }
 
