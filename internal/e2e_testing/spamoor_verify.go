@@ -13,7 +13,7 @@ import (
 // EVM execution would still pass Phase 6 (which only asserts the
 // deployer nonce ticked, not that anything actually executed).
 //
-// The check scans the first maxScan blocks for a contract-creation tx
+// The check scans every block 1..latest for a contract-creation tx
 // (whose `to` field is null), then asserts:
 //   - the deploy tx's receipt has status 0x1 (i.e. the transaction did
 //     not revert)
@@ -22,25 +22,22 @@ import (
 //
 // Errors are reported via t.Errorf so a single CI run produces a useful
 // diagnostic — caller continues running.
+//
+// Note on scan range: spamoor's wallet-funding phase scales with the
+// configured wallet count and target gas, so the deploy can land
+// anywhere from block 3 (small warmup) to block 100+ (large pre-spamoor
+// state). Scanning to `latest` instead of a fixed cap keeps the check
+// resilient.
 func AssertSpamoorOutputs(t *testing.T, rpcURL string) {
 	t.Helper()
-
-	// spamoor's deploy is observed in early blocks (typically <10). Cap
-	// the scan so a misbehaving client (no creation tx) fails fast rather
-	// than walking the whole chain.
-	const maxScan = uint64(30)
 
 	latest, err := rpcprobe.EthBlockNumber(rpcURL)
 	if err != nil {
 		t.Errorf("AssertSpamoorOutputs: eth_blockNumber: %v", err)
 		return
 	}
-	end := latest
-	if end > maxScan {
-		end = maxScan
-	}
 
-	for n := uint64(1); n <= end; n++ {
+	for n := uint64(1); n <= latest; n++ {
 		tag := fmt.Sprintf("0x%x", n)
 		block, err := rpcprobe.BlockByNumberWithTxs(rpcURL, tag)
 		if err != nil {
@@ -80,5 +77,5 @@ func AssertSpamoorOutputs(t *testing.T, rpcURL string) {
 			return
 		}
 	}
-	t.Errorf("AssertSpamoorOutputs: no contract-creation tx found in blocks 1..%d (spamoor didn't deploy?)", end)
+	t.Errorf("AssertSpamoorOutputs: no contract-creation tx found in blocks 1..%d (spamoor didn't deploy?)", latest)
 }
