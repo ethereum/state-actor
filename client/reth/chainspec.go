@@ -3,6 +3,7 @@ package reth
 import (
 	"encoding/json"
 	"fmt"
+	"math/big"
 	"os"
 
 	"github.com/nerolation/state-actor/genesis"
@@ -37,6 +38,20 @@ func writeChainSpec(g *genesis.Genesis, outPath string) error {
 	// "no genesis accounts in chainspec" rather than tripping on a missing
 	// required field.
 	spec["alloc"] = map[string]any{}
+
+	// When Cancun is active at genesis, g.{ExcessBlobGas,BlobGasUsed} are
+	// nil pointers in BuildSynthetic's output → json.Marshal emits null.
+	// The shared header builder (internal/genesisheader.Build) materializes
+	// both to 0 in the on-disk header, so null-vs-0 is a potential
+	// chainspec/header divergence. Force "0x0" so both sides agree.
+	if g.Config != nil && g.Config.IsCancun(big.NewInt(0), uint64(g.Timestamp)) {
+		if v, ok := spec["excessBlobGas"]; !ok || v == nil {
+			spec["excessBlobGas"] = "0x0"
+		}
+		if v, ok := spec["blobGasUsed"]; !ok || v == nil {
+			spec["blobGasUsed"] = "0x0"
+		}
+	}
 
 	out, err := json.MarshalIndent(spec, "", "  ")
 	if err != nil {
