@@ -100,11 +100,11 @@ func TestE2ESuite(t *testing.T) {
 
 	const (
 		seed         = int64(42)
-		numAccounts  = 10
-		numContracts = 3
-		codeSize     = 256
-		minSlots     = 2
-		maxSlots     = 2
+		numAccounts  = 100
+		numContracts = 15_000 // ~100 MB warmup before spamoor (avg 27 slots × 240 B/entry)
+		codeSize     = 128
+		minSlots     = 5
+		maxSlots     = 50
 	)
 
 	// All 4 clients pin --fork=osaka after the writer migration to internal/genesisheader.Build. state-actor's
