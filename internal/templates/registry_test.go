@@ -8,6 +8,7 @@ func TestRegistryHasExpectedTemplates(t *testing.T) {
 	want := []string{
 		"create2_deploys",
 		"create2_factory",
+		"create_preimage_deploys",
 		"eoa",
 		"erc20",
 		"raw",
@@ -27,7 +28,7 @@ func TestRegistryHasExpectedTemplates(t *testing.T) {
 
 func TestLookupHit(t *testing.T) {
 	for _, name := range []string{
-		"create2_deploys", "create2_factory",
+		"create2_deploys", "create2_factory", "create_preimage_deploys",
 		"eoa", "erc20", "raw",
 		"sequential_eoas", "storage_pattern",
 	} {

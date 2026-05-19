@@ -26,6 +26,10 @@
 //   - create2_deploys.go  — kind: contract, template: create2_deploys. Derives
 //     N CREATE2 addresses (factory + initcode + salt range) and plants
 //     deployed_code at each.
+//   - create_preimage_deploys.go — kind: contract, template:
+//     create_preimage_deploys. Derives N CREATE addresses
+//     (keccak256(rlp([sender, nonce]))[12:]) and plants `runtime` at
+//     each; backs CreatePreimageLayout (Bittrex-style chains).
 //   - sizing.go           — shared streaming storage-slot synthesizer.
 //
 // What does NOT live here:
