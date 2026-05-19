@@ -2,6 +2,7 @@ package specbuild
 
 import (
 	"bytes"
+	"strings"
 	"testing"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -105,5 +106,152 @@ func TestBuildRepricingMin(t *testing.T) {
 			t.Errorf("create_preimage_deploys[%d] addr: got %s, want %s",
 				i, pre[112+i].Address.Hex(), want.Hex())
 		}
+	}
+}
+
+// TestBuildRepricingMinDeterministic pins the strongest contract the
+// repricing templates must uphold: same YAML + same seed → byte-
+// identical PreAlloc across runs, including every storage slot of the
+// storage_pattern entity. The same guarantee is what makes the
+// cross-client-genesis-root aggregator's invariant work.
+//
+// Modeled on TestBuildDeterminismEndToEnd; specialized to the
+// repricing example because the bloater templates have their own
+// fan-out paths (sequential_eoas, create2_deploys,
+// create_preimage_deploys) that don't run through any other test's
+// determinism scaffolding.
+func TestBuildRepricingMinDeterministic(t *testing.T) {
+	s, err := spec.ParseFile("../../examples/spec-repricing-min.yaml")
+	if err != nil {
+		t.Fatalf("ParseFile: %v", err)
+	}
+	if _, err := s.Validate(templates.UserVisibleNames()); err != nil {
+		t.Fatalf("Validate: %v", err)
+	}
+
+	a, _, err := Build(s, defaultOpts)
+	if err != nil {
+		t.Fatalf("Build (run A): %v", err)
+	}
+	b, _, err := Build(s, defaultOpts)
+	if err != nil {
+		t.Fatalf("Build (run B): %v", err)
+	}
+	if len(a) != len(b) {
+		t.Fatalf("entity count differs across runs: %d vs %d", len(a), len(b))
+	}
+	for i := range a {
+		if a[i].Address != b[i].Address {
+			t.Errorf("entity[%d] address: %s vs %s", i, a[i].Address.Hex(), b[i].Address.Hex())
+		}
+		if a[i].Account.Nonce != b[i].Account.Nonce {
+			t.Errorf("entity[%d] nonce: %d vs %d", i, a[i].Account.Nonce, b[i].Account.Nonce)
+		}
+		if !a[i].Account.Balance.Eq(b[i].Account.Balance) {
+			t.Errorf("entity[%d] balance: %s vs %s", i, a[i].Account.Balance, b[i].Account.Balance)
+		}
+		if !bytes.Equal(a[i].Account.CodeHash, b[i].Account.CodeHash) {
+			t.Errorf("entity[%d] CodeHash differs", i)
+		}
+		if !bytes.Equal(a[i].Code, b[i].Code) {
+			t.Errorf("entity[%d] Code bytes differ", i)
+		}
+		ma := drainStorage(a[i].Storage)
+		mb := drainStorage(b[i].Storage)
+		if len(ma) != len(mb) {
+			t.Errorf("entity[%d] storage slot count: %d vs %d", i, len(ma), len(mb))
+			continue
+		}
+		for k, va := range ma {
+			vb, ok := mb[k]
+			if !ok {
+				t.Errorf("entity[%d] key %s missing in run B", i, k.Hex())
+				continue
+			}
+			if va != vb {
+				t.Errorf("entity[%d] key %s: %s vs %s", i, k.Hex(), va.Hex(), vb.Hex())
+			}
+		}
+	}
+}
+
+// TestBuildRepricingMinCrossClient pins that the repricing templates'
+// emitted addresses are independent of the client name in
+// BuildOptions. This matters because the cross-client-genesis-root
+// invariant assumes that for a given YAML + seed, every client sees
+// the same set of addresses (sizecal calibration only varies the slot
+// counts of approximate_size_bytes-driven entities, none of which are
+// in the repricing example).
+func TestBuildRepricingMinCrossClient(t *testing.T) {
+	s, err := spec.ParseFile("../../examples/spec-repricing-min.yaml")
+	if err != nil {
+		t.Fatalf("ParseFile: %v", err)
+	}
+	if _, err := s.Validate(templates.UserVisibleNames()); err != nil {
+		t.Fatalf("Validate: %v", err)
+	}
+
+	clients := []string{"geth", "besu", "nethermind", "reth"}
+	var reference []common.Address
+	for _, c := range clients {
+		opts := defaultOpts
+		opts.ClientName = c
+		pre, _, err := Build(s, opts)
+		if err != nil {
+			t.Fatalf("Build(%s): %v", c, err)
+		}
+		addrs := make([]common.Address, len(pre))
+		for i, pe := range pre {
+			addrs[i] = pe.Address
+		}
+		if reference == nil {
+			reference = addrs
+			continue
+		}
+		if len(addrs) != len(reference) {
+			t.Errorf("client=%s: PreAlloc length %d, want %d", c, len(addrs), len(reference))
+			continue
+		}
+		for i, a := range addrs {
+			if a != reference[i] {
+				t.Errorf("client=%s entity[%d]: %s, want %s", c, i, a.Hex(), reference[i].Hex())
+			}
+		}
+	}
+}
+
+// TestBuildRepricingCollision pins that specbuild.Build catches a
+// fan-out template emitting addresses that collide with an earlier
+// entity's address (or another fan-out's range). Two sequential_eoas
+// entities whose ranges intersect must error rather than silently
+// drop one of the overlapping accounts.
+func TestBuildRepricingCollision(t *testing.T) {
+	yaml := `entities:
+  - kind: contract
+    template: sequential_eoas
+    name: range-a
+    address: 0x0000000000000000000000000000000000001000
+    parameters:
+      count: 10
+  - kind: contract
+    template: sequential_eoas
+    name: range-b
+    address: 0x0000000000000000000000000000000000001005
+    parameters:
+      count: 10
+`
+	s, err := spec.Parse(strings.NewReader(yaml))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if _, err := s.Validate(templates.UserVisibleNames()); err != nil {
+		t.Fatalf("Validate: %v", err)
+	}
+	_, _, err = Build(s, defaultOpts)
+	if err == nil {
+		t.Fatalf("Build: expected collision error, got nil")
+	}
+	if !strings.Contains(err.Error(), "collides") {
+		t.Errorf("Build: error %q did not mention collision", err.Error())
 	}
 }
