@@ -125,7 +125,7 @@ func AddCREATE2Deploys(cfg *generator.Config, factory common.Address, specs []CR
 				runtimeCode = spec.DeployedCode
 			} else {
 				var err error
-				runtimeCode, err = simulateCREATE2(factory, spec.Initcode, salt)
+				runtimeCode, err = SimulateCREATE2(factory, spec.Initcode, salt)
 				if err != nil {
 					return fmt.Errorf("AddCREATE2Deploys: spec[%d] salt=%d: %w", i, spec.SaltStart+k, err)
 				}
@@ -146,12 +146,12 @@ func AddCREATE2Deploys(cfg *generator.Config, factory common.Address, specs []CR
 	return nil
 }
 
-// simulateCREATE2 runs `initcode` through the canonical factory at
+// SimulateCREATE2 runs `initcode` through the canonical factory at
 // `factory` with the supplied salt and returns the deployed runtime
 // code. msg.sender during construction is `factory`; ADDRESS resolves
 // to the CREATE2-derived address — matching real-world deployment via
 // the deterministic-deployment proxy.
-func simulateCREATE2(factory common.Address, initcode []byte, salt [32]byte) ([]byte, error) {
+func SimulateCREATE2(factory common.Address, initcode []byte, salt [32]byte) ([]byte, error) {
 	db, err := state.New(types.EmptyRootHash, state.NewDatabaseForTesting())
 	if err != nil {
 		return nil, fmt.Errorf("state.New: %w", err)
