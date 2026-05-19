@@ -17,13 +17,15 @@ func init() {
 // createPreimageDeploysTemplate handles
 // `kind: contract, template: create_preimage_deploys`. For each nonce
 // in [start_nonce, start_nonce+count) it derives the CREATE address
-// (keccak256(rlp([sender, nonce]))[12:]) and plants `runtime` there
-// with nonce=1, balance=0, no storage.
+// (keccak256(rlp([sender, nonce]))[12:] via crypto.CreateAddress) and
+// plants `runtime` there with nonce=1, balance=0, no storage.
 //
-// The entity's resolved address is interpreted as the CREATE sender —
-// i.e. the deployer whose nonces produce these derived contracts. The
-// sender's own account is NOT emitted here; the user provides it via
-// a separate entity if the chain needs it.
+// The CREATE deployer is supplied via the required `sender:` parameter
+// — NOT the entity's own resolved address. That keeps the user free to
+// also declare a separate entity (e.g. `template: raw`) at the
+// sender's address with that account's actual bytecode; `spec.Validate`
+// only flags duplicate `address:` fields between entities, so giving
+// the sender its own slot avoids that collision.
 //
 // Backs CreatePreimageLayout in execution-specs bloatnet benchmarks:
 // the test code computes keccak256(rlp([sender, nonce]))[12:] at run
@@ -44,14 +46,17 @@ const createPreimageNonceLimit = uint64(1) << 32
 
 func (createPreimageDeploysTemplate) ValidateParameters(params map[string]any) error {
 	if err := RejectUnknownKeys(params, "create_preimage_deploys", []string{
-		"start_nonce", "count", "runtime",
+		"sender", "start_nonce", "count", "runtime",
 	}); err != nil {
 		return err
 	}
-	for _, required := range []string{"count", "runtime"} {
+	for _, required := range []string{"sender", "count", "runtime"} {
 		if _, ok := params[required]; !ok {
 			return fmt.Errorf("create_preimage_deploys: missing required parameter %q", required)
 		}
+	}
+	if _, err := ParseAddressParam(params["sender"], "sender"); err != nil {
+		return fmt.Errorf("create_preimage_deploys: %w", err)
 	}
 	count, err := ParseUint64Param(params["count"], "count")
 	if err != nil {
@@ -76,6 +81,7 @@ func (createPreimageDeploysTemplate) ValidateParameters(params map[string]any) e
 }
 
 func (createPreimageDeploysTemplate) Expand(ctx Context, e spec.Entity) ([]PreAllocEntity, error) {
+	sender, _ := ParseAddressParam(e.Parameters["sender"], "sender")
 	count, _ := ParseUint64Param(e.Parameters["count"], "count")
 	runtime, _ := ParseHexBytesParam(e.Parameters["runtime"], "runtime")
 	startNonce := uint64(0)
@@ -85,7 +91,6 @@ func (createPreimageDeploysTemplate) Expand(ctx Context, e spec.Entity) ([]PreAl
 	if count == 0 {
 		return nil, nil
 	}
-	sender := ctx.ResolvedAddress
 	codeHash := crypto.Keccak256Hash(runtime).Bytes()
 	out := make([]PreAllocEntity, 0, count)
 	for i := uint64(0); i < count; i++ {

@@ -116,6 +116,11 @@ least one holder has a non-zero balance).
 | Template | Required parameters | Optional | Notes |
 |---|---|---|---|
 | `erc20`  | `symbol`, `name`, `decimals` | `owners`, `allowances`, `total_owners`, `total_allowances` | Vendored OpenZeppelin v5.6.1 ERC20 deployed runtime bytecode (`internal/templates/erc20_oz_v5.hex`, regenerate via `scripts/regen-erc20-bytecode.sh`). `decimals` must equal 18 (OZ v5 base default); use the `raw` template for other decimals. |
+| `sequential_eoas` | `count` | `balance` | One entity → `count` plain EOAs at `[address, address+count)`. Anchor address comes from the entity's resolved address. Backs `SequentialAddressLayout` in bloatnet benchmarks. |
+| `storage_pattern` | `final` | — | Plants `slot 0 = final + 1` (next-free pointer) plus `slot k = k` for `k in 1..final`. Anchor address = entity's resolved address. Entity-level `nonce:` is honored; defaults to 1 (forced ≥ 1 so EIP-161 empty-account pruning doesn't wipe the entry). Backs `test_sload_bloated` / `test_sstore_bloated` `existing_slots=True`. |
+| `create2_factory` | — | — | Plants the 69-byte Arachnid deterministic-deployment proxy runtime. The entity's resolved address MUST equal `0x4e59b44847b379578588920cA78FbF26c0B4956C`. |
+| `create2_deploys` | `initcode`, `salt_count`, `deployed_code` | `salt_start`, `factory` | For each salt in `[salt_start, salt_start+salt_count)`, derives the CREATE2 address and plants `deployed_code` there. `factory` defaults to the canonical Arachnid address. The constructor is never executed — `deployed_code` must be the desired runtime. |
+| `create_preimage_deploys` | `sender`, `count`, `runtime` | `start_nonce` | For each nonce in `[start_nonce, start_nonce+count)`, derives `keccak256(rlp([sender, nonce]))[12:]` and plants `runtime` there. Suited to Bittrex-Controller-style descendant chains where every child shares one body. Backs `CreatePreimageLayout` in bloatnet benchmarks (EXISTING_CONTRACT mode of `test_account_access`). |
 
 ### `erc20` parameters in detail
 
@@ -180,6 +185,71 @@ Type rules inside `parameters`: addresses, balances, and allowances
 `map[string]any` and our custom hex/uint256 hooks only apply at the
 top-level entity fields.
 
+### Repricing-benchmark templates in detail
+
+These five templates were added to drive prestate for the bloatnet
+benchmarks under `execution-specs/tests/benchmark/stateful/`. All have
+`UserVisible() == true` and dispatch via the YAML `template:` field
+under `kind: contract`.
+
+```yaml
+# Sequential EOAs — one entity expands to `count` plain EOAs at
+# [address, address+count). Anchor address = entity's resolved address.
+- kind: contract
+  template: sequential_eoas
+  address: 0x0000000000000000000000000000000000001000
+  parameters:
+    count: 1000000              # required; uint64
+    balance: "1000000000000000000"  # optional; wei, defaults to 0
+
+# Storage pattern — slot 0 = final + 1, slot k = k for k in 1..final.
+# Anchor address = entity's resolved address. Entity-level nonce/balance
+# are honored; nonce defaults to 1 (forced >= 1).
+- kind: contract
+  template: storage_pattern
+  address: 0x3f8074692982594c1936bd27433a8b6e5d77e0f0
+  nonce: 1
+  parameters:
+    final: 50000000             # required; uint64
+
+# CREATE2 factory — plants the canonical Arachnid factory runtime.
+# Address MUST equal 0x4e59b44847b379578588920cA78FbF26c0B4956C.
+- kind: contract
+  template: create2_factory
+  address: 0x4e59b44847b379578588920cA78FbF26c0B4956C
+
+# CREATE2 deploys — one entity expands to N CREATE2-derived contracts.
+# Constructor is never executed; `deployed_code` is what lands at every
+# derived address. Use the same initcode the chain actually uses so the
+# derivation matches; `deployed_code` may differ from initcode's intended
+# return value if you want a synthetic body.
+- kind: contract
+  template: create2_deploys
+  parameters:
+    initcode: "0x6080..."       # required; hex bytes (drives CREATE2 derivation)
+    deployed_code: "0x6080..."  # required; hex bytes (planted at every derived addr)
+    salt_count: 1000            # required; uint64
+    salt_start: 0               # optional; uint64, defaults to 0
+    factory: "0x4e59...956c"    # optional; defaults to canonical Arachnid
+
+# CREATE-preimage deploys — Bittrex-style chain. For each nonce in
+# [start_nonce, start_nonce+count), derive crypto.CreateAddress(sender,
+# nonce) and plant `runtime` there. The sender is supplied as a
+# parameter (NOT the entity's address), so the user is free to also
+# declare a separate entity (`template: raw`, etc.) at the sender's
+# address.
+- kind: contract
+  template: create_preimage_deploys
+  parameters:
+    sender: "0xA3C1E324CA1CE40DB73ED6026C4A177F099B5770"  # required; the CREATE deployer
+    count: 1500000              # required; uint64
+    runtime: "0x6080..."        # required; hex bytes, planted at every derived addr
+    start_nonce: 2              # optional; uint64, defaults to 0
+```
+
+Type rules inside `parameters:` mirror the ERC-20 ones — addresses and
+hex-byte fields **must be quoted strings**.
+
 Built-in non-template handlers (no `template:` field needed):
 
 - `raw` — `kind: contract` with explicit `code:`. Whatever bytecode you
@@ -239,3 +309,8 @@ asserting RPC-returned values match the spec's intent.
   exercising every schema feature. Loaded by each per-client
   `TestE2ESuite` and validated by the `cross-client-genesis-root`
   aggregator.
+- `examples/spec-repricing-min.yaml` — minimal smoke fixture exercising
+  each of the five repricing-benchmark templates once at small size.
+  Sized to build in well under a second; production-scale repricing
+  prestate (matching `execution-specs/tests/benchmark/stateful/stubs/stubs_repricing.json`)
+  is a separate fixture.

@@ -1,0 +1,80 @@
+# Minimal smoke fixture for the repricing-benchmark templates.
+#
+# Exercises each of the five user-visible templates introduced for
+# bloatnet repricing (sequential_eoas, storage_pattern, create2_factory,
+# create2_deploys, create_preimage_deploys) once at small size. Sized
+# to keep the spec layer well under a second.
+#
+# Production-scale fixtures matching execution-specs/tests/benchmark/
+# stateful/stubs/stubs_repricing.json (50 GB / 30 GB / 9.39 GB / 1 GB
+# / 4.23 MB ERC-20s, three 7702-EOAs at 1/10/20 GB, Bittrex's full
+# 1.5 M descendant chain, …) are a separate fixture.
+#
+# To exercise locally:
+#   state-actor --client=geth --db=/tmp/repricing-min \
+#     --spec=examples/spec-repricing-min.yaml
+entities:
+  # ── 1. Sequential EOAs at 0x1000+ ─────────────────────────────────────
+  # Backs SequentialAddressLayout(starting_address=0x1000, increment=1)
+  # in execution-specs bloatnet test_account_access (EXISTING_EOA mode).
+  - kind: contract
+    name: sequential-eoas-baseline
+    template: sequential_eoas
+    address: 0x0000000000000000000000000000000000001000
+    parameters:
+      count: 100
+      balance: "1000000000000000000"
+
+  # ── 2. Storage-pattern target ─────────────────────────────────────────
+  # Backs the existing_slots=True path of test_sload_bloated and
+  # test_sstore_bloated. The bloated_eoa_* addresses in
+  # stubs_repricing.json all use this layout; here we just exercise it
+  # at one synthetic address.
+  - kind: contract
+    name: storage-pattern-baseline
+    template: storage_pattern
+    address: 0x000000000000000000000000000000000000c0de
+    parameters:
+      final: 100
+
+  # ── 3. CREATE2 factory ────────────────────────────────────────────────
+  # Canonical Arachnid deterministic-deployment proxy. Same address
+  # on every EVM chain because the deploy tx is pre-signed.
+  - kind: contract
+    name: create2-factory
+    template: create2_factory
+    address: 0x4e59b44847b379578588920cA78FbF26c0B4956C
+
+  # ── 4. CREATE2 deploys ────────────────────────────────────────────────
+  # 10 CREATE2-derived contracts sharing one runtime. Backs the
+  # diff_to_unique_code_jumpdest_contract case of
+  # test_ether_transfers_onchain_receivers in test_transaction_types.py;
+  # production runs use a much larger salt_count.
+  #
+  # initcode here is a stand-in for the production initcode — what
+  # actually matters for the benchmarks is that the CREATE2 derivation
+  # is reproducible and that something callable lives at each derived
+  # address. deployed_code = JUMP(PUSH2(0x5FFF)) + JUMPDEST mirrors the
+  # benchmark's expected runtime.
+  - kind: contract
+    name: create2-deploys-baseline
+    template: create2_deploys
+    parameters:
+      initcode: "0x6001600052602060006000F0"
+      deployed_code: "0x615fff565b"
+      salt_count: 10
+
+  # ── 5. CREATE-preimage deploys ────────────────────────────────────────
+  # Bittrex-style chain at the real mainnet Bittrex Controller address.
+  # 10 nonces here vs the 1.5 M-nonce production scale. The sender is
+  # a *parameter*, NOT the entity's `address:` field, so users can
+  # declare a separate entity at 0xA3C1...5770 (e.g. with the actual
+  # Bittrex Controller bytecode via `template: raw`) without colliding.
+  - kind: contract
+    name: create-preimage-baseline
+    template: create_preimage_deploys
+    parameters:
+      sender: "0xA3C1E324CA1CE40DB73ED6026C4A177F099B5770"
+      start_nonce: 2
+      count: 10
+      runtime: "0x615fff565b"
