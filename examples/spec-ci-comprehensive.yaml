@@ -1,0 +1,233 @@
+# Comprehensive CI fixture for the --spec feature.
+#
+# Touches every spec YAML code path so a single end-to-end CI job per
+# client validates every writer + read invariant the bench host validates
+# at 100 GB scale. Sibling of spec-ci-baseline.yaml, but with broader
+# coverage: ERC-20 + storage synth, near-EIP-170 raw bytecode, zero-
+# balance EOAs, hex-string balance form, and the spamoor sender pinned
+# at Anvil dev account 0 so spamoor scenarios can sign txs against the
+# datadir directly.
+#
+# **DO NOT USE THIS FIXTURE LOCALLY without `sizecal.NewFixed(64)`** —
+# same constraint as spec-ci-baseline.yaml. Each client's calibration
+# factor would otherwise produce different slot counts, breaking the
+# cross-client invariant. internal/e2e_testing/spec_setup.go's
+# LoadCISpec hardcodes NewFixed(64) so all clients agree.
+#
+# Total on-disk footprint target: ≤500 KB. The verifier
+# (.github/scripts/verify-spec.sh) walks every entity below and asserts
+# balance/nonce/code/template-output via cast. Any divergence between
+# the four clients fails CI before reaching the bench host.
+entities:
+  # ── 1. Spamoor sender ────────────────────────────────────────────────
+  # spamoor signs erc20_bloater txs with privkey=1 (the bench-host
+  # SPAMOOR_PRIVKEY constant). The corresponding address is
+  # oracle.SpamoorSenderAddr — same as spec-ci-baseline.yaml so
+  # internal/e2e_testing/spec_setup_test.go's drift gate fires for both
+  # specs. The cross-client invariant test pins this byte-for-byte.
+  - kind: eoa
+    name: spamoor-sender
+    address: 0x7e5f4552091a69125d5dfcb7b8c2659029395bdf
+    balance: "999999999000000000000000000"
+    nonce: 0
+
+  # ── 2-7. ERC-20 flavor coverage ──────────────────────────────────────
+  # Every template-parameter permutation: explicit-address + bulk fill;
+  # name-derived + bulk fill; position-derived + bulk fill; skeleton
+  # (no synthesis); nonce override; explicit owners + allowances;
+  # storage-bloat via approximate_size_bytes. decimals locked to 18
+  # (OpenZeppelin v5 default; the template rejects other values).
+
+  # 2. Explicit address + bulk random fill.
+  - kind: contract
+    template: erc20
+    name: explicit-token
+    address: 0x000000000000000000000000000000000000aaaa
+    parameters:
+      symbol: EXP
+      decimals: 18
+      name: Explicit
+      total_owners: 50
+
+  # 3. Name-derived address + bulk random fill.
+  - kind: contract
+    template: erc20
+    name: named-token
+    parameters:
+      symbol: NMD
+      decimals: 18
+      name: NamedToken
+      total_owners: 25
+
+  # 4. Position-derived address (no name, no address) + bulk random fill.
+  - kind: contract
+    template: erc20
+    parameters:
+      symbol: ANO
+      decimals: 18
+      name: AnonToken
+      total_owners: 10
+
+  # 5. Skeleton ERC-20 — no total_owners, no approximate_size_bytes.
+  # Produces only the explicit _name / _symbol slots, no _totalSupply.
+  - kind: contract
+    template: erc20
+    name: skeleton-token
+    parameters:
+      symbol: SKL
+      decimals: 18
+      name: SkeletonToken
+
+  # 6. ERC-20 with explicit nonce override (state-actor floors ERC-20
+  # nonce to ≥1; this asks for 42 and asserts it lands).
+  - kind: contract
+    template: erc20
+    name: nonce-overridden-token
+    nonce: 42
+    parameters:
+      symbol: N42
+      decimals: 18
+      name: NonceOverride
+      total_owners: 10
+
+  # 7. ERC-20 + approximate_size_bytes storage synth (template + bloat
+  # combo, exercises the raw.go:57-62 synth path AND the explicit
+  # owners path in the same entity).
+  - kind: contract
+    template: erc20
+    name: bloated-erc20
+    parameters:
+      symbol: BLT
+      decimals: 18
+      name: BloatedToken
+      total_owners: 20
+    approximate_size_bytes: 50_000
+
+  # ── 8-9. Explicit-owners + allowances coverage ───────────────────────
+  # Schema permutations the bench-host's Phase D ERC-20 probe covers.
+
+  # 8. Explicit owners + explicit allowances, no random fill.
+  - kind: contract
+    template: erc20
+    name: token-explicit-owners
+    address: 0x000000000000000000000000000000000000aa11
+    parameters:
+      symbol: AAA
+      decimals: 18
+      name: ExplicitOwnersToken
+      owners:
+        - { address: "0x1111111111111111111111111111111111111111", balance: "1000" }
+        - { address: "0x2222222222222222222222222222222222222222", balance: "500" }
+      allowances:
+        - { owner: "0x1111111111111111111111111111111111111111", spender: "0x3333333333333333333333333333333333333333", allowance: "100" }
+
+  # 9. Explicit AND random combined (multi-knob).
+  - kind: contract
+    template: erc20
+    name: token-mixed
+    address: 0x000000000000000000000000000000000000aa33
+    parameters:
+      symbol: CCC
+      decimals: 18
+      name: CombinedToken
+      owners:
+        - { address: "0x4444444444444444444444444444444444444444", balance: "1000000" }
+      total_owners: 8
+      allowances:
+        - { owner: "0x4444444444444444444444444444444444444444", spender: "0x5555555555555555555555555555555555555555", allowance: "1000" }
+      total_allowances: 4
+
+  # ── 10-12. Raw bytecode flavors ──────────────────────────────────────
+
+  # 10. Explicit address + small raw code + storage synth.
+  - kind: contract
+    name: raw-explicit
+    address: 0x000000000000000000000000000000000000bbbb
+    code: "0x6080604052348015600f57600080fd5b50603f80601d6000396000f3fe6080604052600080fdfea2"
+    approximate_size_bytes: 20_000
+
+  # 11. Name-derived address + code only (no synthesized storage).
+  - kind: contract
+    name: raw-named
+    code: "0x60606040526000357c01000000000000000000000000000000000000000000000000000000009004"
+
+  # 12. Near-EIP-170 max-size code (≤24_576 bytes). Pads a small valid
+  # PUSH1/STOP prelude with a 24_500-byte 0x00 tail — passes EIP-170
+  # validation (≤24_576) and exercises the writer's large-code path.
+  # The padded value is generated by .github/scripts/verify-spec.sh's
+  # pre-check; for the YAML we set a deterministic ~10 KB literal to
+  # keep the file small.
+  - kind: contract
+    name: raw-large
+    address: 0x000000000000000000000000000000000000bbbc
+    code: "0x6080604052600080fd000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
+
+  # ── 13-15. EIP-7702 EOA flavors ──────────────────────────────────────
+
+  # 13. Explicit address + 7702 delegation + nonce override.
+  - kind: eoa
+    name: delegator-explicit
+    address: 0x7777777777777777777777777777777777777777
+    balance: "1000000000000000000"
+    nonce: 10
+    code: "0xef01001111111111111111111111111111111111111111"
+
+  # 14. Name-derived + 7702 delegation + storage bloat (delegated EOAs
+  # can carry storage just like contracts; the writer must place it
+  # under the EOA's address).
+  - kind: eoa
+    name: bloated-validator
+    balance: "1000000000000000000"
+    nonce: 1
+    code: "0xef01002222222222222222222222222222222222222222"
+    approximate_size_bytes: 30_000
+
+  # 15. Position-derived + 7702 delegation, no storage.
+  - kind: eoa
+    balance: "3000000000000000000"
+    code: "0xef01003333333333333333333333333333333333333333"
+    nonce: 5
+
+  # ── 16-22. Plain EOA flavors ─────────────────────────────────────────
+
+  # 16. Plain EOA, explicit address.
+  - kind: eoa
+    address: 0x3333333333333333333333333333333333333333
+    balance: "5000000000000000000"
+    nonce: 1
+
+  # 17. Plain EOA, name-derived, non-zero nonce override.
+  - kind: eoa
+    name: plain-named-eoa
+    balance: "2000000000000000000"
+    nonce: 7
+
+  # 18. Plain EOA, position-derived (neither name nor address set).
+  - kind: eoa
+    balance: "1000000000000000000"
+
+  # 19. EOA with `approximate_size_bytes` (storage synthesis on a
+  # plain EOA — typically used for fuzzing the slot writer).
+  - kind: eoa
+    name: bloated-eoa
+    balance: "10000000000000000000"
+    approximate_size_bytes: 25_000
+
+  # 20. Zero-balance EOA (balance: "0" must be a no-op write that still
+  # creates the account row).
+  - kind: eoa
+    name: zero-balance-eoa
+    balance: "0"
+
+  # 21. Hex-string balance form (the parser accepts both decimal and
+  # 0x-prefixed; common when copy-pasting from cast / etherscan).
+  - kind: eoa
+    name: hex-balance-eoa
+    balance: "0xde0b6b3a7640000"
+
+  # 22. Plain EOA with default zero nonce (every other named EOA above
+  # sets a non-zero nonce or explicit zero; this one omits the field
+  # so the default-zero path is exercised).
+  - kind: eoa
+    name: default-nonce-eoa
+    balance: "100000000000000000"
