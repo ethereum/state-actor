@@ -195,6 +195,143 @@ jobs:
           if-no-files-found: warn
 
   # ---------------------------------------------------------------------------
+  # Bench-parity gate (geth).
+  #
+  # Generates a DB from examples/spec-ci-comprehensive.yaml (every --spec
+  # feature: 3 templates, 3 address modes, EIP-7702 delegation, raw
+  # bytecode, balance/nonce overrides, approximate_size_bytes synth,
+  # explicit + bulk ERC-20 owners/allowances), boots geth, runs the
+  # shared verify-spec.sh (the same script the bench host invokes) in
+  # MODE=pre, runs spamoor 100 blocks, then verify-spec.sh MODE=post.
+  #
+  # First failing assertion exits non-zero — fail-fast for the whole
+  # CI workflow. Closes the historical gap where bench caught failures
+  # CI did not.
+  # ---------------------------------------------------------------------------
+  comprehensive-spec-geth:
+    name: comprehensive spec · geth · verify parity
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      # cast + anvil for the RPC + tx-derivation helpers used by
+      # verify-spec.sh and the post-spamoor block-time check.
+      - name: Install foundry (cast)
+        uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: stable
+      # yq is pre-installed on ubuntu-latest; print version as a sanity
+      # check (verify-spec.sh requires Mike Farah's yq v4+).
+      - name: Sanity-check yq
+        run: yq --version
+
+      - name: Cache spamoor binary
+        id: spamoor-cache
+        uses: actions/cache@v4
+        with:
+          path: /usr/local/bin/spamoor
+          key: spamoor-${{ env.SPAMOOR_REF }}-${{ runner.os }}
+      - name: Build spamoor (cache miss)
+        if: steps.spamoor-cache.outputs.cache-hit != 'true'
+        run: make spamoor-install SPAMOOR_COMMIT=${{ env.SPAMOOR_REF }}
+
+      - name: Generate DB from comprehensive spec
+        run: |
+          set -euo pipefail
+          go build -o /tmp/state-actor .
+          mkdir -p /tmp/parity-data
+          /tmp/state-actor \
+            --client=geth \
+            --db=/tmp/parity-data \
+            --spec=examples/spec-ci-comprehensive.yaml \
+            --seed=0 \
+            --fork=osaka \
+            --chain-id=1337 \
+            --gas-limit=60000000
+
+      - name: Boot geth in dev mode
+        run: |
+          set -euo pipefail
+          docker run -d --name parity-geth \
+            -v /tmp/parity-data:/data \
+            -p 8545:8545 \
+            ethereum/client-go:v1.17.2 \
+            --dev --dev.period=1 --dev.gaslimit=60000000 \
+            --datadir=/data/geth --db.engine=pebble \
+            --networkid=1337 \
+            --http --http.addr=0.0.0.0 --http.port=8545 \
+            --http.api=eth,net,web3,txpool,debug
+          # Wait for RPC up to 60s.
+          for i in $(seq 1 60); do
+            if cast chain-id --rpc-url http://127.0.0.1:8545 >/dev/null 2>&1; then
+              echo "RPC up after ${i}s"; break
+            fi
+            sleep 1
+          done
+
+      - name: Verify pre-spamoor (MODE=pre)
+        env:
+          RPC: http://127.0.0.1:8545
+          SPEC: examples/spec-ci-comprehensive.yaml
+          SEED: '0'
+          MODE: pre
+        run: bash .github/scripts/verify-spec.sh
+
+      - name: Run spamoor (100 blocks)
+        run: |
+          set -euo pipefail
+          START_TIP=$(cast block-number --rpc-url http://127.0.0.1:8545)
+          TARGET_TIP=$((START_TIP + 100))
+          # erc20_bloater signs txs with privkey=1 (= oracle.SpamoorSenderAddr).
+          /usr/local/bin/spamoor erc20_bloater \
+            --rpchost http://127.0.0.1:8545 \
+            --privkey 0x0000000000000000000000000000000000000000000000000000000000000001 \
+            --seed 12345 \
+            --target-gb 999 \
+            --target-gas-ratio 0.1 \
+            --wallet-count 3 \
+            --slot-duration 1s \
+            > /tmp/spamoor.log 2>&1 &
+          SPAMOOR_PID=$!
+          DEADLINE=$(( $(date +%s) + 240 ))
+          while [ $(date +%s) -lt $DEADLINE ]; do
+            CUR=$(cast block-number --rpc-url http://127.0.0.1:8545 2>/dev/null || echo "$START_TIP")
+            if [ $CUR -ge $TARGET_TIP ]; then
+              echo "reached target tip ($CUR >= $TARGET_TIP)"
+              break
+            fi
+            kill -0 $SPAMOOR_PID 2>/dev/null || { echo "spamoor exited at tip=$CUR"; break; }
+            sleep 3
+          done
+          kill -TERM $SPAMOOR_PID 2>/dev/null || true
+          for _ in $(seq 1 10); do
+            kill -0 $SPAMOOR_PID 2>/dev/null || break
+            sleep 1
+          done
+          kill -KILL $SPAMOOR_PID 2>/dev/null || true
+          wait $SPAMOOR_PID 2>/dev/null || true
+
+      - name: Verify post-spamoor (MODE=post)
+        env:
+          RPC: http://127.0.0.1:8545
+          SPEC: examples/spec-ci-comprehensive.yaml
+          SEED: '0'
+          MODE: post
+        run: bash .github/scripts/verify-spec.sh
+
+      - name: Capture geth logs on failure
+        if: failure()
+        run: docker logs parity-geth || true
+
+      - name: Tear down
+        if: always()
+        run: docker rm -f parity-geth >/dev/null 2>&1 || true
+
+  # ---------------------------------------------------------------------------
   # Cross-client genesis state-root invariant.
   #
   # Same `--seed` → identical state across MPT clients. entitygen owns the
