@@ -16,7 +16,10 @@
 # succeed against a fresh dev node):
 #   RPC     JSON-RPC endpoint        (default http://127.0.0.1:8545)
 #   SPEC    Path to spec YAML        (default examples/spec-ci-comprehensive.yaml)
-#   SEED    Seed for address deriv.  (default 0, matching internal/e2e_testing.CISpecSeed)
+#   SEED    Seed for address deriv.  (default 42, matches bench convention).
+#           Must be non-zero — state-actor's main.go treats --seed=0 as a
+#           sentinel for "use wall-clock time", which randomizes every
+#           name- and position-derived entity address.
 #   MODE    pre | post               (default pre)
 #   BLOCK   Block tag for state reads (default latest)
 #   CHAIN_ID Expected chain id        (default 1337)
@@ -29,13 +32,22 @@ set -euo pipefail
 
 RPC=${RPC:-http://127.0.0.1:8545}
 SPEC=${SPEC:-examples/spec-ci-comprehensive.yaml}
-SEED=${SEED:-0}
+SEED=${SEED:-42}
 MODE=${MODE:-pre}
 BLOCK=${BLOCK:-latest}
 CHAIN_ID=${CHAIN_ID:-1337}
 
 if [[ "$MODE" != "pre" && "$MODE" != "post" ]]; then
     echo "FAIL: MODE must be 'pre' or 'post', got '$MODE'" >&2
+    exit 2
+fi
+
+# state-actor's main.go treats --seed=0 as "use wall-clock time" (see
+# main.go:84 and the --seed flag's docstring). The randomized seed
+# derives different name/position addresses than the SEED used here,
+# which would silently fail every derived-address probe. Reject up-front.
+if [[ "$SEED" = "0" ]]; then
+    echo "FAIL: SEED=0 collides with state-actor's --seed=0=randomize sentinel; pick a non-zero deterministic seed (bench uses 42)" >&2
     exit 2
 fi
 
