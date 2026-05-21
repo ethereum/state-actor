@@ -243,10 +243,10 @@ func TestE2ESuite(t *testing.T) {
 		Verbose:      true,
 		Genesis:      g,
 	}
-	// Spec-driven pre-alloc via examples/spec-ci-baseline.yaml exercises
+	// Spec-driven pre-alloc via examples/full-matrix-spec-feature.yaml exercises
 	// every schema variant (including the spamoor sender). The Spec is
 	// also passed to RunSuitePhases for the Phase 4 erc20 oracle.
-	specDoc, preAlloc := e2e.LoadCISpec(t, "../../examples/spec-ci-baseline.yaml", "reth")
+	specDoc, preAlloc := e2e.LoadCISpec(t, "../../examples/full-matrix-spec-feature.yaml", "reth")
 	cfg.PreAlloc = preAlloc
 	// Deploy EIP-4788/2935/7002/7251 system contracts at their canonical
 	// addresses — required for the cross-client genesis-root invariant.

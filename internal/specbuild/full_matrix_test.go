@@ -7,18 +7,19 @@ import (
 	"github.com/nerolation/state-actor/internal/templates"
 )
 
-// TestBuildComprehensive parses + validates + builds
-// examples/spec-ci-comprehensive.yaml against every supported client
+// TestBuildFullMatrix parses + validates + builds
+// examples/full-matrix-spec-feature.yaml against every supported client
 // calibration. Pins the entity count so a future change to either the
 // YAML or the templates surfaces here before it reaches CI's e2e jobs.
 //
-// The comprehensive spec is the canonical fixture for the bench↔CI
-// parity gate: same YAML, same seed, same sizer → byte-identical
-// PreAlloc across all four MPT clients. .github/scripts/verify-spec.sh
-// walks every entity below and asserts balance/nonce/code/template
-// output via cast.
-func TestBuildComprehensive(t *testing.T) {
-	s, err := spec.ParseFile("../../examples/spec-ci-comprehensive.yaml")
+// The full-matrix YAML is the canonical fixture every per-client e2e
+// suite loads (via internal/e2e_testing.LoadCISpec): same YAML, same
+// seed, same sizer → byte-identical PreAlloc across all four MPT
+// clients. The cross-client genesis-root invariant job depends on
+// that byte-identity, so any drift here surfaces in the unit-test
+// CI job before reaching the per-client e2e legs.
+func TestBuildFullMatrix(t *testing.T) {
+	s, err := spec.ParseFile("../../examples/full-matrix-spec-feature.yaml")
 	if err != nil {
 		t.Fatalf("ParseFile: %v", err)
 	}

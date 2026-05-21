@@ -198,6 +198,27 @@ func EthBlockNumber(url string) (uint64, error) {
 	return n.Uint64(), nil
 }
 
+// EthChainID calls eth_chainId and returns the chain ID as uint64.
+func EthChainID(url string) (uint64, error) {
+	raw, err := Call(url, "eth_chainId", nil)
+	if err != nil {
+		return 0, err
+	}
+	var hexStr string
+	if err := json.Unmarshal(raw, &hexStr); err != nil {
+		return 0, fmt.Errorf("unmarshal chainId: %w (raw: %s)", err, raw)
+	}
+	hexStr = strings.TrimPrefix(hexStr, "0x")
+	if hexStr == "" {
+		return 0, fmt.Errorf("eth_chainId returned empty hex (after 0x trim)")
+	}
+	n := new(big.Int)
+	if _, ok := n.SetString(hexStr, 16); !ok {
+		return 0, fmt.Errorf("parse hex chainId %q", hexStr)
+	}
+	return n.Uint64(), nil
+}
+
 // EthGetTransactionCount calls eth_getTransactionCount(addr, block) and
 // returns the nonce as uint64. Used by e2e suite tests to verify
 // spamoor's sender wallet actually sent txs (nonce > 0 → real activity).

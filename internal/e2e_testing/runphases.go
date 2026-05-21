@@ -109,17 +109,30 @@ func RunSuitePhases(t *testing.T, cfg SuitePhasesCfg) {
 	}
 
 	// ---- Phase 4: oracle re-query at "0x0" ----
-	// 4a — entitygen synthetic entities (RNG-driven).
+	// 4a — chain-level invariants: chainId + canonical syscontracts.
+	// Cheap fail-fast for misconfigured genesis (besu chainspec drift,
+	// missing syscontract injection, etc.) before walking entities.
+	if cfg.GeneratorConfig != nil && cfg.GeneratorConfig.Genesis != nil &&
+		cfg.GeneratorConfig.Genesis.Config != nil &&
+		cfg.GeneratorConfig.Genesis.Config.ChainID != nil {
+		if !CheckChainID(t, cfg.RPCURL, cfg.GeneratorConfig.Genesis.Config.ChainID.Uint64()) {
+			t.Fatalf("genesis chain-id mismatch; aborting before spamoor phase")
+		}
+	}
+	if !CheckCanonicalSyscontracts(t, cfg.RPCURL, "0x0") {
+		t.Fatalf("canonical syscontracts missing at genesis; aborting before spamoor phase")
+	}
+	// 4b — entitygen synthetic entities (RNG-driven).
 	if !CheckEntities(t, cfg.RPCURL, cfg.EOAs, cfg.Contracts, "0x0") {
 		t.Fatalf("genesis-state oracle re-query (entitygen) failed; aborting before spamoor phase")
 	}
-	// 4b — InjectAddresses (eth_getBalance > 0) + GenesisAccounts
-	// (eth_getCode matches). Catches writer-level drops of either
-	// field — see CheckInjections docstring for the bug class.
+	// 4c — InjectAddresses (eth_getBalance > 0) + GenesisAccounts
+	// (eth_getCode matches, explicit non-zero nonces match). Catches
+	// writer-level drops of any field — see CheckInjections docstring.
 	if !CheckInjections(t, cfg.RPCURL, cfg.GeneratorConfig, "0x0") {
 		t.Fatalf("genesis-state oracle re-query (injections + alloc) failed; aborting before spamoor phase")
 	}
-	// 4c — ERC-20 template oracle: name/symbol/decimals/totalSupply +
+	// 4d — ERC-20 template oracle: name/symbol/decimals/totalSupply +
 	// every explicit owner/allowance + sampled random ones. Verifies
 	// the vendored OZ v5 bytecode is RPC-callable and every spec'd
 	// field landed on every client.
@@ -192,6 +205,15 @@ func RunSuitePhases(t *testing.T, cfg SuitePhasesCfg) {
 	// chain — closes the "txs landed in blocks but EVM silently dropped
 	// the work" hole.
 	AssertSpamoorOutputs(t, cfg.RPCURL)
+
+	// ---- Phase 6b: chain-level post-spamoor invariants ----
+	// Cheap supplementary gates: block-number > 0 (chain advanced) and
+	// EIP-4788 BEACON_ROOTS ring buffer non-zero at the latest slot
+	// (the pre-exec actually ran). Both surface client-side regressions
+	// in block production / system-call wiring that the per-entity
+	// oracle wouldn't catch.
+	CheckChainAdvanced(t, cfg.RPCURL)
+	CheckBeaconRootsRingBuffer(t, cfg.RPCURL)
 
 	// ---- Phase 7: write final result JSON ----
 	if err := WriteResult(result); err != nil {

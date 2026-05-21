@@ -17,8 +17,7 @@ import (
 // without the other surface immediately.
 func TestCISpecMatchesSpamoorSender(t *testing.T) {
 	for _, yamlPath := range []string{
-		"../../examples/spec-ci-baseline.yaml",
-		"../../examples/spec-ci-comprehensive.yaml",
+		"../../examples/full-matrix-spec-feature.yaml",
 	} {
 		t.Run(yamlPath, func(t *testing.T) {
 			preAlloc := LoadCISpecPreAlloc(t, yamlPath, "geth")

@@ -42,8 +42,8 @@ const CISpecSeed int64 = 0
 // TestCISpecMatchesSpamoorSender (in spec_setup_test.go) fails.
 //
 // yamlPath is relative to the calling test's cwd — typically
-// "../../examples/spec-ci-baseline.yaml" since per-client tests run
-// from `client/<name>/`.
+// "../../examples/full-matrix-spec-feature.yaml" since per-client
+// tests run from `client/<name>/`.
 func LoadCISpecPreAlloc(t *testing.T, yamlPath, clientName string) []templates.PreAllocEntity {
 	t.Helper()
 	_, preAlloc := LoadCISpec(t, yamlPath, clientName)

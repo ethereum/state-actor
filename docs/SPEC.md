@@ -158,7 +158,7 @@ Same YAML + same `--seed` produces:
 
 **CI coverage**: every per-client end-to-end suite — geth, besu,
 nethermind, reth — drives its `Config.PreAlloc` from
-`examples/spec-ci-baseline.yaml` via the shared helper
+`examples/full-matrix-spec-feature.yaml` via the shared helper
 `internal/e2e_testing.LoadCISpecPreAlloc`. The same YAML on all four
 clients produces identical state via `sizecal.NewFixed(64)`
 (neutralizing per-client calibration divergence). The existing
@@ -177,6 +177,7 @@ asserting RPC-returned values match the spec's intent.
   sizes + five 7702 EOAs.
 - `examples/spec-eoa-bloat.yaml` — three EIP-7702 EOAs with bloated
   storage (2 GB / 5 GB / 10 GB target).
-- `examples/spec-ci-baseline.yaml` — canonical CI fixture exercising
-  every schema feature. Loaded by each per-client `TestE2ESuite` and
-  validated by the `cross-client-genesis-root` aggregator.
+- `examples/full-matrix-spec-feature.yaml` — canonical CI fixture
+  exercising every schema feature. Loaded by each per-client
+  `TestE2ESuite` and validated by the `cross-client-genesis-root`
+  aggregator.
