@@ -41,17 +41,17 @@ done
 if [ ! -s "$SPEC" ]; then
     echo "=== generating spec → $SPEC (seed=4242) ==="
     cd $REPO
-    go run ./scripts/gen-bloatnet-spec -out $SPEC -seed 4242
+    go run ./.github/scripts/gen-bloatnet-spec -out $SPEC -seed 4242
 fi
 echo "=== spec: $(ls -lh $SPEC | awk '{print $5}') ==="
 
 # ── Phase 2.5: build the engine-driver binary ─────────────────────────
 ENGINE_DRIVER=$WORK/bin/engine-driver
 mkdir -p $WORK/bin
-if [ ! -x "$ENGINE_DRIVER" ] || [ "$REPO/scripts/engine-driver/main.go" -nt "$ENGINE_DRIVER" ]; then
+if [ ! -x "$ENGINE_DRIVER" ] || [ "$REPO/.github/scripts/engine-driver/main.go" -nt "$ENGINE_DRIVER" ]; then
     echo "=== building engine-driver ==="
     cd $REPO
-    go build -o $ENGINE_DRIVER ./scripts/engine-driver/
+    go build -o $ENGINE_DRIVER ./.github/scripts/engine-driver/
 fi
 
 # ── Phase 2.6: per-run engine-API JWT secret ──────────────────────────
