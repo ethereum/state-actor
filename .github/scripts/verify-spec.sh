@@ -248,7 +248,12 @@ check_entity() {
     # have non-zero balances even when the entity itself doesn't declare
     # one — and approximate_size_bytes-only entities get synthesized
     # storage, not balance).
-    if [[ -n "$balance_raw" ]]; then
+    #
+    # Exception (MODE=post): the spamoor-sender drains its balance on gas
+    # + ERC-20 deposits while spamoor is running. Skip the exact-equality
+    # check for that entity in post mode — the nonce > 0 assertion below
+    # is the better post-spamoor sanity check.
+    if [[ -n "$balance_raw" ]] && ! { [[ "$MODE" == "post" && "$name" == "spamoor-sender" ]]; }; then
         local want got
         want=$(spec_balance_dec "$balance_raw")
         got=$(rpc_balance "$addr")
