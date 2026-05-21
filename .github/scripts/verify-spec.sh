@@ -266,7 +266,11 @@ check_entity() {
     # Nonce: explicit-only assertion. State-actor floors ERC-20 to ≥1
     # (templates/erc20.go:203-206), so when the spec sets nonce on an
     # erc20 entity, the assertion still holds because the floor is 1.
-    if [[ -n "$nonce_want" ]]; then
+    #
+    # Exception (MODE=post): same as the balance skip above — spamoor
+    # advances the sender's nonce per tx. check_spamoor_sender_nonce
+    # below covers the nonce > 0 invariant for post mode.
+    if [[ -n "$nonce_want" ]] && ! { [[ "$MODE" == "post" && "$name" == "spamoor-sender" ]]; }; then
         local got
         got=$(rpc_nonce "$addr")
         if [[ "$got" != "$nonce_want" ]]; then
