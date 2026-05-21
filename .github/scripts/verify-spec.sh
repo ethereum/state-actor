@@ -278,9 +278,9 @@ check_entity() {
         local got
         got=$(rpc_code "$addr")
         if [[ -z "$got" || "$got" == "0x" ]]; then
-            fail "$label erc20 template: code empty"
+            fail "$label erc20 template: code empty (addr=$addr)"
         fi
-        log_pass "$label erc20 code non-empty (${#got} chars)"
+        log_pass "$label erc20 code non-empty (${#got} chars, addr=$addr)"
     fi
 
     # ERC-20 template-specific assertions: name/symbol/decimals/totalSupply.
