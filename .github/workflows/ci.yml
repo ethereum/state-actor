@@ -247,11 +247,16 @@ jobs:
           # client writer + the geth daemon both expect the canonical
           # <datadir>/geth/chaindata layout (see client/geth/e2e_test.go:89).
           mkdir -p /tmp/parity-data/geth/chaindata
+          # --accounts=0 --contracts=0 suppresses the synthetic-fill loop
+          # so ONLY the spec entities + canonical syscontracts land in
+          # the datadir. Matches the bench scripts' --spec invocations.
           /tmp/state-actor \
             --client=geth \
             --db=/tmp/parity-data/geth/chaindata \
             --spec=examples/spec-ci-comprehensive.yaml \
             --seed=0 \
+            --accounts=0 \
+            --contracts=0 \
             --fork=osaka \
             --chain-id=1337 \
             --gas-limit=60000000
