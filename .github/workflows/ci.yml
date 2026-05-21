@@ -243,10 +243,13 @@ jobs:
         run: |
           set -euo pipefail
           go build -o /tmp/state-actor .
-          mkdir -p /tmp/parity-data
+          # state-actor's --db is passed verbatim as DBPath; the geth
+          # client writer + the geth daemon both expect the canonical
+          # <datadir>/geth/chaindata layout (see client/geth/e2e_test.go:89).
+          mkdir -p /tmp/parity-data/geth/chaindata
           /tmp/state-actor \
             --client=geth \
-            --db=/tmp/parity-data \
+            --db=/tmp/parity-data/geth/chaindata \
             --spec=examples/spec-ci-comprehensive.yaml \
             --seed=0 \
             --fork=osaka \
@@ -256,12 +259,13 @@ jobs:
       - name: Boot geth in dev mode
         run: |
           set -euo pipefail
+          # --datadir points at /data — geth reads /data/geth/chaindata.
           docker run -d --name parity-geth \
             -v /tmp/parity-data:/data \
             -p 8545:8545 \
             ethereum/client-go:v1.17.2 \
             --dev --dev.period=1 --dev.gaslimit=60000000 \
-            --datadir=/data/geth --db.engine=pebble \
+            --datadir=/data --db.engine=pebble \
             --networkid=1337 \
             --http --http.addr=0.0.0.0 --http.port=8545 \
             --http.api=eth,net,web3,txpool,debug
