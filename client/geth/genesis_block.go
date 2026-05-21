@@ -57,9 +57,8 @@ func (pw *prefixWriter) Delete(key []byte) error {
 // modes. The marker we write here (SnapshotRecoveryNumber=0) signals to
 // geth's pathdb-recovery path that there is no in-flight snapshot
 // generation to resume — harmless in full mode, defensible at an
-// archive anchor. The substantive --archive plumbing for geth lives in
-// scripts/run-bloatnet.sh, which propagates the flag to geth's docker
-// boot as --gcmode=archive.
+// archive anchor. The substantive --archive plumbing requires the
+// node operator to pass --gcmode=archive at geth boot.
 func WritePathDBMetadata(w ethdb.KeyValueWriter, stateRoot common.Hash, binaryTrie bool, archive bool) error {
 	pathdbWriter := w
 	if binaryTrie {
