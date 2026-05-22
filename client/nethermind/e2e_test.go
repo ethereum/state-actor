@@ -124,12 +124,13 @@ func TestE2ESuite(t *testing.T) {
 		t.Fatalf("PlanForBudget: %v", err)
 	}
 	cfg := generator.Config{
-		DBPath:   dd.HostPath,
-		AutoFill: plan,
-		Seed:     seed,
-		Verbose:  true,
-		TrieMode: generator.TrieModeMPT,
-		Genesis:  g,
+		DBPath:     dd.HostPath,
+		AutoFill:   plan,
+		Seed:       seed,
+		Verbose:    true,
+		TrieMode:   generator.TrieModeMPT,
+		TargetSize: e2eBudget,
+		Genesis:    g,
 	}
 	// Spec-driven pre-alloc via examples/full-matrix-spec-feature.yaml exercises
 	// every schema variant (including the spamoor sender). The Spec is
@@ -213,5 +214,6 @@ func TestE2ESuite(t *testing.T) {
 		Spec:                specDoc,
 		SpecSeed:            e2e.CISpecSeed,
 		SpamoorSlotDuration: 250 * time.Millisecond,
+		ExpectedDBBytes:     e2eBudget,
 	})
 }

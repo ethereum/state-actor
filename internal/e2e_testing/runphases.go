@@ -68,6 +68,23 @@ type SuitePhasesCfg struct {
 	// set by nethermind because NethDev doesn't produce blocks on a
 	// post-Prague chain with system contracts (issue #56).
 	SkipBlockProduction bool
+
+	// ExpectedDBBytes drives the Phase 4e DB-size check. When non-zero,
+	// RunSuitePhases walks GeneratorConfig.DBPath and asserts the total
+	// landed within DBSizeTolerancePct of this target. Zero skips the
+	// check entirely (suitable for tests that don't care about absolute
+	// on-disk footprint — most e2e suites SHOULD care).
+	ExpectedDBBytes uint64
+
+	// DBSizeTolerancePct is the relative band CheckDBSize accepts around
+	// ExpectedDBBytes. Zero → defaults to 0.30 (±30 %). The looseness
+	// accommodates per-client overhead differences: geth-MPT uses a
+	// projection-based stop (under-counts Pebble compaction overhead),
+	// while reth samples actual dirSize. The default tolerance is wide
+	// enough that all 4 clients land green for the same target but
+	// tight enough to catch a writer that ignores --target-size
+	// entirely (DB ≥ 2× target would still fail).
+	DBSizeTolerancePct float64
 }
 
 // RunSuitePhases executes phases 3-7 of the per-client e2e suite. Each
@@ -144,6 +161,20 @@ func RunSuitePhases(t *testing.T, cfg SuitePhasesCfg) {
 	if cfg.Spec != nil {
 		if !CheckERC20Templates(t, cfg.RPCURL, cfg.Spec, cfg.SpecSeed, "0x0") {
 			t.Fatalf("genesis-state oracle re-query (erc20 templates) failed; aborting before spamoor phase")
+		}
+	}
+	// 4e — DB-size check: confirm the generated state landed within
+	// tolerance of the auto-fill target. Catches regressions where a
+	// writer drops entities silently (the per-entity oracle checks
+	// already cover spec entities, but auto-fill bulk can drift without
+	// surfacing here otherwise).
+	if cfg.ExpectedDBBytes > 0 && cfg.GeneratorConfig != nil && cfg.GeneratorConfig.DBPath != "" {
+		tolerance := cfg.DBSizeTolerancePct
+		if tolerance == 0 {
+			tolerance = 0.30
+		}
+		if !CheckDBSize(t, cfg.GeneratorConfig.DBPath, cfg.ExpectedDBBytes, tolerance) {
+			t.Fatalf("DB size check failed; aborting before spamoor phase")
 		}
 	}
 

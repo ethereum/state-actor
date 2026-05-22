@@ -90,12 +90,13 @@ func TestE2ESuite(t *testing.T) {
 	// it. We mount the parent into the container at /data.
 	datadir := t.TempDir()
 	cfg := generator.Config{
-		DBPath:   filepath.Join(datadir, "geth", "chaindata"),
-		AutoFill: plan,
-		Seed:     seed,
-		Verbose:  true,
-		TrieMode: generator.TrieModeMPT,
-		Genesis:  g,
+		DBPath:     filepath.Join(datadir, "geth", "chaindata"),
+		AutoFill:   plan,
+		Seed:       seed,
+		Verbose:    true,
+		TrieMode:   generator.TrieModeMPT,
+		TargetSize: e2eBudget,
+		Genesis:    g,
 	}
 	// Spec-driven pre-alloc via examples/full-matrix-spec-feature.yaml exercises
 	// every schema variant (including the spamoor sender). LoadCISpec
@@ -185,5 +186,6 @@ func TestE2ESuite(t *testing.T) {
 		GeneratorConfig: &cfg,
 		Spec:            specDoc,
 		SpecSeed:        e2e.CISpecSeed,
+		ExpectedDBBytes: e2eBudget,
 	})
 }
