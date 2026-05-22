@@ -1,7 +1,7 @@
 package e2e_testing
 
 import (
-	"encoding/binary"
+	"math/big"
 	"strconv"
 	"strings"
 	"testing"
@@ -83,14 +83,19 @@ func CheckChainAdvanced(t *testing.T, rpcURL string) bool {
 	return true
 }
 
-// CheckBeaconRootsRingBuffer asserts the EIP-4788 ring buffer slot at
+// CheckBeaconRootsRingBuffer asserts the EIP-4788 ring-buffer slot at
 // (latest.timestamp % 8191) is non-zero — proves the BeaconRoots
 // pre-execution actually wrote on the latest block. Post-spamoor only.
 //
-// The slot index is `timestamp % BEACON_ROOTS_HISTORY_BUFFER_LENGTH`
-// (8191 per EIP-4788). The ring buffer holds a non-zero hash per slot
-// after the consensus client (or `--dev` mode) writes the parent beacon
-// block root for that timestamp.
+// EIP-4788's BeaconRoots contract writes TWO slots per system call:
+//   - slot `ts % 8191`        ← the block timestamp itself
+//   - slot `(ts % 8191) + 8191` ← the parent beacon block root
+//
+// We read the FIRST slot (timestamp). In `--dev` mode there is no real
+// consensus client, so the parent-beacon-block-root slot is often a
+// literal zero hash — reading it would give false negatives. The
+// timestamp slot is non-zero whenever block.timestamp > 0, which is
+// the actual "the pre-exec ran" signal we want.
 func CheckBeaconRootsRingBuffer(t *testing.T, rpcURL string) bool {
 	t.Helper()
 	const beaconRootsBufferLen uint64 = 8191
@@ -100,8 +105,12 @@ func CheckBeaconRootsRingBuffer(t *testing.T, rpcURL string) bool {
 		return false
 	}
 	tsHex := strings.TrimPrefix(blk.Timestamp, "0x")
-	if tsHex == "" {
-		t.Errorf("BEACON_ROOTS: latest block timestamp is zero/empty")
+	// "" / "0" both produce ts=0 → slot=0, which is meaningless. Reject
+	// both with a message that disambiguates "missing field" from
+	// "block has literal zero timestamp."
+	if tsHex == "" || tsHex == "0" {
+		t.Errorf("BEACON_ROOTS: latest block timestamp is missing or literal zero (raw=%q) — chain may not have produced a non-genesis block",
+			blk.Timestamp)
 		return false
 	}
 	ts, err := strconv.ParseUint(tsHex, 16, 64)
@@ -110,8 +119,7 @@ func CheckBeaconRootsRingBuffer(t *testing.T, rpcURL string) bool {
 		return false
 	}
 	slot := ts % beaconRootsBufferLen
-	var slotHash common.Hash
-	binary.BigEndian.PutUint64(slotHash[24:], slot)
+	slotHash := common.BigToHash(new(big.Int).SetUint64(slot))
 	val, err := rpcprobe.EthGetStorageAt(rpcURL, params.BeaconRootsAddress, slotHash, "latest")
 	if err != nil {
 		t.Errorf("BEACON_ROOTS eth_getStorageAt slot %d: %v", slot, err)

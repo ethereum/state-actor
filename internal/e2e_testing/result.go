@@ -42,6 +42,16 @@ type SuiteResult struct {
 	// "latest". Non-zero proves spamoor actually sent transactions.
 	// Set by the suite test.
 	PostSpamoorDeployerNonce uint64 `json:"post_spamoor_deployer_nonce,omitempty"`
+
+	// PostSpamoorChainAdvanced — true if eth_blockNumber > 0 after spamoor.
+	// Failure here is recorded as t.Errorf, but the aggregator-visible
+	// signal lives in this field so a pruned test-log doesn't hide it.
+	PostSpamoorChainAdvanced bool `json:"post_spamoor_chain_advanced"`
+
+	// PostSpamoorBeaconRootsOK — true if the EIP-4788 ring-buffer slot at
+	// (latest.timestamp %% 8191) is non-zero (proves the pre-execution
+	// actually ran). Same aggregator-visibility rationale as above.
+	PostSpamoorBeaconRootsOK bool `json:"post_spamoor_beacon_roots_ok"`
 }
 
 // WriteResult marshals r to $RESULT_PATH. If RESULT_PATH is unset,

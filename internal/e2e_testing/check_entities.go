@@ -96,7 +96,12 @@ func CheckInjections(t *testing.T, rpcURL string, cfg *generator.Config, blockTa
 		if acct == nil {
 			continue
 		}
-		if acct.Balance != nil && !acct.Balance.IsZero() {
+		// Balance check covers EVERY entity, zero-balance included. The
+		// previous skip-on-zero left YAML entries like `zero-balance-eoa`
+		// (entity #20) and the canonical syscontracts (which all have
+		// zero balance) unverified — a writer bug that wrote balance=N
+		// for a speced balance=0 entry would slip through silently.
+		if acct.Balance != nil {
 			got, err := rpcprobe.EthGetBalance(rpcURL, addr, blockTag)
 			if err != nil {
 				t.Errorf("[%s] alloc eth_getBalance %s: %v", blockTag, addr.Hex(), err)

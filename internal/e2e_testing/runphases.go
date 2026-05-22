@@ -112,12 +112,17 @@ func RunSuitePhases(t *testing.T, cfg SuitePhasesCfg) {
 	// 4a — chain-level invariants: chainId + canonical syscontracts.
 	// Cheap fail-fast for misconfigured genesis (besu chainspec drift,
 	// missing syscontract injection, etc.) before walking entities.
-	if cfg.GeneratorConfig != nil && cfg.GeneratorConfig.Genesis != nil &&
-		cfg.GeneratorConfig.Genesis.Config != nil &&
-		cfg.GeneratorConfig.Genesis.Config.ChainID != nil {
-		if !CheckChainID(t, cfg.RPCURL, cfg.GeneratorConfig.Genesis.Config.ChainID.Uint64()) {
-			t.Fatalf("genesis chain-id mismatch; aborting before spamoor phase")
-		}
+	//
+	// chainIDFromCfg returns 0 if any link in the nil-guard chain is
+	// missing — we treat that as a caller bug (per-client test forgot
+	// to populate Genesis.Config) instead of silently skipping the
+	// check, since the chainspec-drift class of bug only surfaces here.
+	chainID := chainIDFromCfg(cfg.GeneratorConfig)
+	if chainID == 0 {
+		t.Fatalf("cannot verify eth_chainId: cfg.GeneratorConfig.Genesis.Config.ChainID is nil; fix the per-client test setup")
+	}
+	if !CheckChainID(t, cfg.RPCURL, chainID) {
+		t.Fatalf("genesis chain-id mismatch; aborting before spamoor phase")
 	}
 	if !CheckCanonicalSyscontracts(t, cfg.RPCURL, "0x0") {
 		t.Fatalf("canonical syscontracts missing at genesis; aborting before spamoor phase")
@@ -212,11 +217,29 @@ func RunSuitePhases(t *testing.T, cfg SuitePhasesCfg) {
 	// (the pre-exec actually ran). Both surface client-side regressions
 	// in block production / system-call wiring that the per-entity
 	// oracle wouldn't catch.
-	CheckChainAdvanced(t, cfg.RPCURL)
-	CheckBeaconRootsRingBuffer(t, cfg.RPCURL)
+	//
+	// Bool returns land on SuiteResult so a pruned test-log doesn't hide
+	// failures from the cross-client aggregator. Short-circuit BEACON_ROOTS
+	// when chain didn't advance — calling BlockByNumber("latest") against
+	// a stuck-at-zero chain produces a second, redundant error line.
+	result.PostSpamoorChainAdvanced = CheckChainAdvanced(t, cfg.RPCURL)
+	if result.PostSpamoorChainAdvanced {
+		result.PostSpamoorBeaconRootsOK = CheckBeaconRootsRingBuffer(t, cfg.RPCURL)
+	}
 
 	// ---- Phase 7: write final result JSON ----
 	if err := WriteResult(result); err != nil {
 		t.Fatalf("WriteResult (post-spamoor): %v", err)
 	}
+}
+
+// chainIDFromCfg walks cfg.Genesis.Config.ChainID and returns 0 on any
+// nil link. Callers should treat 0 as "missing data — fix the caller",
+// not as a valid chain-id (every supported chain-id is ≥ 1).
+func chainIDFromCfg(cfg *generator.Config) uint64 {
+	if cfg == nil || cfg.Genesis == nil ||
+		cfg.Genesis.Config == nil || cfg.Genesis.Config.ChainID == nil {
+		return 0
+	}
+	return cfg.Genesis.Config.ChainID.Uint64()
 }
