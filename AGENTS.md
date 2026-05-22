@@ -8,8 +8,9 @@ The agent-facing canonical doc is **[`docs/SKILL.md`](docs/SKILL.md)** — read 
 > The canonical reference for everything `--spec` can express is
 > [`examples/full-matrix-spec-feature.yaml`](examples/full-matrix-spec-feature.yaml).
 > CI keeps it correct: `TestBuildFullMatrix` pins the 22-entity count and
-> cross-client `PreAlloc` identity; every per-client `TestE2ESuite` loads
-> it; the cross-client genesis-root invariant job gates merges. If you
+> the cross-client `PreAlloc` count equality (byte-identity is enforced
+> downstream by the cross-client-genesis-root aggregator job); every
+> per-client `TestE2ESuite` loads it. If you
 > need to know what shape a spec can take, read that file first — it is
 > the syntax reference. [`docs/SPEC.md`](docs/SPEC.md) is the schema
 > reference; read them together.

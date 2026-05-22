@@ -43,7 +43,7 @@ var (
 	benchmark    = flag.Bool("benchmark", false, "Run in benchmark mode (print detailed stats)")
 	binaryTrie   = flag.Bool("binary-trie", false, "Generate state for binary trie mode (EIP-7864)")
 
-	targetSize = flag.String("target-size", "", "Target total DB size on disk (e.g. '5GB', '500MB'). Stop condition only — set --accounts/--contracts/--min-slots/--max-slots explicitly. Honored by geth, besu, nethermind, and reth.")
+	targetSize = flag.String("target-size", "", "Upper bound on the projected trie footprint of the whole DB (e.g. '5GB', '500MB'). Spec entities and synthetic fill both count toward it: synthetic fill stops at the cap, and if the spec alone exceeds the budget internal/specbuild truncates the entity list to the longest prefix that fits and emits a stderr warning. Omit to disable. Honored by geth, besu, nethermind, and reth.")
 
 	fork      = flag.String("fork", "", "Hard fork active at genesis. Empty (default) resolves to the latest fork the chosen --client can write. Use --list-forks to see all values.")
 	listForks = flag.Bool("list-forks", false, "Print the list of accepted --fork values and exit.")

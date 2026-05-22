@@ -34,9 +34,9 @@ Everything else has a sane default. Run `state-actor --help` for the full list (
 
 The CI guarantees that hold this file as the canonical reference:
 
-- [`internal/specbuild/full_matrix_test.go`](../internal/specbuild/full_matrix_test.go) (`TestBuildFullMatrix`) pins the entity count at 22 and asserts byte-identical `PreAllocEntity` slices across all four clients. The unit-level drift gate.
+- [`internal/specbuild/full_matrix_test.go`](../internal/specbuild/full_matrix_test.go) (`TestBuildFullMatrix`) pins the entity count at 22 and asserts the cross-client `PreAlloc` count equality. The unit-level drift gate — byte-identity is enforced downstream by the cross-client-genesis-root aggregator job.
 - [`internal/e2e_testing/spec_setup.go`](../internal/e2e_testing/spec_setup.go) (`LoadCISpec`) loads the fixture with `seed=0` + `sizecal.NewFixed(64)` so every client sees the same input.
-- Per-client [`client/<c>/e2e_test.go`](../client/) `TestE2ESuite` boots a real client against state-actor's output, runs spamoor, and verifies every entity via the Go oracle.
+- Per-client `TestE2ESuite` (in [`client/geth/e2e_test.go`](../client/geth/e2e_test.go), [`client/besu/e2e_test.go`](../client/besu/e2e_test.go), [`client/nethermind/e2e_test.go`](../client/nethermind/e2e_test.go), and [`client/reth/oracle_test.go`](../client/reth/oracle_test.go) for reth) boots a real client against state-actor's output, runs spamoor, and verifies every entity via the Go oracle.
 - The `cross-client · genesis state-root invariant` aggregator job in [`.github/workflows/ci.yml`](../.github/workflows/ci.yml) refuses to merge a PR whose four clients produce different genesis roots from this fixture.
 
 The fixture is organised into six labelled sections; each one pins a feature cluster:
@@ -65,17 +65,19 @@ The fixture is organised into six labelled sections; each one pins a feature clu
 | ERC-20 name-derived | 3 | ERC-20 flavor coverage |
 | ERC-20 position-derived | 4 | ERC-20 flavor coverage |
 | ERC-20 skeleton (no holders) | 5 | ERC-20 flavor coverage |
+| ERC-20 with explicit `nonce` override | 6 | ERC-20 flavor coverage |
 | ERC-20 with `approximate_size_bytes` (template + bloat) | 7 | ERC-20 flavor coverage |
 | ERC-20 with explicit `owners` and `allowances` | 8 | Explicit-owners + allowances |
 | ERC-20 explicit + bulk combined | 9 | Explicit-owners + allowances |
 | Raw bytecode contract | 10, 11, 12 | Raw bytecode flavors |
+| Plain EOA with omitted-nonce default (0) | 22 | Plain EOA flavors |
 
 ### How to adapt the fixture to a new spec
 
 1. **Find the entity that matches your intent** using the index above; jump to that entity in [`examples/full-matrix-spec-feature.yaml`](../examples/full-matrix-spec-feature.yaml).
 2. **Copy the entity block** into your new YAML.
 3. **Edit the load-bearing fields** for your case — addresses, balances, template parameters, `approximate_size_bytes`. The field-by-field cheatsheet in [`examples/README.md`](../examples/README.md#field-by-field-cheatsheet) lists exactly which fields control what and what the constraints are (e.g. `decimals` must be 18 for the `erc20` template).
-4. **Address mode**: explicit (`address:` is set), name-derived (`name:` only), or position-derived (neither). The mode determines stability of the resulting address; see [`SPEC.md` § Address resolution](SPEC.md) for the algorithm.
+4. **Address mode**: explicit (`address:` is set), name-derived (`name:` only), or position-derived (neither). The mode determines stability of the resulting address; see [`SPEC.md` § Address resolution](SPEC.md#address-resolution-three-deterministic-modes) for the algorithm.
 5. **Run with `--accounts=0 --contracts=0`** to suppress synthetic fill — otherwise random EOAs and contracts may collide with spec-derived addresses.
 6. **Verify the entities landed** at the addresses you expect: `cast code 0x<derived-address>` returns the bytecode (contracts) or `0x` plus the delegation marker (7702 EOAs); `cast balance 0x<address>` returns the spec's balance.
 
@@ -125,7 +127,7 @@ cast code    0x<a-known-spec-contract> --rpc-url ... # → the spec's bytecode
 
 ### Reproduce a CI failure locally
 
-CI uses `examples/full-matrix-spec-feature.yaml`, `--seed=42`, `--accounts=0`, `--contracts=0` against each client's `TestE2ESuite`. Re-run:
+CI loads `examples/full-matrix-spec-feature.yaml` on top of `--seed=42 --accounts=100 --contracts=15000` (mirrored across all four `TestE2ESuite` constants). The synthetic-fill numbers add a ~100 MB warmup before spamoor; the spec entities are written on top of that. Re-run:
 
 ```bash
 go test -run TestE2ESuite ./client/<client>/... -v

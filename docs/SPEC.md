@@ -78,41 +78,21 @@ balance: "0xde0b6b3a7640000"          # 1 ETH hex
 ### `approximate_size_bytes`
 
 Target on-disk byte budget for this entity's storage. Resolved to a
-synthetic slot count via a per-client calibration factor
-(see `internal/sizecal/factors.json`). Slots are populated with
-deterministic `(key, value)` pairs derived from `(seed, address)`.
+synthetic slot count via the single global trie-only `bytesPerSlot`
+constant in [`internal/sizecal/factors.go`](../internal/sizecal/factors.go)
+(identical across clients by design — required by the cross-client
+genesis-root invariance gate). Slots are populated with deterministic
+`(key, value)` pairs derived from `(seed, address)`.
 
 - **RAM**: spec storage flows through a per-entity streaming pipeline
   (`internal/streamingtrie` + `internal/streamsort`). Total writer RAM
   stays at ~2 GB peak (a tuned Pebble MemTable per active entity)
-  regardless of slot count, so 50 GB ERC-20s and 50 KB ones share the
-  same code path.
+  regardless of slot count.
 - **Disk**: per-entity bound is the temp-sort working set (`slot_count
   × 96 B` in Pebble) colocated with the output datadir; freed when the
   entity finishes writing.
-- **Accuracy**: ±25% via per-client calibration factors
-  (`internal/sizecal/factors.json`).
-
-### Sizing your generation
-
-Translating a total-byte budget into `--accounts` / `--contracts` /
-`--min-slots` / `--max-slots` is mostly arithmetic. Run a calibration
-pass (`--accounts=100000 --contracts=10000 --benchmark --verbose`) to
-get the per-entry sizes the client actually produces, then divide:
-
-| Category | Bytes per entry (approximate) |
-|---|---|
-| EOA account | ~45 B |
-| Contract account | ~75 B |
-| Storage slot | ~98 B |
-| Code entry | ~1.5 × `--code-size` |
-
-Pick a split (e.g. 20 % accounts / 70 % storage / 10 % code) and derive
-the four parameters from the per-entry sizes. For an explicit ERC-20
-or 7702 EOA whose storage you control via `approximate_size_bytes`,
-that share is exempt from the synthetic-fill arithmetic — the
-calibrated `sizecal` factor handles the conversion to slots
-internally.
+- **Accuracy**: ±25% versus the realised on-disk size, set by the
+  global `bytesPerSlot` constant.
 
 ## Templates
 

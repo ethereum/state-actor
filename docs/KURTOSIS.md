@@ -20,12 +20,12 @@ state-actor --client=geth \
 tar -czf bloated-state.tar.gz -C ./bloated-chaindata .
 ```
 
-In the participant config, mount the unpacked tree and switch geth to Pebble:
+In the participant config, mount the unpacked tree and switch geth to Pebble. Pin the image to a tested tag (`v1.17.2` is what state-actor's own e2e suite uses; `latest` may drift):
 
 ```yaml
 participants:
   - el_type: geth
-    el_image: ethereum/client-go:latest
+    el_image: ethereum/client-go:v1.17.2
     el_extra_params:
       - --db.engine=pebble
     el_extra_env_vars:
@@ -38,37 +38,43 @@ State Actor wrote the genesis block as part of the database, so no `geth init` r
 
 For reth / besu / nethermind participants, the equivalent mounts plus boot flags are in [`RUNBOOK.md`](RUNBOOK.md). The key difference is that `--db.engine=pebble` is geth-specific; reth boots from `--chain=<chainspec.json>`, besu from `--genesis-file=<besu-chainspec.json>`, nethermind from a `--config=boot.cfg`.
 
-## Method 2 — Starlark module
+## Method 2 — Starlark module (legacy; geth-only)
 
-For runs where you want the state generated as part of the Kurtosis package itself:
+> [!WARNING]
+> `integration/stategen_launcher.star` predates the multi-client + `--spec`
+> work. It calls a `stategen:latest` Docker image (not built by this repo)
+> and passes flags that no longer exist on `state-actor` (`--genesis`,
+> `--batch-size`). It will not run against the current binary as-shipped.
+> Use Method 1 (pre-generate, then mount) until the Starlark module is
+> rewritten.
+
+The module exposes only synthetic-fill knobs (no `--client`, no `--spec`, no `--target-size`); it is preserved so existing Kurtosis packages keep parsing. The actual signature is:
 
 ```python
-load("github.com/nerolation/state-actor/integration/stategen_launcher.star",
-     "generate_bloated_state")
-
-def run(plan, args):
-    chaindata = generate_bloated_state(
-        plan,
-        output_artifact_name = "bloated-chaindata",
-        client               = "geth",                        # or reth/besu/nethermind
-        spec_file            = "examples/spec-erc20-mixed-sizes.yaml",
-        num_accounts         = 0,
-        num_contracts        = 0,
-        target_size          = "10GB",
-        seed                 = 42,
-        chain_id             = 32382,
-    )
-    # Pass `chaindata` to your EL participant as a pre-mount.
+generate_bloated_state(
+    plan,
+    output_artifact_name,
+    genesis_artifact = None,
+    num_accounts     = 10000,
+    num_contracts    = 5000,
+    max_slots        = 10000,
+    min_slots        = 100,
+    distribution     = "power-law",
+    seed             = 0,
+    binary_trie      = False,
+    tolerations      = [],
+    node_selectors   = {},
+)
 ```
 
-The module wraps `state-actor` in a Kurtosis service so the artifact is staged in-cluster and the dependency on genesis generation is explicit in the Starlark dag.
+If you need the multi-client surface from a Kurtosis package today, drive `state-actor` from a `plan.run_sh(...)` step with the current CLI directly (see [`docs/SKILL.md`](SKILL.md) for the flag set), or use Method 1 above.
 
 ## Method 3 — custom client image
 
 Bake the pre-generated state into a client image. Useful when the same devnet boots many times against the same state.
 
 ```dockerfile
-FROM ethereum/client-go:latest
+FROM ethereum/client-go:v1.17.2
 COPY bloated-chaindata /pregenerated-state
 COPY geth-wrapper.sh /usr/local/bin/
 ENTRYPOINT ["/usr/local/bin/geth-wrapper.sh"]
@@ -76,49 +82,15 @@ ENTRYPOINT ["/usr/local/bin/geth-wrapper.sh"]
 
 `integration/geth-wrapper.sh` copies the pre-generated state into `$GETH_DATADIR` on first boot and execs `geth` with the original arguments. Reth / besu / nethermind don't have a wrapper today; the equivalent step is a one-shot `cp -r` in the image's entrypoint.
 
-## Starlark module reference
-
-```python
-generate_bloated_state(
-    plan,
-    output_artifact_name,
-    client               = "geth",          # "geth" | "reth" | "besu" | "nethermind"
-    spec_file            = None,            # Path to a YAML state-spec; see docs/SPEC.md
-    num_accounts         = 1000,            # Synthetic-fill EOAs (set to 0 with --spec)
-    num_contracts        = 100,             # Synthetic-fill contracts (set to 0 with --spec)
-    target_size          = None,            # e.g. "5GB"; soft cap on synthetic fill
-    min_slots            = 1,
-    max_slots            = 10000,
-    distribution         = "power-law",
-    seed                 = 1,               # Non-zero! seed=0 randomises (footgun)
-    chain_id             = 1337,
-    fork                 = None,            # Empty → latest supported by the chosen client
-    gas_limit            = 30000000,
-    tolerations          = [],
-    node_selectors       = {},
-)
-```
-
-Returns a Files artifact containing the generated database tree.
-
 ## Picking the right `--client`
 
-The choice depends on which EL implementation your participant runs. Each client expects a different on-disk format:
-
-| Participant `el_type` | `--client` |
-|---|---|
-| `geth` | `geth` |
-| `reth` | `reth` |
-| `besu` | `besu` |
-| `nethermind` | `nethermind` |
-
-State Actor refuses to produce a database whose format doesn't match the chosen client (`internal/clientpolicy/` validates this at parse time), so a mismatch surfaces immediately rather than as a confusing boot failure.
+`--client` must match the participant's `el_type` 1:1 (`geth` ↔ `geth`, etc.). `internal/clientpolicy/` validates the flag mix at parse time, so a mismatch fails fast at generation rather than as a confusing boot failure.
 
 ## Troubleshooting
 
 ### State-root mismatch on boot
 
-Most commonly: the participant's `network_id` / `chain-id` doesn't match the `--chain-id` you passed to State Actor. Less commonly: a per-client calibration drift in `internal/sizecal/` (file a bug). Verify with:
+Most commonly: the participant's `network_id` / `chain-id` doesn't match the `--chain-id` you passed to State Actor. Less commonly: drift in the single global `bytesPerSlot` constant in `internal/sizecal/` versus the CI fixed-sizer (file a bug). Verify with:
 
 ```bash
 cast chain-id --rpc-url <participant-rpc>

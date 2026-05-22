@@ -31,7 +31,7 @@
 
 You want a pre-populated Ethereum database that a client can boot against directly &mdash; for cross-client determinism tests, devnet bootstrapping, EIP-7702 / ERC-20 fixtures, or state-bloat experiments. The alternative (run the client's `init` against a genesis with millions of `alloc` entries) is slow and client-specific. State Actor writes each client's on-disk format directly: Pebble for geth, MDBX + RocksDB + nippy-jar for reth, single RocksDB + 8 Bonsai column families for besu, seven RocksDB instances for nethermind.
 
-Three flags carry most of the weight: `--client` (which client's format to write), `--spec` (concrete entities to include, declared in YAML), `--target-size` (a soft cap on the synthetic-fill loop). Everything else has a sane default.
+Three flags carry most of the weight: `--client` (which client's format to write), `--spec` (concrete entities to include, declared in YAML), `--target-size` (upper bound on the whole DB; truncates spec entities to fit, stops synthetic fill at the cap). Everything else has a sane default.
 
 ## Quick start
 
@@ -155,7 +155,7 @@ Full schema: [`docs/SPEC.md`](docs/SPEC.md). Curated examples: [`examples/README
 | `--db` | string | (required) | Path to the database directory |
 | `--client` | string | `geth` | Target client: `geth`, `nethermind`, `besu`, `reth` |
 | `--spec` | string | (none) | Path to a YAML state-spec file; see `docs/SPEC.md` |
-| `--target-size` | string | (none) | Upper bound on the whole DB (`5GB`, `500MB`, …). Truncates spec + synthetic fill together to fit. |
+| `--target-size` | string | (none) | Upper bound on the whole DB (`5GB`, `500MB`, …). Truncates spec to the longest prefix that fits; synthetic fill stops at the cap. |
 | `--accounts` | int | 1000 | Number of synthetic EOAs |
 | `--contracts` | int | 100 | Number of synthetic contracts |
 | `--min-slots` | int | 1 | Min storage slots per synthetic contract |
@@ -185,7 +185,7 @@ Run `state-actor --help` for the canonical list (this table is a snapshot).
 
 ## Architecture
 
-See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the deep dive (writer phases, per-client format notes, the streaming-trie / streaming-sort packages). The short version: entity generation streams into a per-client writer that produces the client-native database directly, with cross-client determinism guaranteed by `internal/sizecal/` calibration factors.
+See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the deep dive (writer phases, per-client format notes, the streaming-trie / streaming-sort packages). The short version: entity generation streams into a per-client writer that produces the client-native database directly, with cross-client determinism guaranteed by `internal/sizecal/`'s single global `bytesPerSlot` constant (identical across all four clients by design).
 
 ## Testing
 

@@ -43,7 +43,7 @@ docker run -d \
   --user $(id -u):$(id -g) \
   -v /tmp/sa-geth:/data \
   -p 127.0.0.1:8545:8545 \
-  ethereum/client-go:latest \
+  ethereum/client-go:v1.17.2 \
   --datadir=/data \
   --db.engine=pebble \
   --networkid=1337 \
@@ -67,6 +67,13 @@ cast block-number --rpc-url http://127.0.0.1:8545 # → 0x0 immediately, ticks u
 ## Reth
 
 Reference: `client/reth/oracle_test.go` (`TestE2ESuite`).
+
+> [!WARNING]
+> Pin the reth image to a digest. `--debug.skip-genesis-validation` only
+> landed in paradigmxyz/reth#23919 (2026-05-06); reth's `:nightly` tag
+> overwrites daily and is not safe. `internal/reth/constants.go`
+> (`PinnedRethImage` + `PinnedRethRelease`) is the source of truth — the
+> recipe below mirrors the current pin.
 
 **Generate.** Reth uses cgo (MDBX bindings) — build via Docker.
 
@@ -98,7 +105,7 @@ docker run --rm \
 docker run -d \
   --name state-actor-reth \
   -v /tmp/sa-reth:/data \
-  ghcr.io/paradigmxyz/reth:latest \
+  ghcr.io/paradigmxyz/reth:nightly@sha256:e528857e5e9ebc2c6cb99f28436e70ded38ca905629f00afc98d186e27d206e0 \
   node --dev --dev.block-time=1s \
   --chain=/data/chainspec.json \
   --datadir=/data \
@@ -131,6 +138,12 @@ cast block-number --rpc-url http://<container-ip>:8545 # → ticks up
 
 Reference: `client/besu/e2e_test.go` (`TestE2ESuite`).
 
+> [!WARNING]
+> Pin the image tag. Besu 26.x removed the `--miner-enabled` flag this
+> recipe relies on for post-merge dev mode; the e2e suite pins
+> `hyperledger/besu:25.11.0`, so should you. See `client/besu/doc.go` for
+> the longer reasoning.
+
 **Generate.** Besu uses cgo (RocksDB JNI bindings on the writer side) — build via Docker.
 
 ```bash
@@ -150,7 +163,7 @@ docker run --rm \
 **On-disk layout:**
 
 - `/data/besu-chainspec.json` — Besu chainspec referenced by `--genesis-file`
-- `/data/<rocksdb files>` — single RocksDB instance with 8 Bonsai column families (default + BLOCKCHAIN + ACCOUNT_INFO_STATE + CODE_STORAGE + ACCOUNT_STORAGE_STORAGE + TRIE_BRANCH_STORAGE + TRIE_LOG_STORAGE + VARIABLES)
+- `/data/database/` — single RocksDB instance with 8 Bonsai column families (default + BLOCKCHAIN + ACCOUNT_INFO_STATE + CODE_STORAGE + ACCOUNT_STORAGE_STORAGE + TRIE_BRANCH_STORAGE + TRIE_LOG_STORAGE + VARIABLES)
 
 **Boot.**
 
@@ -158,7 +171,7 @@ docker run --rm \
 docker run -d \
   --name state-actor-besu \
   -v /tmp/sa-besu:/data \
-  hyperledger/besu:latest \
+  hyperledger/besu:25.11.0 \
   --data-path=/data \
   --genesis-file=/data/besu-chainspec.json \
   --network-id=1337 \
@@ -259,7 +272,7 @@ The full template is in `client/nethermind/e2e_test.go`'s `nethermindE2EConfigTe
 docker run -d \
   --name state-actor-neth \
   -v /tmp/sa-neth:/data \
-  nethermind/nethermind:latest \
+  nethermind/nethermind:1.37.0 \
   --config=/data/boot.cfg \
   --log=Info
 ```

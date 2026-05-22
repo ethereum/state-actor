@@ -18,7 +18,8 @@ State Actor generates Ethereum state in three phases:
 │  ┌─────────────────────────────────────────────────────────────────────┐ │
 │  │                         main.go                                     │ │
 │  │  • Parse flags                                                      │ │
-│  │  • Load genesis.json (optional)                                     │ │
+│  │  • Synthesize chainspec from --chain-id/--fork/--gas-limit/...      │ │
+│  │  • Load optional --spec YAML                                        │ │
 │  │  • Initialize generator                                             │ │
 │  │  • Print statistics                                                 │ │
 │  └─────────────────────────────────────────────────────────────────────┘ │
@@ -327,23 +328,23 @@ state-actor/
 │   ├── spec/                        # YAML --spec parser + validator
 │   ├── specbuild/                   # Spec → PreAlloc resolver (addresses, templates)
 │   ├── templates/                   # Spec templates (erc20, ...)
-│   ├── sizecal/                     # Per-client byte-budget → slot-count calibration
+│   ├── sizecal/                     # Byte-budget → slot-count via single global bytesPerSlot constant
 │   ├── streamingtrie/               # O(depth) streaming trie hasher
 │   ├── streamsort/                  # Out-of-core key sort for the streaming trie
 │   ├── entitygen/                   # Synthetic-fill entity generator
-│   ├── clientpolicy/                # Per-client flag validation (--archive, --binary-trie, ...)
+│   ├── clientpolicy/                # Per-client flag validation (--binary-trie, --target-size, --fork)
 │   ├── syscontracts/                # Canonical EIP-4788/2935/7002/7251 deployments
 │   ├── genesisheader/               # Cross-client genesis header builder
-│   ├── oracle/                      # Reproduce-from-config RNG + RPC oracle utilities
+│   ├── oracle/                      # Reproduce-from-config RNG (devkeys + reproduce)
 │   ├── reth/                        # Reth-side codec (MDBX wire format)
 │   ├── neth/                        # Nethermind-side helpers
 │   ├── engineapi/                   # Mock CL engine-API driver (besu / nethermind boot)
-│   ├── e2e_testing/                 # Shared per-client TestE2ESuite phases + checks
+│   ├── e2e_testing/                 # Shared per-client TestE2ESuite phases + checks + RPC oracle
 │   ├── rpcprobe/                    # Waitfor-RPC + JSON-RPC helpers
 │   └── testhex/                     # Hex helpers for tests
 ├── integration/                     # Kurtosis Starlark + geth-wrapper.sh
 ├── examples/                        # Curated spec YAMLs (see examples/README.md)
-└── docs/                            # SPEC.md, RUNBOOK.md, ARCHITECTURE.md, KURTOSIS.md
+└── docs/                            # SKILL.md, SPEC.md, RUNBOOK.md, ARCHITECTURE.md, KURTOSIS.md
 ```
 
 ## Cross-client determinism
@@ -353,7 +354,7 @@ State Actor guarantees that the same `--seed`, the same `--spec`, and the same c
 The mechanism is three-layered:
 
 - **Deterministic address derivation.** Spec address modes — explicit, name-derived (`keccak256(BE_u64(seed) || utf8(name))[12:]`), position-derived (same but with `anon-N`) — are pure functions of the spec input. Pinned at unit level by `internal/specbuild/derive_test.go:TestResolveAddressDeterministicAcrossRuns`.
-- **Per-client byte-budget calibration.** `--spec`'s `approximate_size_bytes` is converted to a synthesised slot count via `internal/sizecal/factors.json`. Each client has a calibration factor so the byte-cost of the resulting storage trie matches across writers. The CI invariance gate uses `sizecal.NewFixed(64)` for all four clients so test sizing can't silently mask a `Default()` drift.
+- **Single global byte-budget constant.** `--spec`'s `approximate_size_bytes` is converted to a synthesised slot count via the global `bytesPerSlot` constant in [`internal/sizecal/factors.go`](../internal/sizecal/factors.go) — identical across all four clients, which is precisely what makes the cross-client root match. The CI invariance gate calls `sizecal.NewFixed(64)` to decouple test sizing from the production `Default()`, so a drift in either side can't silently mask the other.
 - **Canonical syscontract preamble.** Every per-client writer must run `syscontracts.AddCanonicalSystemContracts(&cfg)` before producing state. The five EIP-mandated system contracts (BeaconRoots, HistoryStorage, WithdrawalQueue, ConsolidationQueue, DepositContract) must exist at their canonical addresses; without them besu refuses to boot and the other three clients compute a different root.
 
 The CI keystone job `cross-client-genesis-root` (defined in `.github/workflows/ci.yml`, exercising `examples/full-matrix-spec-feature.yaml`) re-asserts the invariant on every PR. When a divergence appears, the most likely cause is calibration drift (`internal/sizecal/`) or a missing syscontract preamble; less common but possible is per-client codec drift (`internal/reth/`, `internal/neth/`, etc.).
