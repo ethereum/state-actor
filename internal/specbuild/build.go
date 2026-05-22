@@ -131,6 +131,37 @@ func pickTemplate(e spec.Entity) (templates.Template, error) {
 
 var _ = (*common.Address)(nil)
 
+// ProjectedCost returns the projected trie cost (in bytes) of the spec
+// entity prefix that would survive truncation against opts.TargetSize.
+// Internal/autofill calls this to compute the top-up budget as
+// target_size − ProjectedCost without re-walking the entities.
+//
+// Uses the same per-entity cost formula as truncateForTargetSize so the
+// two functions agree on which prefix is "kept". When opts.TargetSize is
+// zero, no truncation applies and the result is the cost of every entity.
+// A nil Sizer (or nil/empty Spec) yields 0, deferring the actual error to
+// Build() which validates the inputs.
+func ProjectedCost(s *spec.Spec, opts BuildOptions) uint64 {
+	if s == nil || len(s.Entities) == 0 || opts.Sizer == nil {
+		return 0
+	}
+	bAcct := sizecal.BytesPerAccount(opts.ClientName)
+	bSlot := sizecal.BytesPerSlot(opts.ClientName)
+	var running uint64
+	for _, e := range s.Entities {
+		var slotCost uint64
+		if e.ApproximateSizeBytes > 0 {
+			slotCost = uint64(opts.Sizer.SlotsForBytes(opts.ClientName, e.ApproximateSizeBytes)) * bSlot
+		}
+		cost := bAcct + slotCost
+		if opts.TargetSize > 0 && running+cost > opts.TargetSize {
+			return running
+		}
+		running += cost
+	}
+	return running
+}
+
 // truncateForTargetSize returns the longest prefix of entities whose
 // projected trie cost fits inside opts.TargetSize. Returns the input
 // unchanged when TargetSize is zero. Appends a Diagnostics warning when

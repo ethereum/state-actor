@@ -16,6 +16,33 @@ const bytesPerSlot uint64 = 140
 // bytesPerAccount is the TRIE-only on-disk B/account cost.
 const bytesPerAccount uint64 = 175
 
+// Mainnet-shaped distribution ratios applied by internal/autofill to the
+// top-up portion of the target budget (target_size minus the projected spec
+// cost). They do NOT describe the final DB total — a spec biased toward
+// storage will leave the realized DB skewed even after auto-fill runs.
+const (
+	RatioAccount = 0.20
+	RatioCode    = 0.10
+	RatioStorage = 0.70
+)
+
+// Per-contract code-size bounds for synthetic auto-fill contracts.
+// internal/autofill samples a truncated normal N(MeanContractCode,
+// ≈MeanContractCode/3) clamped to [MinContractCode, MaxContractCode].
+const (
+	MinContractCode  uint64 = 1 << 10
+	MaxContractCode  uint64 = 24 << 10
+	MeanContractCode uint64 = 5 << 10
+)
+
+// Per-contract storage-size bounds for synthetic auto-fill contracts.
+// internal/autofill samples a truncated normal whose mean is budget-derived
+// then clamped to [MinContractStorage, MaxContractStorage].
+const (
+	MinContractStorage uint64 = 1 << 10
+	MaxContractStorage uint64 = 100 << 20
+)
+
 // Default returns the package-level SizeApproximator backed by the single
 // global trie-only constant. Identical across clients — required by the
 // cross-client genesis-root invariance gate.
