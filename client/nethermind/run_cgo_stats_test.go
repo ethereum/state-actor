@@ -10,6 +10,7 @@ import (
 
 	"github.com/nerolation/state-actor/generator"
 	"github.com/nerolation/state-actor/genesis"
+	"github.com/nerolation/state-actor/internal/autofill"
 )
 
 // TestRunPopulatesByteStats is the per-writer companion to
@@ -33,17 +34,16 @@ func TestRunPopulatesByteStats(t *testing.T) {
 		t.Fatalf("BuildSynthetic: %v", err)
 	}
 
+	plan, err := autofill.PlanForBudget(512 << 10)
+	if err != nil {
+		t.Fatalf("PlanForBudget: %v", err)
+	}
 	cfg := generator.Config{
-		DBPath:       filepath.Join(dir, "neth"),
-		NumAccounts:  5,
-		NumContracts: 2,
-		MinSlots:     1,
-		MaxSlots:     2,
-		CodeSize:     32,
-		Distribution: generator.PowerLaw,
-		Seed:         42,
-		TrieMode:     generator.TrieModeMPT,
-		Genesis:      g,
+		DBPath:   filepath.Join(dir, "neth"),
+		AutoFill: plan,
+		Seed:     42,
+		TrieMode: generator.TrieModeMPT,
+		Genesis:  g,
 	}
 
 	stats, err := Run(context.Background(), cfg, Options{})

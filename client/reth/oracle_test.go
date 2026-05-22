@@ -13,6 +13,7 @@ import (
 
 	"github.com/nerolation/state-actor/generator"
 	stategenesis "github.com/nerolation/state-actor/genesis"
+	"github.com/nerolation/state-actor/internal/autofill"
 	e2e "github.com/nerolation/state-actor/internal/e2e_testing"
 	"github.com/nerolation/state-actor/internal/oracle"
 	iReth "github.com/nerolation/state-actor/internal/reth"
@@ -89,24 +90,27 @@ func TestRethDbStats(t *testing.T) {
 	}
 }
 
-// TestRethDbStatsSyntheticEOAs — diagnostic: 100-EOA datadir produces
-// >=100 entries in the EOA-touched tables.
+// TestRethDbStatsSyntheticEOAs — diagnostic: small auto-fill datadir produces
+// at least plan.NumEOAs entries in the EOA-touched tables.
 func TestRethDbStatsSyntheticEOAs(t *testing.T) {
 	if testing.Short() {
 		t.Skip("oracle test in short mode")
 	}
-	const numAccounts = 100
 
 	dd, cleanup := e2e.AcquireDatadir(t, "RETH")
 	defer cleanup()
 
-	cfg := generator.Config{DBPath: dd.HostPath, NumAccounts: numAccounts, Seed: 12345, Archive: true}
+	plan, err := autofill.PlanForBudget(512 << 10)
+	if err != nil {
+		t.Fatalf("PlanForBudget: %v", err)
+	}
+	cfg := generator.Config{DBPath: dd.HostPath, AutoFill: plan, Seed: 12345, Archive: true}
 	stats, err := RunCgo(context.Background(), cfg, Options{})
 	if err != nil {
 		t.Fatalf("RunCgo: %v", err)
 	}
-	if stats.AccountsCreated != numAccounts {
-		t.Fatalf("AccountsCreated = %d, want %d", stats.AccountsCreated, numAccounts)
+	if stats.AccountsCreated != plan.NumEOAs {
+		t.Fatalf("AccountsCreated = %d, want %d", stats.AccountsCreated, plan.NumEOAs)
 	}
 
 	args := append([]string{"run", "--rm"}, e2e.DockerPlatformArgs("RETH_DOCKER_PLATFORM")...)
@@ -121,10 +125,10 @@ func TestRethDbStatsSyntheticEOAs(t *testing.T) {
 	}
 	output := string(out)
 	checks := map[string]int{
-		"PlainAccountState": numAccounts,
-		"HashedAccounts":    numAccounts,
-		"AccountsHistory":   numAccounts,
-		"AccountChangeSets": numAccounts,
+		"PlainAccountState": plan.NumEOAs,
+		"HashedAccounts":    plan.NumEOAs,
+		"AccountsHistory":   plan.NumEOAs,
+		"AccountChangeSets": plan.NumEOAs,
 	}
 	for table, minEntries := range checks {
 		count, ok := parseDbStatsEntries(output, table)
@@ -215,12 +219,10 @@ func TestE2ESuite(t *testing.T) {
 	}
 
 	const (
-		seed         = int64(42)
-		numAccounts  = 100
-		numContracts = 15_000 // ~100 MB warmup before spamoor (avg 27 slots × 240 B/entry)
-		codeSize     = 128
-		minSlots     = 5
-		maxSlots     = 50
+		seed = int64(42)
+		// e2eBudget targets ~100 MB of synthetic trie state (matching the
+		// pre-rewrite NumContracts=15_000 warmup).
+		e2eBudget uint64 = 100 << 20
 	)
 
 	g, err := stategenesis.BuildSynthetic("osaka", big.NewInt(1337), 60_000_000,
@@ -232,16 +234,16 @@ func TestE2ESuite(t *testing.T) {
 	dd, cleanup := e2e.AcquireDatadir(t, "RETH")
 	defer cleanup()
 
+	plan, err := autofill.PlanForBudget(e2eBudget)
+	if err != nil {
+		t.Fatalf("PlanForBudget: %v", err)
+	}
 	cfg := generator.Config{
-		DBPath:       dd.HostPath,
-		NumAccounts:  numAccounts,
-		NumContracts: numContracts,
-		CodeSize:     codeSize,
-		MinSlots:     minSlots,
-		MaxSlots:     maxSlots,
-		Seed:         seed,
-		Verbose:      true,
-		Genesis:      g,
+		DBPath:   dd.HostPath,
+		AutoFill: plan,
+		Seed:     seed,
+		Verbose:  true,
+		Genesis:  g,
 	}
 	// Spec-driven pre-alloc via examples/full-matrix-spec-feature.yaml exercises
 	// every schema variant (including the spamoor sender). The Spec is
@@ -257,13 +259,8 @@ func TestE2ESuite(t *testing.T) {
 	}
 
 	eoas, contracts := oracle.Reproduce(oracle.ReproduceCfg{
-		Seed:         seed,
-		NumAccounts:  numAccounts,
-		NumContracts: numContracts,
-		CodeSize:     codeSize,
-		MinSlots:     minSlots,
-		MaxSlots:     maxSlots,
-		Distribution: cfg.Distribution,
+		Seed:     seed,
+		AutoFill: plan,
 	})
 
 	imageRef := rethImageRef()

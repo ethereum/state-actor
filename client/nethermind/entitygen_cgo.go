@@ -18,7 +18,6 @@ import (
 	gethrlp "github.com/ethereum/go-ethereum/rlp"
 
 	"github.com/nerolation/state-actor/generator"
-	"github.com/nerolation/state-actor/internal/entitygen"
 	nethtrie "github.com/nerolation/state-actor/internal/neth/trie"
 	"github.com/nerolation/state-actor/internal/streamsort"
 )
@@ -190,29 +189,41 @@ func writeSyntheticAccounts(
 		return size, size >= cfg.TargetSize
 	}
 
-	for i := 0; i < cfg.NumAccounts; i++ {
-		acc := entitygen.GenerateEOA(rng)
-		data, err := gethrlp.EncodeToBytes(acc.StateAccount)
-		if err != nil {
-			return common.Hash{}, fmt.Errorf("encode EOA %d: %w", i, err)
-		}
-		if err := sorter.Put(acc.AddrHash[:], data); err != nil {
-			return common.Hash{}, fmt.Errorf("queue EOA: %w", err)
-		}
-		if stats != nil {
-			stats.AccountBytes += uint64(len(data))
-		}
-	}
+	plan := cfg.AutoFill
 
-	codeSize := cfg.CodeSize
-	if codeSize <= 0 {
-		codeSize = 1024
+	if plan != nil {
+		for i := 0; i < plan.NumEOAs; i++ {
+			acc := plan.DrawEOA(rng)
+			data, err := gethrlp.EncodeToBytes(acc.StateAccount)
+			if err != nil {
+				return common.Hash{}, fmt.Errorf("encode EOA %d: %w", i, err)
+			}
+			if err := sorter.Put(acc.AddrHash[:], data); err != nil {
+				return common.Hash{}, fmt.Errorf("queue EOA: %w", err)
+			}
+			if stats != nil {
+				stats.AccountBytes += uint64(len(data))
+				stats.AccountsCreated++
+			}
+			if len(acc.Code) > 0 {
+				if err := codeSink.put(acc.CodeHash[:], acc.Code); err != nil {
+					return common.Hash{}, fmt.Errorf("write EOA delegation code: %w", err)
+				}
+				if stats != nil {
+					stats.CodeBytes += uint64(len(acc.Code))
+				}
+			}
+		}
 	}
 
 	const contractSampleEvery = 100
 
-	for i := 0; i < cfg.NumContracts && !targetReached; i++ {
-		contract := entitygen.GenerateContractRoll(rng, cfg.Distribution, codeSize, cfg.MinSlots, cfg.MaxSlots)
+	plannedContracts := 0
+	if plan != nil {
+		plannedContracts = plan.NumContracts
+	}
+	for i := 0; i < plannedContracts && !targetReached; i++ {
+		contract := plan.DrawContract(rng)
 		numSlots := len(contract.Storage)
 
 		if err := codeSink.put(contract.CodeHash[:], contract.Code); err != nil {
@@ -267,6 +278,8 @@ func writeSyntheticAccounts(
 		}
 		if stats != nil {
 			stats.AccountBytes += uint64(len(data))
+			stats.ContractsCreated++
+			stats.StorageSlotsCreated += numSlots
 		}
 		if (i+1)%contractSampleEvery == 0 {
 			if size, reached := checkProductionSize(); reached {

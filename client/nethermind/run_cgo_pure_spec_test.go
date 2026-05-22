@@ -46,12 +46,11 @@ func TestPureSpecDispatchUsesStreamingPath(t *testing.T) {
 		common.HexToHash("0x03"): common.HexToHash("0xcc"),
 	}
 
+	// Pure-spec test: no AutoFill (synthetic top-up disabled), just PreAlloc.
 	cfg := generator.Config{
-		DBPath:       filepath.Join(t.TempDir(), "neth"),
-		NumAccounts:  0,
-		NumContracts: 0,
-		TrieMode:     generator.TrieModeMPT,
-		Genesis:      g,
+		DBPath:   filepath.Join(t.TempDir(), "neth"),
+		TrieMode: generator.TrieModeMPT,
+		Genesis:  g,
 		PreAlloc: []templates.PreAllocEntity{{
 			Address: addr,
 			Account: specAccount,

@@ -22,7 +22,6 @@ import (
 	"github.com/ethereum/go-ethereum/trie"
 
 	"github.com/nerolation/state-actor/generator"
-	"github.com/nerolation/state-actor/internal/entitygen"
 	"github.com/nerolation/state-actor/internal/sizecal"
 	"github.com/nerolation/state-actor/internal/streamingtrie"
 	"github.com/nerolation/state-actor/internal/streamsort"
@@ -139,60 +138,64 @@ func writeStateAndCollectRoot(
 		addProjection(len(slots))
 	}
 
-	for i := 0; i < cfg.NumAccounts && !targetReached; i++ {
-		if err := ctx.Err(); err != nil {
-			return common.Hash{}, nil, err
-		}
-		acc := entitygen.GenerateEOA(rng)
-		for _, dup := genesisAddrs[acc.Address]; dup; {
-			acc = entitygen.GenerateEOA(rng)
-			_, dup = genesisAddrs[acc.Address]
-		}
-		blob := encodeEntityEOA(acc.StateAccount.Nonce, acc.StateAccount.Balance)
-		if err := sorter.Put(acc.AddrHash[:], blob); err != nil {
-			return common.Hash{}, nil, fmt.Errorf("phase1 EOA #%d: %w", i, err)
-		}
-		stats.AccountsCreated++
-		if len(stats.SampleEOAs) < 3 {
-			stats.SampleEOAs = append(stats.SampleEOAs, acc.Address)
-		}
-		addProjection(0)
-	}
-
-	codeSize := cfg.CodeSize
-	if codeSize <= 0 {
-		codeSize = 1024
-	}
-	for i := 0; i < cfg.NumContracts && !targetReached; i++ {
-		if err := ctx.Err(); err != nil {
-			return common.Hash{}, nil, err
-		}
-		contract := entitygen.GenerateContractRoll(rng, cfg.Distribution, codeSize, cfg.MinSlots, cfg.MaxSlots)
-		for _, dup := genesisAddrs[contract.Address]; dup; {
-			contract = entitygen.GenerateContractRoll(rng, cfg.Distribution, codeSize, cfg.MinSlots, cfg.MaxSlots)
-			_, dup = genesisAddrs[contract.Address]
+	plan := cfg.AutoFill
+	if plan != nil {
+		for i := 0; i < plan.NumEOAs && !targetReached; i++ {
+			if err := ctx.Err(); err != nil {
+				return common.Hash{}, nil, err
+			}
+			acc := plan.DrawEOA(rng)
+			for _, dup := genesisAddrs[acc.Address]; dup; {
+				acc = plan.DrawEOA(rng)
+				_, dup = genesisAddrs[acc.Address]
+			}
+			var blob []byte
+			if len(acc.Code) > 0 {
+				blob = encodeEntityContract(acc.StateAccount.Nonce, acc.StateAccount.Balance, acc.Code, nil)
+			} else {
+				blob = encodeEntityEOA(acc.StateAccount.Nonce, acc.StateAccount.Balance)
+			}
+			if err := sorter.Put(acc.AddrHash[:], blob); err != nil {
+				return common.Hash{}, nil, fmt.Errorf("phase1 EOA #%d: %w", i, err)
+			}
+			stats.AccountsCreated++
+			if len(stats.SampleEOAs) < 3 {
+				stats.SampleEOAs = append(stats.SampleEOAs, acc.Address)
+			}
+			addProjection(0)
 		}
 
-		// contract.Storage is sorted by raw Key; Phase 2 re-sorts by keccak(Key).
-		slots := make([]entityBlobSlot, len(contract.Storage))
-		for j, s := range contract.Storage {
-			slots[j] = entityBlobSlot{Key: s.Key, Value: s.Value}
+		for i := 0; i < plan.NumContracts && !targetReached; i++ {
+			if err := ctx.Err(); err != nil {
+				return common.Hash{}, nil, err
+			}
+			contract := plan.DrawContract(rng)
+			for _, dup := genesisAddrs[contract.Address]; dup; {
+				contract = plan.DrawContract(rng)
+				_, dup = genesisAddrs[contract.Address]
+			}
+
+			// contract.Storage is sorted by raw Key; Phase 2 re-sorts by keccak(Key).
+			slots := make([]entityBlobSlot, len(contract.Storage))
+			for j, s := range contract.Storage {
+				slots[j] = entityBlobSlot{Key: s.Key, Value: s.Value}
+			}
+			blob := encodeEntityContract(
+				contract.StateAccount.Nonce,
+				contract.StateAccount.Balance,
+				contract.Code,
+				slots,
+			)
+			if err := sorter.Put(contract.AddrHash[:], blob); err != nil {
+				return common.Hash{}, nil, fmt.Errorf("phase1 contract #%d: %w", i, err)
+			}
+			stats.ContractsCreated++
+			stats.StorageSlotsCreated += len(contract.Storage)
+			if len(stats.SampleContracts) < 3 {
+				stats.SampleContracts = append(stats.SampleContracts, contract.Address)
+			}
+			addProjection(len(contract.Storage))
 		}
-		blob := encodeEntityContract(
-			contract.StateAccount.Nonce,
-			contract.StateAccount.Balance,
-			contract.Code,
-			slots,
-		)
-		if err := sorter.Put(contract.AddrHash[:], blob); err != nil {
-			return common.Hash{}, nil, fmt.Errorf("phase1 contract #%d: %w", i, err)
-		}
-		stats.ContractsCreated++
-		stats.StorageSlotsCreated += len(contract.Storage)
-		if len(stats.SampleContracts) < 3 {
-			stats.SampleContracts = append(stats.SampleContracts, contract.Address)
-		}
-		addProjection(len(contract.Storage))
 	}
 
 	stats.GenerationTime = time.Since(start)
@@ -224,7 +227,11 @@ func writeStateAndCollectRoot(
 	}
 	accountTrie := trie.NewStackTrie(accountCb)
 
-	codeSeen := make(map[common.Hash]struct{}, cfg.NumContracts)
+	var codeSeenCap int
+	if cfg.AutoFill != nil {
+		codeSeenCap = cfg.AutoFill.NumContracts
+	}
+	codeSeen := make(map[common.Hash]struct{}, codeSeenCap)
 
 	count := 0
 	iterErr := sorter.Iterate(func(key, value []byte) error {

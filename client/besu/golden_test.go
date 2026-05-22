@@ -13,6 +13,7 @@ import (
 	"github.com/linxGnu/grocksdb"
 
 	"github.com/nerolation/state-actor/generator"
+	"github.com/nerolation/state-actor/internal/autofill"
 	"github.com/nerolation/state-actor/internal/besu/keys"
 	"github.com/nerolation/state-actor/internal/e2e_testing"
 )
@@ -34,14 +35,13 @@ func TestBesuGoldenStateRoot(t *testing.T) {
 // non-determinism in entity generation, Pebble batch ordering, or trie
 // commit traversal.
 func TestBesuReproducibility(t *testing.T) {
+	plan, err := autofill.PlanForBudget(512 << 10)
+	if err != nil {
+		t.Fatalf("PlanForBudget: %v", err)
+	}
 	cfg := generator.Config{
-		NumAccounts:  20,
-		NumContracts: 5,
-		MaxSlots:     50,
-		MinSlots:     1,
-		Distribution: generator.PowerLaw,
-		Seed:         42,
-		CodeSize:     256,
+		AutoFill: plan,
+		Seed:     42,
 	}
 
 	runOnce := func() (common.Hash, []byte) {

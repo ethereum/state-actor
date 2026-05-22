@@ -37,10 +37,9 @@ func TestSpecStorageTrieNodesPersisted(t *testing.T) {
 		common.HexToHash("0x0a"): common.HexToHash("0x44"),
 	}
 
+	// Pure-spec test: no AutoFill, just the PreAlloc entity below.
 	cfg := generator.Config{
 		DBPath:         filepath.Join(t.TempDir(), "geth", "chaindata"),
-		NumAccounts:    0,
-		NumContracts:   0,
 		TrieMode:       generator.TrieModeMPT,
 		WriteTrieNodes: true,
 		PreAlloc: []templates.PreAllocEntity{{

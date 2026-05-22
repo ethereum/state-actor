@@ -16,6 +16,7 @@ import (
 
 	"github.com/nerolation/state-actor/generator"
 	stategenesis "github.com/nerolation/state-actor/genesis"
+	"github.com/nerolation/state-actor/internal/autofill"
 	e2e "github.com/nerolation/state-actor/internal/e2e_testing"
 	"github.com/nerolation/state-actor/internal/oracle"
 	"github.com/nerolation/state-actor/internal/rpcprobe"
@@ -65,12 +66,10 @@ func TestE2ESuite(t *testing.T) {
 	}
 
 	const (
-		seed         = int64(42)
-		numAccounts  = 100
-		numContracts = 15_000 // ~100 MB warmup before spamoor (avg 27 slots × 240 B/entry)
-		codeSize     = 128
-		minSlots     = 5
-		maxSlots     = 50
+		seed = int64(42)
+		// e2eBudget targets ~100 MB of synthetic trie state (matching the
+		// pre-rewrite NumContracts=15_000 × ~27 slots × 240 B/entry warmup).
+		e2eBudget uint64 = 100 << 20
 	)
 
 	// Pin --fork=osaka (geth's MaxForkForClient ceiling). 60M gas matches
@@ -81,21 +80,22 @@ func TestE2ESuite(t *testing.T) {
 		t.Fatalf("BuildSynthetic: %v", err)
 	}
 
+	plan, err := autofill.PlanForBudget(e2eBudget)
+	if err != nil {
+		t.Fatalf("PlanForBudget: %v", err)
+	}
+
 	// Datadir layout: state-actor writes to <datadir>/geth/chaindata; geth
 	// itself takes --datadir=<datadir> and looks for geth/chaindata under
 	// it. We mount the parent into the container at /data.
 	datadir := t.TempDir()
 	cfg := generator.Config{
-		DBPath:       filepath.Join(datadir, "geth", "chaindata"),
-		NumAccounts:  numAccounts,
-		NumContracts: numContracts,
-		CodeSize:     codeSize,
-		MinSlots:     minSlots,
-		MaxSlots:     maxSlots,
-		Seed:         seed,
-		Verbose:      true,
-		TrieMode:     generator.TrieModeMPT,
-		Genesis:      g,
+		DBPath:   filepath.Join(datadir, "geth", "chaindata"),
+		AutoFill: plan,
+		Seed:     seed,
+		Verbose:  true,
+		TrieMode: generator.TrieModeMPT,
+		Genesis:  g,
 	}
 	// Spec-driven pre-alloc via examples/full-matrix-spec-feature.yaml exercises
 	// every schema variant (including the spamoor sender). LoadCISpec
@@ -116,13 +116,8 @@ func TestE2ESuite(t *testing.T) {
 	}
 
 	eoas, contracts := oracle.Reproduce(oracle.ReproduceCfg{
-		Seed:         seed,
-		NumAccounts:  numAccounts,
-		NumContracts: numContracts,
-		CodeSize:     codeSize,
-		MinSlots:     minSlots,
-		MaxSlots:     maxSlots,
-		Distribution: generator.PowerLaw,
+		Seed:     seed,
+		AutoFill: plan,
 	})
 
 	// Boot upstream geth in --dev mode (PoA, self-emulated CL).

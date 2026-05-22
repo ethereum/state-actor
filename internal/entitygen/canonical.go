@@ -32,6 +32,7 @@ import "github.com/ethereum/go-ethereum/common"
 // capture the new hash from the failure message, paste here. Then
 // all 4 client tests + canonical_mpt_test will agree on the new value.
 //
-// Last rotated when the Beacon-chain Deposit Contract was added to the
-// canonical set (was 0x015874dcec...ed32a with 4 contracts only).
-var CanonicalOsakaMPTRoot = common.HexToHash("0xe6b20caec313a6e60502f3308371d4b9156400724a310947f7dce1b2ad1089b8")
+// Last rotated when --accounts / --contracts were replaced by the
+// internal/autofill.Plan (256 KiB target budget, seed 12345 — see
+// internal/e2e_testing/golden.go for the canonical writer config).
+var CanonicalOsakaMPTRoot = common.HexToHash("0x486046517db3d8c72665fd29b0c2c9067b563cada8aca57c02fd502526cd7e8f")

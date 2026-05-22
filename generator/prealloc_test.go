@@ -114,10 +114,13 @@ func TestValidateAcceptsSpecUnderTargetSize(t *testing.T) {
 	}
 }
 
+// TestPreAllocShimEmpty asserts an empty Config (no AutoFill / PreAlloc /
+// GenesisAccounts) is rejected by Validate — the writer needs at least
+// one source of entities to emit.
 func TestPreAllocShimEmpty(t *testing.T) {
 	cfg := &Config{}
-	if err := cfg.Validate(); err != nil {
-		t.Fatalf("Validate: %v", err)
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("Validate should reject empty Config (no AutoFill/PreAlloc/GenesisAccounts)")
 	}
 }
 

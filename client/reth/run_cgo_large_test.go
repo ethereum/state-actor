@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/nerolation/state-actor/generator"
+	"github.com/nerolation/state-actor/internal/autofill"
 )
 
 // TestRunCgoStreamingMultiBatch exercises the Phase 4 streaming pipeline
@@ -27,10 +28,16 @@ func TestRunCgoStreamingMultiBatch(t *testing.T) {
 	}
 
 	tmp := t.TempDir()
+	// 35 MiB → ~41 000 EOAs (mirrors the previous NumAccounts=200_000 stress
+	// shape after the auto-fill rewrite cut the per-EOA cost in half).
+	plan, err := autofill.PlanForBudget(35 << 20)
+	if err != nil {
+		t.Fatalf("PlanForBudget: %v", err)
+	}
 	cfg := generator.Config{
-		DBPath:      tmp,
-		NumAccounts: 200_000,
-		Seed:        4242,
+		DBPath:   tmp,
+		AutoFill: plan,
+		Seed:     4242,
 	}
 	stats, err := RunCgo(context.Background(), cfg, Options{})
 	if err != nil {
@@ -39,8 +46,8 @@ func TestRunCgoStreamingMultiBatch(t *testing.T) {
 	if stats == nil {
 		t.Fatal("RunCgo returned nil stats")
 	}
-	if stats.AccountsCreated != cfg.NumAccounts {
-		t.Errorf("AccountsCreated = %d, want %d", stats.AccountsCreated, cfg.NumAccounts)
+	if stats.AccountsCreated != plan.NumEOAs {
+		t.Errorf("AccountsCreated = %d, want %d", stats.AccountsCreated, plan.NumEOAs)
 	}
 	for _, rel := range []string{
 		"db/mdbx.dat",

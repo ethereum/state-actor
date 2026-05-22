@@ -12,6 +12,7 @@ import (
 
 	"github.com/nerolation/state-actor/generator"
 	"github.com/nerolation/state-actor/genesis"
+	"github.com/nerolation/state-actor/internal/autofill"
 )
 
 // TestRunCgoTargetSizeStopsAccurately verifies the per-batch dirSize
@@ -42,22 +43,14 @@ func TestRunCgoTargetSizeStopsAccurately(t *testing.T) {
 	}
 
 	const target uint64 = 200 * 1024 * 1024 // 200 MiB
+	plan, err := autofill.PlanForBudget(5 * target) // generous safety upper bound
+	if err != nil {
+		t.Fatalf("PlanForBudget: %v", err)
+	}
 	cfg := generator.Config{
-		DBPath:       filepath.Join(dir, "reth-datadir"),
-		NumAccounts:  100,
-		NumContracts: 1_000_000, // generous safety upper bound
-		MaxSlots:     50,
-		MinSlots:     5,
-		Distribution: generator.PowerLaw,
-		Seed:         42,
-		// Smaller-than-default batch so the per-batch dirSize sampling
-		// fires often enough to land within ±20% of 200 MiB. At default
-		// CodeSize=128 with 5-50 slots/contract the average production-
-		// DB delta per contract is ~7.5 KiB (slot RLP + MPT trie node
-		// overhead). 2000-batch ≈ 15 MiB → at most one batch (7.5% of
-		// target) of overshoot. Production users running with 10 GiB+
-		// targets at the default 100K-batch only see ~1% overshoot.
-		CodeSize:   128,
+		DBPath:     filepath.Join(dir, "reth-datadir"),
+		AutoFill:   plan,
+		Seed:       42,
 		TrieMode:   generator.TrieModeMPT,
 		Genesis:    g,
 		TargetSize: target,

@@ -12,6 +12,7 @@ import (
 
 	"github.com/nerolation/state-actor/generator"
 	"github.com/nerolation/state-actor/genesis"
+	"github.com/nerolation/state-actor/internal/autofill"
 )
 
 // TestRunTargetSizeStopsAccurately verifies the Phase 2 dirSize sampling
@@ -42,18 +43,17 @@ func TestRunTargetSizeStopsAccurately(t *testing.T) {
 	// proportionally tighter sample cadence to stay in band; the 1024-
 	// entity cadence in entitygen_cgo.go is calibrated for this size.
 	const target uint64 = 200 * 1024 * 1024
+	plan, err := autofill.PlanForBudget(5 * target) // generous safety upper bound
+	if err != nil {
+		t.Fatalf("PlanForBudget: %v", err)
+	}
 	cfg := generator.Config{
-		DBPath:       filepath.Join(dir, "neth"),
-		NumAccounts:  100,
-		NumContracts: 1_000_000, // generous safety upper bound
-		MaxSlots:     50,
-		MinSlots:     5,
-		Distribution: generator.PowerLaw,
-		Seed:         42,
-		CodeSize:     128,
-		TrieMode:     generator.TrieModeMPT,
-		Genesis:      g,
-		TargetSize:   target,
+		DBPath:     filepath.Join(dir, "neth"),
+		AutoFill:   plan,
+		Seed:       42,
+		TrieMode:   generator.TrieModeMPT,
+		Genesis:    g,
+		TargetSize: target,
 	}
 
 	stats, err := Run(context.Background(), cfg, Options{})

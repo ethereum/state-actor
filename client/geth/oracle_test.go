@@ -12,6 +12,7 @@ import (
 	"github.com/ethereum/go-ethereum/rlp"
 
 	"github.com/nerolation/state-actor/generator"
+	"github.com/nerolation/state-actor/internal/autofill"
 )
 
 // TestGethOracleBootReadable is the geth-MPT boot-readability gate.
@@ -39,15 +40,14 @@ import (
 // target. This test runs in-process and stays fast (~100ms).
 func TestGethOracleBootReadable(t *testing.T) {
 	dir := t.TempDir()
+	plan, err := autofill.PlanForBudget(512 << 10)
+	if err != nil {
+		t.Fatalf("PlanForBudget: %v", err)
+	}
 	cfg := generator.Config{
 		DBPath:         filepath.Join(dir, "geth", "chaindata"),
-		NumAccounts:    20,
-		NumContracts:   8,
-		MaxSlots:       12,
-		MinSlots:       3,
-		Distribution:   generator.PowerLaw,
+		AutoFill:       plan,
 		Seed:           4242,
-		CodeSize:       96,
 		TrieMode:       generator.TrieModeMPT,
 		WriteTrieNodes: true,
 	}

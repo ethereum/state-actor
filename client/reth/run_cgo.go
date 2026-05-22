@@ -115,14 +115,15 @@ func RunCgo(ctx context.Context, cfg generator.Config, opts Options) (*generator
 		accountsCreated += len(allocAccounts)
 	}
 
-	if cfg.NumAccounts > 0 || cfg.NumContracts > 0 {
+	plan := cfg.AutoFill
+	if plan != nil && (plan.NumEOAs > 0 || plan.NumContracts > 0) {
 		rng := mrand.New(mrand.NewSource(cfg.Seed))
 
 		// dirSize sample includes the temp Pebble sorter (reth-sort-*/) —
 		// over-estimates production size, safer (stops earlier).
 		targetReached := false
 
-		remaining := cfg.NumAccounts
+		remaining := plan.NumEOAs
 		for remaining > 0 && !targetReached {
 			b := batchSize
 			if remaining < b {
@@ -130,7 +131,7 @@ func RunCgo(ctx context.Context, cfg generator.Config, opts Options) (*generator
 			}
 			batch := make([]*entitygen.Account, b)
 			for i := 0; i < b; i++ {
-				batch[i] = entitygen.GenerateEOA(rng)
+				batch[i] = plan.DrawEOA(rng)
 			}
 			if err := WriteEOAs(envs, batch, 0, cfg.Archive, stats); err != nil {
 				return nil, fmt.Errorf("RunCgo: WriteEOAs: %w", err)
@@ -153,12 +154,8 @@ func RunCgo(ctx context.Context, cfg generator.Config, opts Options) (*generator
 			}
 		}
 
-		if cfg.NumContracts > 0 && !targetReached {
-			codeSize := cfg.CodeSize
-			if codeSize <= 0 {
-				codeSize = 256
-			}
-			remaining := cfg.NumContracts
+		if plan.NumContracts > 0 && !targetReached {
+			remaining := plan.NumContracts
 			for remaining > 0 && !targetReached {
 				b := batchSize
 				if remaining < b {
@@ -166,7 +163,7 @@ func RunCgo(ctx context.Context, cfg generator.Config, opts Options) (*generator
 				}
 				batch := make([]*entitygen.Account, b)
 				for i := 0; i < b; i++ {
-					batch[i] = entitygen.GenerateContractRoll(rng, cfg.Distribution, codeSize, cfg.MinSlots, cfg.MaxSlots)
+					batch[i] = plan.DrawContract(rng)
 				}
 				// WriteContracts mutates each contract's StateAccount.Root
 				// + .CodeHash in place; putAccountRLP below captures the

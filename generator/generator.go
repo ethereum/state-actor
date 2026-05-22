@@ -285,52 +285,43 @@ func (g *Generator) generateStreamingBinary() (retStats *Stats, retErr error) {
 			len(g.config.GenesisAccounts), stats.AccountsCreated, stats.ContractsCreated)
 	}
 
+	plan := g.config.AutoFill
+
 	// 1b. EOA generation.
-	for i := 0; i < g.config.NumAccounts; i++ {
-		acc := g.generateEOA()
-		for genesisAddrs[acc.address] {
-			acc = g.generateEOA()
-		}
+	if plan != nil {
+		for i := 0; i < plan.NumEOAs; i++ {
+			acc := accountDataFrom(plan.DrawEOA(g.rng))
+			for genesisAddrs[acc.address] {
+				acc = accountDataFrom(plan.DrawEOA(g.rng))
+			}
 
-		entryBuf = collectAccountEntries(acc.address, acc.account, 0, nil, nil, entryBuf[:0])
-		if err := writeEntries(entryBuf, &preambleEntries); err != nil {
-			return nil, fmt.Errorf("failed to write EOA trie entries: %w", err)
+			entryBuf = collectAccountEntries(acc.address, acc.account, len(acc.code), acc.code, acc.storage, entryBuf[:0])
+			if err := writeEntries(entryBuf, &preambleEntries); err != nil {
+				return nil, fmt.Errorf("failed to write EOA trie entries: %w", err)
+			}
+			snapCh <- snapshotWork{acc: acc}
+			stats.AccountsCreated++
+			if len(stats.SampleEOAs) < 3 {
+				stats.SampleEOAs = append(stats.SampleEOAs, acc.address)
+			}
+			logProgress("EOA", i+1, plan.NumEOAs, 0)
 		}
-		snapCh <- snapshotWork{acc: acc}
-		stats.AccountsCreated++
-		if len(stats.SampleEOAs) < 3 {
-			stats.SampleEOAs = append(stats.SampleEOAs, acc.address)
-		}
-		logProgress("EOA", i+1, g.config.NumAccounts, 0)
 	}
 
-	// 1c. Contract generation via producer-consumer pipeline.
-	// When --target-size governs, slot counts are generated on-demand
-	// (one RNG call per contract, same sequence as generateSlotDistribution).
-	// When --contracts governs, we pre-compute the distribution for the
-	// known count.
-	// Pre-compute slot distribution only for moderate contract counts.
-	// Above 10M, the []int array alone costs 80MB+, so use on-demand generation.
-	const maxPrecomputeContracts = 10_000_000
-	var slotDistribution []int
-	if g.config.NumContracts <= maxPrecomputeContracts {
-		slotDistribution = g.generateSlotDistribution()
-	}
-
+	// 1c. Contract generation via producer-consumer pipeline. Plan owns
+	// slot-count sampling per contract (StorageSampler.Draw → slot count),
+	// so there's nothing to pre-compute.
 	done := make(chan struct{})
 	contractCh := make(chan *accountData, 16)
 	go func() {
 		defer close(contractCh)
-		for i := 0; i < g.config.NumContracts; i++ {
-			var numSlots int
-			if slotDistribution != nil {
-				numSlots = slotDistribution[i]
-			} else {
-				numSlots = g.generateSlotCount()
-			}
-			contract := g.generateContract(numSlots)
+		if plan == nil {
+			return
+		}
+		for i := 0; i < plan.NumContracts; i++ {
+			contract := accountDataFrom(plan.DrawContract(g.rng))
 			for genesisAddrs[contract.address] {
-				contract = g.generateContract(numSlots)
+				contract = accountDataFrom(plan.DrawContract(g.rng))
 			}
 			select {
 			case contractCh <- contract:
@@ -360,18 +351,16 @@ func (g *Generator) generateStreamingBinary() (retStats *Stats, retErr error) {
 			stats.SampleContracts = append(stats.SampleContracts, contract.address)
 		}
 		contractIdx++
-		logProgress("Contract", contractIdx, g.config.NumContracts, int64(stats.StorageSlotsCreated))
+		if plan != nil {
+			logProgress("Contract", contractIdx, plan.NumContracts, int64(stats.StorageSlotsCreated))
+		}
 
 		// Phase 1 raw-byte safety cap: stop generating more entries once
 		// the temp DB's raw bytes (each entry is 32B key + 32B value = 64B)
 		// reach TargetSize. This prevents Phase 1 from producing more raw
 		// data than target can hold on disk after Phase 2 transformation.
 		// The fine-grained factor-free stop runs in Phase 2 via the
-		// SizeTracker; this cap keeps Phase 1 bounded for workloads where
-		// NumContracts is set generously (test fixtures, or main.go's
-		// userContracts×5 safety cap). No compression-ratio assumption —
-		// the cap is "never write more raw entries than the target can
-		// hold if it were a 1:1 mapping".
+		// SizeTracker; this cap keeps Phase 1 bounded.
 		rawBytes := 64 * (preambleEntries + contractEntries)
 		if g.config.TargetSize > 0 && uint64(rawBytes) >= g.config.TargetSize {
 			if g.config.Verbose {
@@ -574,26 +563,10 @@ func mapToSortedSlots(m map[common.Hash]common.Hash) []storageSlot {
 	return entitygen.MapToSortedSlots(m)
 }
 
-// generateEOA generates an Externally Owned Account.
-//
-// Wrapper around entitygen.GenerateEOA: the RNG draw sequence is owned there
-// so geth/reth/nethermind producers all see byte-identical sequences for the
-// same seed. The wrapper just unpacks the result into the generator-local
-// accountData shape.
-func (g *Generator) generateEOA() *accountData {
-	e := entitygen.GenerateEOA(g.rng)
-	return &accountData{
-		address:  e.Address,
-		addrHash: e.AddrHash,
-		account:  e.StateAccount,
-	}
-}
-
-// generateContract generates a contract account with storage.
-//
-// Wrapper around entitygen.GenerateContract — see comment on generateEOA.
-func (g *Generator) generateContract(numSlots int) *accountData {
-	e := entitygen.GenerateContract(g.rng, g.config.CodeSize, numSlots)
+// accountDataFrom projects an entitygen.Account into the generator-local
+// accountData shape consumed by the streaming pipeline. Handles both EOAs
+// (Code may be empty, or 23 B for EIP-7702 delegated EOAs) and contracts.
+func accountDataFrom(e *entitygen.Account) *accountData {
 	return &accountData{
 		address:  e.Address,
 		addrHash: e.AddrHash,
@@ -602,20 +575,6 @@ func (g *Generator) generateContract(numSlots int) *accountData {
 		codeHash: e.CodeHash,
 		storage:  e.Storage,
 	}
-}
-
-// generateSlotDistribution returns one slot count per configured contract.
-// Wrapper around entitygen.GenerateSlotDistribution.
-func (g *Generator) generateSlotDistribution() []int {
-	return entitygen.GenerateSlotDistribution(g.rng, g.config.Distribution, g.config.MinSlots, g.config.MaxSlots, g.config.NumContracts)
-}
-
-// generateSlotCount returns one slot count using the same per-contract RNG
-// draws as generateSlotDistribution. Used by the bintrie producer goroutine
-// which generates contracts one at a time. Wrapper around
-// entitygen.GenerateSlotCount.
-func (g *Generator) generateSlotCount() int {
-	return entitygen.GenerateSlotCount(g.rng, g.config.Distribution, g.config.MinSlots, g.config.MaxSlots)
 }
 
 // dirSize returns the total size of all files in a directory tree.

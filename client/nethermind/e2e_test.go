@@ -15,6 +15,7 @@ import (
 
 	"github.com/nerolation/state-actor/generator"
 	stategenesis "github.com/nerolation/state-actor/genesis"
+	"github.com/nerolation/state-actor/internal/autofill"
 	e2e "github.com/nerolation/state-actor/internal/e2e_testing"
 	"github.com/nerolation/state-actor/internal/engineapi"
 	"github.com/nerolation/state-actor/internal/oracle"
@@ -100,12 +101,10 @@ func TestE2ESuite(t *testing.T) {
 	}
 
 	const (
-		seed         = int64(42)
-		numAccounts  = 100
-		numContracts = 15_000 // ~100 MB warmup before spamoor (avg 27 slots × 240 B/entry)
-		codeSize     = 128
-		minSlots     = 5
-		maxSlots     = 50
+		seed = int64(42)
+		// e2eBudget targets ~100 MB of synthetic trie state (matching the
+		// pre-rewrite NumContracts=15_000 warmup).
+		e2eBudget uint64 = 100 << 20
 	)
 
 	// All 4 clients pin --fork=osaka after the writer migration to internal/genesisheader.Build. state-actor's
@@ -120,17 +119,17 @@ func TestE2ESuite(t *testing.T) {
 	dd, cleanup := e2e.AcquireDatadir(t, "NETH")
 	defer cleanup()
 
+	plan, err := autofill.PlanForBudget(e2eBudget)
+	if err != nil {
+		t.Fatalf("PlanForBudget: %v", err)
+	}
 	cfg := generator.Config{
-		DBPath:       dd.HostPath,
-		NumAccounts:  numAccounts,
-		NumContracts: numContracts,
-		CodeSize:     codeSize,
-		MinSlots:     minSlots,
-		MaxSlots:     maxSlots,
-		Seed:         seed,
-		Verbose:      true,
-		TrieMode:     generator.TrieModeMPT,
-		Genesis:      g,
+		DBPath:   dd.HostPath,
+		AutoFill: plan,
+		Seed:     seed,
+		Verbose:  true,
+		TrieMode: generator.TrieModeMPT,
+		Genesis:  g,
 	}
 	// Spec-driven pre-alloc via examples/full-matrix-spec-feature.yaml exercises
 	// every schema variant (including the spamoor sender). The Spec is
@@ -157,13 +156,8 @@ func TestE2ESuite(t *testing.T) {
 	}
 
 	eoas, contracts := oracle.Reproduce(oracle.ReproduceCfg{
-		Seed:         seed,
-		NumAccounts:  numAccounts,
-		NumContracts: numContracts,
-		CodeSize:     codeSize,
-		MinSlots:     minSlots,
-		MaxSlots:     maxSlots,
-		Distribution: cfg.Distribution,
+		Seed:     seed,
+		AutoFill: plan,
 	})
 
 	imageRef := nethImageRef()

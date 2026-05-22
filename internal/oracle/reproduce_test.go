@@ -3,26 +3,29 @@ package oracle
 import (
 	"testing"
 
-	"github.com/nerolation/state-actor/internal/entitygen"
+	"github.com/nerolation/state-actor/internal/autofill"
 )
 
 // TestReproduce_Determinism — same cfg → identical (addr, code, slots)
 // stream. Covers the load-bearing invariant: oracle tests rely on this
 // to know what the writer wrote.
 func TestReproduce_Determinism(t *testing.T) {
+	plan, err := autofill.PlanForBudget(512 << 10)
+	if err != nil {
+		t.Fatalf("PlanForBudget: %v", err)
+	}
 	cfg := ReproduceCfg{
-		Seed: 12345, NumAccounts: 10, NumContracts: 5,
-		CodeSize: 256, MinSlots: 1, MaxSlots: 100,
-		Distribution: entitygen.PowerLaw,
+		Seed:     12345,
+		AutoFill: plan,
 	}
 	a1, c1 := Reproduce(cfg)
 	a2, c2 := Reproduce(cfg)
 
-	if len(a1) != cfg.NumAccounts || len(a2) != cfg.NumAccounts {
-		t.Fatalf("EOA count: %d, %d, want %d", len(a1), len(a2), cfg.NumAccounts)
+	if len(a1) != plan.NumEOAs || len(a2) != plan.NumEOAs {
+		t.Fatalf("EOA count: %d, %d, want %d", len(a1), len(a2), plan.NumEOAs)
 	}
-	if len(c1) != cfg.NumContracts || len(c2) != cfg.NumContracts {
-		t.Fatalf("contract count: %d, %d, want %d", len(c1), len(c2), cfg.NumContracts)
+	if len(c1) != plan.NumContracts || len(c2) != plan.NumContracts {
+		t.Fatalf("contract count: %d, %d, want %d", len(c1), len(c2), plan.NumContracts)
 	}
 	for i := range a1 {
 		if a1[i].Address != a2[i].Address {
@@ -45,10 +48,13 @@ func TestReproduce_Determinism(t *testing.T) {
 // TestReproduce_DifferentSeeds — different seeds → different streams.
 // Trivial check, but locks the contract that seeding actually matters.
 func TestReproduce_DifferentSeeds(t *testing.T) {
+	plan, err := autofill.PlanForBudget(512 << 10)
+	if err != nil {
+		t.Fatalf("PlanForBudget: %v", err)
+	}
 	base := ReproduceCfg{
-		Seed: 1, NumAccounts: 3, NumContracts: 2,
-		CodeSize: 64, MinSlots: 1, MaxSlots: 5,
-		Distribution: entitygen.PowerLaw,
+		Seed:     1,
+		AutoFill: plan,
 	}
 	a1, _ := Reproduce(base)
 	base.Seed = 2

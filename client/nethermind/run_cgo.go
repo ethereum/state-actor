@@ -74,10 +74,9 @@ func runImpl(ctx context.Context, cfg generator.Config, opts Options) (*generato
 	defer dbs.Close()
 
 	// State-trie population: writeSyntheticAccounts handles every non-
-	// empty case (synthetic generation + genesis-alloc + spec-PreAlloc
-	// entities). Its per-loop gates on cfg.NumAccounts and
-	// cfg.NumContracts collapse the synthetic loops to zero iterations
-	// when the user passed --spec without --accounts/--contracts; the
+	// empty case (auto-fill Plan + genesis-alloc + spec-PreAlloc entities).
+	// Its per-loop gates on plan.NumEOAs / plan.NumContracts collapse to
+	// zero iterations when --spec is set without --target-size; the
 	// genesis-alloc loop and the spec-storage streaming Phase 0 still
 	// fire. Empty everything → state stays empty; root = EmptyTreeHash.
 	stateRoot := common.Hash(neth.EmptyTreeHash)
@@ -85,7 +84,12 @@ func runImpl(ctx context.Context, cfg generator.Config, opts Options) (*generato
 	allocCodes := cfg.GenesisCode
 	allocStorages := cfg.GenesisStorage
 	stats := &generator.Stats{}
-	if cfg.NumAccounts > 0 || cfg.NumContracts > 0 || len(allocAccounts) > 0 {
+	plannedEOAs, plannedContracts := 0, 0
+	if cfg.AutoFill != nil {
+		plannedEOAs = cfg.AutoFill.NumEOAs
+		plannedContracts = cfg.AutoFill.NumContracts
+	}
+	if plannedEOAs > 0 || plannedContracts > 0 || len(allocAccounts) > 0 {
 		stateRoot, err = writeSyntheticAccounts(ctx, dbs, cfg, allocAccounts, allocCodes, allocStorages, stats)
 		if err != nil {
 			return nil, fmt.Errorf("write state: %w", err)
@@ -118,13 +122,12 @@ func runImpl(ctx context.Context, cfg generator.Config, opts Options) (*generato
 		if len(allocAccounts) > 0 {
 			log.Printf("nethermind: preallocated %d accounts from cfg.GenesisAccounts (test-only path)", len(allocAccounts))
 		}
-		if cfg.NumAccounts > 0 || cfg.NumContracts > 0 {
-			log.Printf("nethermind: synthesized %d EOAs + %d contracts", cfg.NumAccounts, cfg.NumContracts)
+		if plannedEOAs > 0 || plannedContracts > 0 {
+			log.Printf("nethermind: synthesized %d EOAs + %d contracts (stats: %d / %d)",
+				plannedEOAs, plannedContracts, stats.AccountsCreated, stats.ContractsCreated)
 		}
 	}
 
 	stats.StateRoot = header.Root
-	stats.AccountsCreated = cfg.NumAccounts
-	stats.ContractsCreated = cfg.NumContracts
 	return stats, nil
 }

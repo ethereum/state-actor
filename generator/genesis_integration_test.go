@@ -47,15 +47,11 @@ func TestGenesisAccountsIntegration(t *testing.T) {
 		common.HexToAddress("0x2222222222222222222222222222222222222222"): {0x60, 0x00},
 	}
 
+	plan := mustPlan(t, 512<<10)
 	config := Config{
 		DBPath:          dbPath,
-		NumAccounts:     10,
-		NumContracts:    5,
-		MaxSlots:        100,
-		MinSlots:        1,
-		Distribution:    PowerLaw,
+		AutoFill:        plan,
 		Seed:            12345,
-		CodeSize:        256,
 		Verbose:         false,
 		GenesisAccounts: genesisAccounts,
 		GenesisStorage:  genesisStorage,
@@ -73,11 +69,10 @@ func TestGenesisAccountsIntegration(t *testing.T) {
 		t.Fatalf("Failed to generate state: %v", err)
 	}
 
-	// Verify stats include genesis accounts
-	// We have 2 genesis accounts: 1 EOA + 1 contract
-	// Plus 10 generated EOAs + 5 generated contracts
-	expectedAccounts := 1 + 10 // 1 genesis EOA + 10 generated
-	expectedContracts := 1 + 5 // 1 genesis contract + 5 generated
+	// Verify stats include genesis accounts: 2 genesis accounts (1 EOA + 1
+	// contract) plus plan.NumEOAs/plan.NumContracts synthetic ones.
+	expectedAccounts := 1 + plan.NumEOAs
+	expectedContracts := 1 + plan.NumContracts
 
 	if stats.AccountsCreated != expectedAccounts {
 		t.Errorf("Expected %d accounts, got %d", expectedAccounts, stats.AccountsCreated)
@@ -188,15 +183,11 @@ func TestGenesisAccountsIntegrationBinaryTrie(t *testing.T) {
 		common.HexToAddress("0x2222222222222222222222222222222222222222"): {0x60, 0x00},
 	}
 
+	plan := mustPlan(t, 512<<10)
 	config := Config{
 		DBPath:          dbPath,
-		NumAccounts:     10,
-		NumContracts:    5,
-		MaxSlots:        100,
-		MinSlots:        1,
-		Distribution:    PowerLaw,
+		AutoFill:        plan,
 		Seed:            12345,
-		CodeSize:        256,
 		Verbose:         false,
 		TrieMode:        TrieModeBinary,
 		GenesisAccounts: genesisAccounts,
@@ -215,9 +206,9 @@ func TestGenesisAccountsIntegrationBinaryTrie(t *testing.T) {
 		t.Fatalf("Failed to generate state: %v", err)
 	}
 
-	// Verify stats
-	expectedAccounts := 1 + 10 // 1 genesis EOA + 10 generated
-	expectedContracts := 1 + 5     // 1 genesis contract + 5 generated
+	// Verify stats: 1 genesis EOA + plan EOAs / 1 genesis contract + plan contracts.
+	expectedAccounts := 1 + plan.NumEOAs
+	expectedContracts := 1 + plan.NumContracts
 
 	if stats.AccountsCreated != expectedAccounts {
 		t.Errorf("Expected %d accounts, got %d", expectedAccounts, stats.AccountsCreated)
@@ -310,15 +301,11 @@ func TestGenesisAccountNoCollision(t *testing.T) {
 		},
 	}
 
+	plan := mustPlan(t, 2<<20)
 	config := Config{
 		DBPath:          dbPath,
-		NumAccounts:     100,
-		NumContracts:    50,
-		MaxSlots:        10,
-		MinSlots:        1,
-		Distribution:    Uniform,
+		AutoFill:        plan,
 		Seed:            99999,
-		CodeSize:        64,
 		Verbose:         false,
 		GenesisAccounts: genesisAccounts,
 	}
@@ -334,12 +321,13 @@ func TestGenesisAccountNoCollision(t *testing.T) {
 		t.Fatalf("Failed to generate state: %v", err)
 	}
 
-	// Should have 1 genesis EOA + 100 generated + 50 contracts
-	if stats.AccountsCreated != 101 {
-		t.Errorf("Expected 101 accounts (1 genesis + 100 generated), got %d", stats.AccountsCreated)
+	// Should have 1 genesis EOA + plan.NumEOAs synthetic + plan.NumContracts.
+	if stats.AccountsCreated != 1+plan.NumEOAs {
+		t.Errorf("Expected %d accounts (1 genesis + %d synthetic), got %d",
+			1+plan.NumEOAs, plan.NumEOAs, stats.AccountsCreated)
 	}
-	if stats.ContractsCreated != 50 {
-		t.Errorf("Expected 50 contracts, got %d", stats.ContractsCreated)
+	if stats.ContractsCreated != plan.NumContracts {
+		t.Errorf("Expected %d contracts, got %d", plan.NumContracts, stats.ContractsCreated)
 	}
 }
 
@@ -361,15 +349,11 @@ func TestReproducibilityWithGenesis(t *testing.T) {
 		dir := t.TempDir()
 		dbPath := filepath.Join(dir, "chaindata")
 
+		plan := mustPlan(t, 2<<20)
 		config := Config{
 			DBPath:          dbPath,
-			NumAccounts:     50,
-			NumContracts:    25,
-			MaxSlots:        100,
-			MinSlots:        1,
-			Distribution:    PowerLaw,
+			AutoFill:        plan,
 			Seed:            42,
-			CodeSize:        128,
 			Verbose:         false,
 			GenesisAccounts: genesisAccounts,
 		}
@@ -403,16 +387,12 @@ func TestEmptyGenesisAccounts(t *testing.T) {
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "chaindata")
 
+	plan := mustPlan(t, 512<<10)
 	config := Config{
-		DBPath:          dbPath,
-		NumAccounts:     10,
-		NumContracts:    5,
-		MaxSlots:        50,
-		MinSlots:        1,
-		Distribution:    Uniform,
-		Seed:            123,
-		CodeSize:        128,
-		Verbose:         false,
+		DBPath:   dbPath,
+		AutoFill: plan,
+		Seed:     123,
+		Verbose:  false,
 		// No GenesisAccounts
 	}
 
@@ -427,11 +407,11 @@ func TestEmptyGenesisAccounts(t *testing.T) {
 		t.Fatalf("Failed to generate state: %v", err)
 	}
 
-	if stats.AccountsCreated != 10 {
-		t.Errorf("Expected 10 accounts, got %d", stats.AccountsCreated)
+	if stats.AccountsCreated != plan.NumEOAs {
+		t.Errorf("Expected %d accounts, got %d", plan.NumEOAs, stats.AccountsCreated)
 	}
-	if stats.ContractsCreated != 5 {
-		t.Errorf("Expected 5 contracts, got %d", stats.ContractsCreated)
+	if stats.ContractsCreated != plan.NumContracts {
+		t.Errorf("Expected %d contracts, got %d", plan.NumContracts, stats.ContractsCreated)
 	}
 }
 
@@ -456,15 +436,11 @@ func TestLargeGenesisAlloc(t *testing.T) {
 		}
 	}
 
+	plan := mustPlan(t, 2<<20)
 	config := Config{
 		DBPath:          dbPath,
-		NumAccounts:     100,
-		NumContracts:    50,
-		MaxSlots:        10,
-		MinSlots:        1,
-		Distribution:    Uniform,
+		AutoFill:        plan,
 		Seed:            777,
-		CodeSize:        64,
 		Verbose:         false,
 		GenesisAccounts: genesisAccounts,
 	}
@@ -480,12 +456,13 @@ func TestLargeGenesisAlloc(t *testing.T) {
 		t.Fatalf("Failed to generate state: %v", err)
 	}
 
-	// 1000 genesis EOAs + 100 generated = 1100 accounts
-	if stats.AccountsCreated != 1100 {
-		t.Errorf("Expected 1100 accounts, got %d", stats.AccountsCreated)
+	// 1000 genesis EOAs + plan.NumEOAs synthetic.
+	if stats.AccountsCreated != 1000+plan.NumEOAs {
+		t.Errorf("Expected %d accounts (1000 genesis + %d synthetic), got %d",
+			1000+plan.NumEOAs, plan.NumEOAs, stats.AccountsCreated)
 	}
-	if stats.ContractsCreated != 50 {
-		t.Errorf("Expected 50 contracts, got %d", stats.ContractsCreated)
+	if stats.ContractsCreated != plan.NumContracts {
+		t.Errorf("Expected %d contracts, got %d", plan.NumContracts, stats.ContractsCreated)
 	}
 
 	// Cleanup

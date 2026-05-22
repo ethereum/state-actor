@@ -14,6 +14,7 @@ import (
 	"github.com/nerolation/state-actor/client/geth"
 	"github.com/nerolation/state-actor/generator"
 	"github.com/nerolation/state-actor/genesis"
+	"github.com/nerolation/state-actor/internal/autofill"
 )
 
 // TestEndToEndWithGenesis tests the complete workflow:
@@ -87,15 +88,14 @@ func TestEndToEndWithGenesis(t *testing.T) {
 	}
 
 	// Configure generator with genesis accounts
+	plan, err := autofill.PlanForBudget(2 << 20)
+	if err != nil {
+		t.Fatalf("PlanForBudget: %v", err)
+	}
 	config := generator.Config{
 		DBPath:          dbPath,
-		NumAccounts:     100,
-		NumContracts:    50,
-		MaxSlots:        1000,
-		MinSlots:        10,
-		Distribution:    generator.PowerLaw,
+		AutoFill:        plan,
 		Seed:            12345,
-		CodeSize:        512,
 		Verbose:         false,
 		GenesisAccounts: gen.ToStateAccounts(),
 		GenesisStorage:  gen.GetAllocStorage(),
@@ -201,11 +201,10 @@ func TestEndToEndWithGenesis(t *testing.T) {
 		t.Errorf("SnapshotRoot mismatch: got %x, want %s", snapshotRoot, stats.StateRoot.Hex())
 	}
 
-	// Verify expected counts
-	// 3 genesis accounts: 1 EOA, 2 contracts
-	// Plus 100 generated EOAs, 50 generated contracts
-	expectedAccounts := 1 + 100 // 1 genesis EOA + 100 generated
-	expectedContracts := 2 + 50 // 2 genesis contracts + 50 generated
+	// Verify expected counts: 3 genesis accounts (1 EOA, 2 contracts) plus
+	// the auto-fill plan's synthetic counts.
+	expectedAccounts := 1 + plan.NumEOAs
+	expectedContracts := 2 + plan.NumContracts
 
 	if stats.AccountsCreated != expectedAccounts {
 		t.Errorf("Account count mismatch: got %d, want %d", stats.AccountsCreated, expectedAccounts)
@@ -277,15 +276,14 @@ func TestEndToEndWithGenesisBinaryTrie(t *testing.T) {
 		t.Fatalf("Failed to load genesis: %v", err)
 	}
 
+	plan, err := autofill.PlanForBudget(1 << 20)
+	if err != nil {
+		t.Fatalf("PlanForBudget: %v", err)
+	}
 	config := generator.Config{
 		DBPath:          dbPath,
-		NumAccounts:     50,
-		NumContracts:    20,
-		MaxSlots:        100,
-		MinSlots:        5,
-		Distribution:    generator.PowerLaw,
+		AutoFill:        plan,
 		Seed:            12345,
-		CodeSize:        256,
 		Verbose:         false,
 		TrieMode:        generator.TrieModeBinary,
 		GenesisAccounts: gen.ToStateAccounts(),
@@ -361,9 +359,9 @@ func TestEndToEndWithGenesisBinaryTrie(t *testing.T) {
 		t.Error("Chain config should have EnableVerkleAtGenesis=true for binary trie mode")
 	}
 
-	// Verify expected counts
-	expectedAccounts := 1 + 50 // 1 genesis EOA + 50 generated
-	expectedContracts := 1 + 20 // 1 genesis contract + 20 generated
+	// Verify expected counts: 1 genesis EOA + plan EOAs, 1 genesis contract + plan contracts.
+	expectedAccounts := 1 + plan.NumEOAs
+	expectedContracts := 1 + plan.NumContracts
 
 	if stats.AccountsCreated != expectedAccounts {
 		t.Errorf("Account count mismatch: got %d, want %d", stats.AccountsCreated, expectedAccounts)

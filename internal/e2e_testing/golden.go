@@ -7,25 +7,30 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 
 	"github.com/nerolation/state-actor/generator"
+	"github.com/nerolation/state-actor/internal/autofill"
 	"github.com/nerolation/state-actor/internal/entitygen"
 	"github.com/nerolation/state-actor/internal/syscontracts"
 )
 
+// GoldenTestBudget is the auto-fill target budget every cross-client
+// golden-root test runs against. Small enough to keep CI fast, large
+// enough to produce a non-trivial Plan (NumContracts > 0).
+const GoldenTestBudget = 256 << 10 // 256 KiB
+
 // GoldenStateRootCfg returns the canonical Osaka-bootable config every
-// MPT-mode client adapter must produce the same state root for: 10 EOAs +
-// 5 contracts (seed=12345, PowerLaw, MaxSlots=100, CodeSize=256). Callers
-// supply DBPath and may set TrieMode / WriteTrieNodes / Verbose before
-// passing the cfg to AssertGoldenStateRoot.
+// MPT-mode client adapter must produce the same state root for: the
+// auto-fill Plan that PlanForBudget(GoldenTestBudget) computes, with
+// seed=12345. Callers supply DBPath and may set TrieMode / WriteTrieNodes /
+// Verbose before passing the cfg to AssertGoldenStateRoot.
 func GoldenStateRootCfg(dbPath string) generator.Config {
+	plan, err := autofill.PlanForBudget(GoldenTestBudget)
+	if err != nil {
+		panic("e2e_testing: PlanForBudget for GoldenTestBudget should never error: " + err.Error())
+	}
 	return generator.Config{
-		DBPath:       dbPath,
-		NumAccounts:  10,
-		NumContracts: 5,
-		MaxSlots:     100,
-		MinSlots:     1,
-		Distribution: generator.PowerLaw,
-		Seed:         12345,
-		CodeSize:     256,
+		DBPath:   dbPath,
+		AutoFill: plan,
+		Seed:     12345,
 	}
 }
 

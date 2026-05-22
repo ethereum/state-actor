@@ -8,7 +8,7 @@ import (
 	"github.com/ethereum/go-ethereum/core/types"
 
 	"github.com/nerolation/state-actor/genesis"
-	"github.com/nerolation/state-actor/internal/entitygen"
+	"github.com/nerolation/state-actor/internal/autofill"
 	"github.com/nerolation/state-actor/internal/templates"
 )
 
@@ -24,50 +24,19 @@ const (
 	TrieModeBinary TrieMode = "binary"
 )
 
-// Distribution selects how storage-slot counts vary across contracts.
-// Re-exported from internal/entitygen so existing callers (CLI, tests)
-// continue to work unchanged.
-type Distribution = entitygen.Distribution
-
-const (
-	// PowerLaw distribution - most contracts have few slots, few have many.
-	PowerLaw = entitygen.PowerLaw
-	// Uniform distribution - all contracts have similar slot counts.
-	Uniform = entitygen.Uniform
-	// Exponential distribution - exponential decay in slot counts.
-	Exponential = entitygen.Exponential
-)
-
-// ParseDistribution parses a distribution string.
-func ParseDistribution(s string) Distribution {
-	return entitygen.ParseDistribution(s)
-}
-
 // Config holds the configuration for state generation.
 type Config struct {
 	// DBPath is the path to the Pebble database directory.
 	DBPath string
 
-	// NumAccounts is the number of EOA accounts to create.
-	NumAccounts int
-
-	// NumContracts is the number of contract accounts to create.
-	NumContracts int
-
-	// MaxSlots is the maximum number of storage slots per contract.
-	MaxSlots int
-
-	// MinSlots is the minimum number of storage slots per contract.
-	MinSlots int
-
-	// Distribution is the storage slot distribution strategy.
-	Distribution Distribution
+	// AutoFill is the resolved synthetic-fill plan. Built from --target-size
+	// (and the spec headroom when --spec is set) by internal/autofill, or by
+	// tests calling autofill.PlanForBudget directly. nil means no synthetic
+	// top-up runs — writers emit only PreAlloc + GenesisAccounts.
+	AutoFill *autofill.Plan
 
 	// Seed is the random seed for reproducible generation.
 	Seed int64
-
-	// CodeSize is the average contract code size in bytes.
-	CodeSize int
 
 	// Verbose enables verbose logging.
 	Verbose bool
@@ -108,9 +77,10 @@ type Config struct {
 	WriteTrieNodes bool
 
 	// TargetSize is the target total database size on disk in bytes.
-	// When set (> 0), this is the GOVERNING constraint: contracts are
-	// generated until the projected on-disk size reaches this target.
-	// NumContracts serves as a safety upper bound. 0 means no size limit.
+	// When set (> 0), writers stop emitting once the projected on-disk
+	// size reaches this target. AutoFill.NumEOAs / NumContracts are the
+	// upper bound on emission; the target-size stop kicks in earlier when
+	// the budget is exhausted before the counts are.
 	TargetSize uint64
 
 	// GroupDepth is the binary trie group depth (1-8, default 8).
@@ -131,8 +101,9 @@ type Config struct {
 	Archive bool
 }
 
-// Validate materializes PreAlloc into the GenesisAccounts/Code maps
-// and rejects orphan Storage/Code entries. Must be called before any
+// Validate materializes PreAlloc into the GenesisAccounts/Code maps,
+// rejects orphan Storage/Code entries, and ensures the writer has at
+// least one source of entities to emit. Must be called before any
 // writer consumes Config.
 func (c *Config) Validate() error {
 	if err := c.materializePreAlloc(); err != nil {
@@ -148,6 +119,10 @@ func (c *Config) Validate() error {
 		if _, ok := c.GenesisAccounts[a]; !ok {
 			return fmt.Errorf("Config: GenesisStorage[%s] has no corresponding GenesisAccounts entry (orphan storage)", a.Hex())
 		}
+	}
+
+	if c.AutoFill == nil && len(c.PreAlloc) == 0 && len(c.GenesisAccounts) == 0 {
+		return fmt.Errorf("Config: no entities to emit — set AutoFill (via autofill.PlanForBudget) or supply PreAlloc/GenesisAccounts")
 	}
 	return nil
 }

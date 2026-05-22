@@ -11,7 +11,17 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 
 	"github.com/nerolation/state-actor/generator"
+	"github.com/nerolation/state-actor/internal/autofill"
 )
+
+func rethTestPlan(tb testing.TB, budget uint64) *autofill.Plan {
+	tb.Helper()
+	p, err := autofill.PlanForBudget(budget)
+	if err != nil {
+		tb.Fatalf("PlanForBudget(%d): %v", budget, err)
+	}
+	return p
+}
 
 func TestRunCgoEmptyAlloc(t *testing.T) {
 	tmp := t.TempDir()
@@ -38,10 +48,11 @@ func TestRunCgoEmptyAlloc(t *testing.T) {
 
 func TestRunCgoSyntheticEOAs(t *testing.T) {
 	tmp := t.TempDir()
+	plan := rethTestPlan(t, 512<<10)
 	cfg := generator.Config{
-		DBPath:      tmp,
-		NumAccounts: 50,
-		Seed:        12345,
+		DBPath:   tmp,
+		AutoFill: plan,
+		Seed:     12345,
 	}
 	stats, err := RunCgo(context.Background(), cfg, Options{})
 	if err != nil {
@@ -50,8 +61,8 @@ func TestRunCgoSyntheticEOAs(t *testing.T) {
 	if stats == nil {
 		t.Fatal("RunCgo returned nil stats")
 	}
-	if stats.AccountsCreated != 50 {
-		t.Errorf("AccountsCreated = %d, want 50", stats.AccountsCreated)
+	if stats.AccountsCreated != plan.NumEOAs {
+		t.Errorf("AccountsCreated = %d, want %d", stats.AccountsCreated, plan.NumEOAs)
 	}
 	emptyRoot := common.HexToHash("0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421")
 	if stats.StateRoot == emptyRoot {
@@ -66,7 +77,8 @@ func TestRunCgoSyntheticEOAs(t *testing.T) {
 
 func TestRunCgoSyntheticEOAsDeterminism(t *testing.T) {
 	// Same seed → same state root.
-	cfg := generator.Config{NumAccounts: 25, Seed: 9999}
+	plan := rethTestPlan(t, 512<<10)
+	cfg := generator.Config{AutoFill: plan, Seed: 9999}
 	tmp1 := t.TempDir()
 	cfg.DBPath = tmp1
 	s1, err := RunCgo(context.Background(), cfg, Options{})
@@ -86,11 +98,11 @@ func TestRunCgoSyntheticEOAsDeterminism(t *testing.T) {
 
 func TestRunCgoSyntheticContracts(t *testing.T) {
 	tmp := t.TempDir()
+	plan := rethTestPlan(t, 512<<10)
 	cfg := generator.Config{
-		DBPath:       tmp,
-		NumAccounts:  20,
-		NumContracts: 5,
-		Seed:         42,
+		DBPath:   tmp,
+		AutoFill: plan,
+		Seed:     42,
 	}
 	stats, err := RunCgo(context.Background(), cfg, Options{})
 	if err != nil {
@@ -99,11 +111,11 @@ func TestRunCgoSyntheticContracts(t *testing.T) {
 	if stats == nil {
 		t.Fatal("RunCgo returned nil stats")
 	}
-	if stats.AccountsCreated != 20 {
-		t.Errorf("AccountsCreated = %d, want 20", stats.AccountsCreated)
+	if stats.AccountsCreated != plan.NumEOAs {
+		t.Errorf("AccountsCreated = %d, want %d", stats.AccountsCreated, plan.NumEOAs)
 	}
-	if stats.ContractsCreated != 5 {
-		t.Errorf("ContractsCreated = %d, want 5", stats.ContractsCreated)
+	if stats.ContractsCreated != plan.NumContracts {
+		t.Errorf("ContractsCreated = %d, want %d", stats.ContractsCreated, plan.NumContracts)
 	}
 	emptyRoot := common.HexToHash("0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421")
 	if stats.StateRoot == emptyRoot {
@@ -125,7 +137,8 @@ func TestRunCgoSyntheticContracts(t *testing.T) {
 }
 
 func TestRunCgoContractsDeterminism(t *testing.T) {
-	cfg := generator.Config{NumAccounts: 10, NumContracts: 3, Seed: 1234}
+	plan := rethTestPlan(t, 512<<10)
+	cfg := generator.Config{AutoFill: plan, Seed: 1234}
 	var roots [2]common.Hash
 	for i := range roots {
 		tmp := t.TempDir()

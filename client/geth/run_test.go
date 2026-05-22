@@ -14,24 +14,30 @@ import (
 	"github.com/holiman/uint256"
 
 	"github.com/nerolation/state-actor/generator"
+	"github.com/nerolation/state-actor/internal/autofill"
 	"github.com/nerolation/state-actor/internal/sizecal"
 )
+
+func gethTestPlan(tb testing.TB, budget uint64) *autofill.Plan {
+	tb.Helper()
+	p, err := autofill.PlanForBudget(budget)
+	if err != nil {
+		tb.Fatalf("PlanForBudget(%d): %v", budget, err)
+	}
+	return p
+}
 
 // TestPopulateReproducibility runs Populate twice with the same seed
 // and asserts the state roots match. If RNG draws drift between runs
 // the cross-client invariant breaks immediately.
 func TestPopulateReproducibility(t *testing.T) {
+	plan := gethTestPlan(t, 512<<10)
 	cfg := func(t *testing.T) generator.Config {
 		dir := t.TempDir()
 		return generator.Config{
 			DBPath:         filepath.Join(dir, "geth", "chaindata"),
-			NumAccounts:    20,
-			NumContracts:   8,
-			MaxSlots:       16,
-			MinSlots:       2,
-			Distribution:   generator.PowerLaw,
+			AutoFill:       plan,
 			Seed:           123,
-			CodeSize:       64,
 			TrieMode:       generator.TrieModeMPT,
 			WriteTrieNodes: true,
 		}
@@ -52,11 +58,11 @@ func TestPopulateReproducibility(t *testing.T) {
 	if (statsA.StateRoot == common.Hash{}) {
 		t.Fatal("state root unexpectedly zero")
 	}
-	if statsA.AccountsCreated != 20 {
-		t.Errorf("expected 20 accounts, got %d", statsA.AccountsCreated)
+	if statsA.AccountsCreated != plan.NumEOAs {
+		t.Errorf("expected %d accounts, got %d", plan.NumEOAs, statsA.AccountsCreated)
 	}
-	if statsA.ContractsCreated != 8 {
-		t.Errorf("expected 8 contracts, got %d", statsA.ContractsCreated)
+	if statsA.ContractsCreated != plan.NumContracts {
+		t.Errorf("expected %d contracts, got %d", plan.NumContracts, statsA.ContractsCreated)
 	}
 }
 
@@ -71,15 +77,11 @@ func TestPopulateReproducibility(t *testing.T) {
 // produces a canonically-ordered StackTrie input.
 func TestPopulateRootMatchesEntitygen(t *testing.T) {
 	dir := t.TempDir()
+	plan := gethTestPlan(t, 512<<10)
 	cfg := generator.Config{
 		DBPath:         filepath.Join(dir, "geth", "chaindata"),
-		NumAccounts:    10,
-		NumContracts:   3,
-		MaxSlots:       8,
-		MinSlots:       1,
-		Distribution:   generator.PowerLaw,
+		AutoFill:       plan,
 		Seed:           777,
-		CodeSize:       32,
 		TrieMode:       generator.TrieModeMPT,
 		WriteTrieNodes: true,
 	}
@@ -139,15 +141,11 @@ func TestPopulateTargetSizeStopsAccurately(t *testing.T) {
 	}
 	dir := t.TempDir()
 	const target uint64 = 200 * 1024 * 1024 // 200 MiB
+	plan := gethTestPlan(t, 5*target)        // generous safety upper bound
 	cfg := generator.Config{
 		DBPath:         filepath.Join(dir, "geth", "chaindata"),
-		NumAccounts:    100,
-		NumContracts:   1_000_000, // generous safety upper bound
-		MaxSlots:       50,
-		MinSlots:       5,
-		Distribution:   generator.PowerLaw,
+		AutoFill:       plan,
 		Seed:           42,
-		CodeSize:       128,
 		TrieMode:       generator.TrieModeMPT,
 		WriteTrieNodes: true,
 		TargetSize:     target,
@@ -199,11 +197,10 @@ func TestPopulateGenesisAlloc(t *testing.T) {
 		CodeHash: types.EmptyCodeHash.Bytes(),
 	}
 
-	// Build a minimal "alloc-only" config (no synthetic accounts).
+	// Build a minimal "alloc-only" config (no synthetic accounts; AutoFill nil).
 	cfg := generator.Config{
 		DBPath:         filepath.Join(dir, "geth", "chaindata"),
 		Seed:           1,
-		Distribution:   generator.PowerLaw,
 		TrieMode:       generator.TrieModeMPT,
 		WriteTrieNodes: true,
 		GenesisAccounts: map[common.Address]*types.StateAccount{

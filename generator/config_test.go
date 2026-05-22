@@ -51,7 +51,11 @@ func TestConfig_Validate_RejectsOrphanStorage(t *testing.T) {
 
 func TestConfig_Validate_EmptyConfig(t *testing.T) {
 	cfg := Config{}
-	if err := cfg.Validate(); err != nil {
-		t.Errorf("Validate should accept empty config: %v", err)
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("Validate should reject a config with no AutoFill / PreAlloc / GenesisAccounts")
+	}
+	if !strings.Contains(err.Error(), "no entities to emit") {
+		t.Errorf("error should mention missing entities, got: %v", err)
 	}
 }

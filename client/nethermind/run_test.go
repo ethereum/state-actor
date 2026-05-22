@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/nerolation/state-actor/generator"
+	"github.com/nerolation/state-actor/internal/autofill"
 )
 
 // TestRun_StubReturnsNotImplemented pins the !cgo_neth build behavior:
@@ -19,7 +20,14 @@ import (
 // Skipped when built with -tags cgo_neth — that path is exercised by
 // the differential-oracle test inside the Docker context.
 func TestRun_StubReturnsNotImplemented(t *testing.T) {
-	stats, err := Run(context.Background(), generator.Config{}, Options{})
+	// Pass a Validate-clean config (AutoFill set) so Run reaches runImpl;
+	// the stub there returns errNotImplemented unconditionally.
+	plan, err := autofill.PlanForBudget(512 << 10)
+	if err != nil {
+		t.Fatalf("PlanForBudget: %v", err)
+	}
+	cfg := generator.Config{AutoFill: plan, Seed: 1}
+	stats, err := Run(context.Background(), cfg, Options{})
 	if err == nil {
 		t.Fatal("Run returned nil error; expected stub error")
 	}
