@@ -17,6 +17,14 @@
   <a href="AGENTS.md">For agents</a>
 </p>
 
+> [!TIP]
+> If you want Claude, Codex, Cursor, or another coding agent to operate
+> state-actor for you, point it at [`AGENTS.md`](AGENTS.md) (the entry
+> pointer) or directly at [`docs/SKILL.md`](docs/SKILL.md) (the deep doc).
+> The canonical syntax reference for what `--spec` can express is
+> [`examples/full-matrix-spec-feature.yaml`](examples/full-matrix-spec-feature.yaml) —
+> CI keeps it correct.
+
 ---
 
 ## Why

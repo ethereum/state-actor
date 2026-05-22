@@ -1,5 +1,17 @@
 # `--spec` YAML schema
 
+> [!IMPORTANT]
+> **This file is the schema reference** — parser rules, validation errors,
+> the address-resolution algorithm, `approximate_size_bytes` semantics.
+>
+> **The syntax reference** — every feature shown in practice — is
+> [`../examples/full-matrix-spec-feature.yaml`](../examples/full-matrix-spec-feature.yaml).
+> Read it alongside this file. The fixture is CI-pinned by
+> `TestBuildFullMatrix`, every per-client `TestE2ESuite`, and the
+> cross-client genesis-root invariant job, so it stays correct
+> automatically. [`docs/SKILL.md`](SKILL.md#canonical-spec-reference) has an
+> intent → entity-# index for navigating it.
+
 State-actor's `--spec` flag accepts a YAML file declaring concrete entities
 (EOAs + contracts) the writer must include in generated genesis state.
 Spec entities are written first; the synthetic-fill loop

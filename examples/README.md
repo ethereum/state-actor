@@ -15,12 +15,9 @@ Each YAML in this directory demonstrates a slice of the `--spec` system. Pick by
 
 ## Choose your spec
 
-- "I just want to see `--spec` work" → `spec-minimal.yaml`.
-- "I want ERC-20 tokens of specific sizes" → `spec-erc20-mixed-sizes.yaml`.
-- "I want bloated 7702 EOAs" → `spec-eoa-bloat.yaml`.
-- "I want to exercise every feature at once" → `full-matrix-spec-feature.yaml`.
+For every feature in practice, read [`full-matrix-spec-feature.yaml`](full-matrix-spec-feature.yaml) — it covers every combination. The intent → entity-# index is in [`docs/SKILL.md#canonical-spec-reference`](../docs/SKILL.md#canonical-spec-reference). Use one of the smaller files (`spec-minimal.yaml`, `spec-erc20-mixed-sizes.yaml`, `spec-eoa-bloat.yaml`) when you want a focused example rather than the full matrix.
 
-For the full schema (entity kinds, address resolution modes, template parameters, validation rules), see [`docs/SPEC.md`](../docs/SPEC.md).
+For the schema (parser rules, address resolution algorithm, validation), see [`docs/SPEC.md`](../docs/SPEC.md).
 
 ## How to use a spec
 
