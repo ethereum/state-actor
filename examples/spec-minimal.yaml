@@ -1,0 +1,16 @@
+# The smallest valid --spec file: a single EOA with explicit address and
+# balance. Useful as a sanity check that --spec parses, runs end-to-end,
+# and writes the entity to the chosen client's database.
+#
+# Run:
+#   state-actor --client=geth --db=/tmp/sa-minimal \
+#     --spec=examples/spec-minimal.yaml \
+#     --accounts=0 --contracts=0
+#
+# Verify (after booting the client per docs/RUNBOOK.md):
+#   cast balance 0x1111111111111111111111111111111111111111 --rpc-url ...
+#   → 1000000000000000000  (1 ETH)
+entities:
+  - kind: eoa
+    address: 0x1111111111111111111111111111111111111111
+    balance: "1000000000000000000"
