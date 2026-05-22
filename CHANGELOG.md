@@ -2,8 +2,7 @@
 
 ## Unreleased
 
-### Breaking Changes
-
+### Breaking
 - **Removed `--accounts`, `--contracts`, `--max-slots`, `--min-slots`,
   `--distribution`, `--code-size` flags.** Synthetic state generation is
   now driven by a single `--target-size` flag plus the new
@@ -15,13 +14,11 @@
   (90 % non-zero), nonce (always non-zero), and EIP-7702 delegation
   (30 %) independently. **Closes
   [ethereum/state-actor#82](https://github.com/ethereum/state-actor/issues/82).**
-
-- **`--target-size` is now required when `--spec` is not set.**
-  Replaces the previous default-1100-entity silent behavior. Existing
-  invocations that combined `--spec` with default
-  `--accounts=1000 --contracts=100` (and worked around the collision
-  with `--accounts=0 --contracts=0`) become simply `--spec=...`.
-
+- **`--target-size` is now required when `--spec` is not set.** Replaces
+  the previous default-1100-entity silent behavior. Existing invocations
+  that combined `--spec` with default `--accounts=1000 --contracts=100`
+  (and worked around the collision with `--accounts=0 --contracts=0`)
+  become simply `--spec=...`.
 - **Golden state-root hashes regenerated.**
   `entitygen.CanonicalOsakaMPTRoot` and the binary-trie golden in
   `generator/generator_test.go` are pinned to the new auto-fill output.
@@ -53,8 +50,8 @@
 - Nethermind synthetic-accounts writer (`client/nethermind/`) now
   threads alloc storage through the storage-trie path — **closes
   https://github.com/nerolation/state-actor/issues/22**. Specs combining
-  storage-bearing entities AND `--accounts`/`--contracts > 0` work on
-  nethermind for the first time.
+  storage-bearing entities with synthetic auto-fill (`--target-size`)
+  work on nethermind for the first time.
 
 ### Removed
 - **`--inject-accounts` flag AND `Config.InjectAddresses` Go field** —

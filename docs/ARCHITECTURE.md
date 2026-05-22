@@ -18,7 +18,8 @@ State Actor generates Ethereum state in three phases:
 │  ┌─────────────────────────────────────────────────────────────────────┐ │
 │  │                         main.go                                     │ │
 │  │  • Parse flags                                                      │ │
-│  │  • Load genesis.json (optional)                                     │ │
+│  │  • Synthesize chainspec from --chain-id/--fork/--gas-limit/...      │ │
+│  │  • Load optional --spec YAML                                        │ │
 │  │  • Initialize generator                                             │ │
 │  │  • Print statistics                                                 │ │
 │  └─────────────────────────────────────────────────────────────────────┘ │
@@ -96,21 +97,37 @@ State Actor generates Ethereum state in three phases:
 
 ### 1. Initialization
 
-```go
-// Load genesis (optional)
-genesis, _ := genesis.LoadGenesis("genesis.json")
+State Actor synthesises a chainspec from CLI flags (`--chain-id`, `--fork`,
+`--gas-limit`, `--timestamp`, `--extra-data`) and optionally loads a YAML
+state-spec via `--spec` (see [`SPEC.md`](SPEC.md)).
 
-// Create config with genesis accounts
+```go
+// Synthesize genesis chainspec from flags
+g, _ := stategenesis.BuildSynthetic(fork, chainID, gasLimit, timestamp, extraData)
+
+// Optionally parse + validate a YAML spec
+specDoc, _ := spec.ParseFile(specPath)
+specDoc.Validate(templates.UserVisibleNames())
+
+// Resolve spec entities → PreAlloc (explicit / name-derived / position-derived
+// addresses; storage synthesized from approximate_size_bytes via per-client
+// sizecal factors).
+preAlloc, _, _ := specbuild.Build(specDoc, specbuild.BuildOptions{Seed: seed, Client: client})
+
 config := generator.Config{
-    GenesisAccounts: genesis.ToStateAccounts(),
-    GenesisStorage:  genesis.GetAllocStorage(),
-    GenesisCode:     genesis.GetAllocCode(),
+    DBPath:     dbPath,
+    Genesis:    g,
+    PreAlloc:   preAlloc,                  // spec entities, written first
+    AutoFill:   autofill.PlanForBudget(b), // mainnet-shaped synthetic fill (nil = none)
+    TargetSize: b,                         // on-disk stop condition
     // ... other config
 }
-
-// Create generator (opens Pebble DB)
-gen, _ := generator.New(config)
 ```
+
+The PreAlloc list captures every spec entity; if `--target-size` is set,
+`internal/autofill.Plan` drives the synthetic top-up with mainnet-shaped
+20 / 10 / 70 proportions (account-trie / bytecode / storage) on top until
+the target is reached.
 
 ### 2. Account Generation
 
@@ -267,59 +284,92 @@ import "github.com/nerolation/state-actor/client/geth"
 gen, err := generator.NewWithWriter(cfg, geth.NewWriterFactory())
 ```
 
-Today's client adapters: `client/geth/` (the original, geth-format Pebble)
-and `client/nethermind/` (cgo+grocksdb, direct RocksDB write). A
-`client/reth/` adapter exists on a parallel branch and follows the same
-shape: a `Writer` implementing `generator.Writer`, plus a `NewWriterFactory()`
-and an init() registration.
+Today's client adapters:
 
-The Nethermind adapter takes a different route from the geth/reth ones:
-instead of writing a chainspec for the client to consume, it writes the
-seven RocksDB instances Nethermind reads on boot directly (state, code,
-blocks, headers, blockNumbers, blockInfos, receipts). This bypasses
-Nethermind's `LoadGenesisBlock` step (which would deserialize every alloc
-account into a `Dictionary<Address, ChainSpecAllocation>` — fine at small
-scale, OOMs at multi-million-account scale per upstream issue #7361). The
-boot gate is `BlockInfos[0].WasProcessed=true`. Behind the `cgo_neth`
-build tag; default `go build` produces a stub that points users at
-`docker build -f Dockerfile.nethermind .`.
+- `client/geth/` — the original, pure-Go Pebble writer producing geth's
+  snapshot layer + PathDB metadata.
+- `client/reth/` — cgo + libmdbx writer producing MDBX state tables +
+  RocksDB history + nippy-jar `static_files/` segments + a reth-format
+  `chainspec.json` sidecar. Behind the `cgo_reth` build tag.
+- `client/besu/` — cgo + librocksdb writer producing a single RocksDB
+  with 8 Bonsai column families (default + `BLOCKCHAIN` +
+  `ACCOUNT_INFO_STATE` + `CODE_STORAGE` + `ACCOUNT_STORAGE_STORAGE` +
+  `TRIE_BRANCH_STORAGE` + `TRIE_LOG_STORAGE` + `VARIABLES`) plus a
+  besu-format chainspec sidecar. Behind the `cgo_besu` build tag.
+- `client/nethermind/` — cgo + grocksdb writer producing seven RocksDB
+  instances (`state`, `code`, `blocks`, `headers`, `blockNumbers`,
+  `blockInfos`, `receipts`) plus a parity-format chainspec sidecar.
+  Behind the `cgo_neth` build tag.
 
-## File Structure
+The Nethermind adapter takes a different route from the others: instead of
+writing a chainspec for the client to consume, it writes the seven RocksDB
+instances Nethermind reads on boot directly. This bypasses Nethermind's
+`LoadGenesisBlock` step (which would deserialize every alloc account into
+a `Dictionary<Address, ChainSpecAllocation>` — fine at small scale, OOMs
+at multi-million-account scale per upstream issue #7361). The boot gate
+is `BlockInfos[0].WasProcessed=true`.
+
+Default `go build` produces stubs for the cgo writers that point users at
+the corresponding per-client Dockerfile.
+
+## File structure
 
 ```
 state-actor/
-├── main.go                    # CLI entry point
-├── generator/
-│   ├── config.go              # Configuration types
-│   ├── generator.go           # Core generation logic
-│   ├── writer.go              # Pluggable Writer interface + factory registration
-│   └── generator_test.go      # Unit tests
+├── main.go                          # CLI entry point + flag parsing
+├── AGENTS.md                        # Agent-facing entry doc
+├── README.md                        # Human-facing entry doc
 ├── client/
-│   └── geth/
-│       ├── doc.go             # Package overview
-│       ├── writer.go          # Geth/Pebble snapshot writer
-│       ├── factory.go         # Default-factory init() registration
-│       └── genesis_block.go   # Geth genesis-block + PathDB metadata writer
-├── genesis/
-│   ├── genesis.go             # Client-neutral genesis JSON parser
-│   └── genesis_test.go        # Unit tests
-├── integration/
-│   ├── stategen_launcher.star # Kurtosis integration
-│   └── geth-wrapper.sh        # Wrapper script
-├── examples/
-│   └── test-genesis.json      # Example genesis file
-└── docs/
-    ├── ARCHITECTURE.md        # This file
-    └── KURTOSIS.md            # Kurtosis integration guide
+│   ├── geth/                        # Pure-Go Pebble writer (default)
+│   ├── reth/                        # cgo + libmdbx writer (cgo_reth build tag)
+│   ├── besu/                        # cgo + librocksdb writer (cgo_besu build tag)
+│   └── nethermind/                  # cgo + grocksdb writer (cgo_neth build tag)
+├── generator/                       # Core generation pipeline + Writer interface
+├── genesis/                         # Client-neutral chainspec types + builder
+├── internal/
+│   ├── spec/                        # YAML --spec parser + validator
+│   ├── specbuild/                   # Spec → PreAlloc resolver (addresses, templates)
+│   ├── templates/                   # Spec templates (erc20, ...)
+│   ├── sizecal/                     # Byte-budget → slot-count via single global bytesPerSlot constant
+│   ├── streamingtrie/               # O(depth) streaming trie hasher
+│   ├── streamsort/                  # Out-of-core key sort for the streaming trie
+│   ├── entitygen/                   # Synthetic-fill entity generator
+│   ├── clientpolicy/                # Per-client flag validation (--binary-trie, --target-size, --fork)
+│   ├── syscontracts/                # Canonical EIP-4788/2935/7002/7251 deployments
+│   ├── genesisheader/               # Cross-client genesis header builder
+│   ├── oracle/                      # Reproduce-from-config RNG (devkeys + reproduce)
+│   ├── reth/                        # Reth-side codec (MDBX wire format)
+│   ├── neth/                        # Nethermind-side helpers
+│   ├── engineapi/                   # Mock CL engine-API driver (besu / nethermind boot)
+│   ├── e2e_testing/                 # Shared per-client TestE2ESuite phases + checks + RPC oracle
+│   ├── rpcprobe/                    # Waitfor-RPC + JSON-RPC helpers
+│   └── testhex/                     # Hex helpers for tests
+├── integration/                     # Kurtosis Starlark + geth-wrapper.sh
+├── examples/                        # Curated spec YAMLs (see examples/README.md)
+└── docs/                            # SKILL.md, SPEC.md, RUNBOOK.md, ARCHITECTURE.md, KURTOSIS.md
 ```
 
-## Performance Characteristics
+## Cross-client determinism
 
-| Operation | Throughput | Bottleneck |
-|-----------|------------|------------|
-| Account generation | ~1M/s | CPU (hashing) |
-| Storage generation | ~500K/s | Memory allocation |
-| Batch writing | ~350K slots/s | Pebble compaction |
-| State root computation | O(n log n) | StackTrie sorting |
+State Actor guarantees that the same `--seed`, the same `--spec`, and the same client-policy preamble produce **the same genesis state root** across all four MPT clients (geth / reth / besu / nethermind). This is the load-bearing invariant the project exists to enable.
 
-The overall throughput is bounded by Pebble's write performance at ~350K storage slots/second.
+The mechanism is three-layered:
+
+- **Deterministic address derivation.** Spec address modes — explicit, name-derived (`keccak256(BE_u64(seed) || utf8(name))[12:]`), position-derived (same but with `anon-N`) — are pure functions of the spec input. Pinned at unit level by `internal/specbuild/derive_test.go:TestResolveAddressDeterministicAcrossRuns`.
+- **Single global byte-budget constant.** `--spec`'s `approximate_size_bytes` is converted to a synthesised slot count via the global `bytesPerSlot` constant in [`internal/sizecal/factors.go`](../internal/sizecal/factors.go) — identical across all four clients, which is precisely what makes the cross-client root match. The CI invariance gate calls `sizecal.NewFixed(64)` to decouple test sizing from the production `Default()`, so a drift in either side can't silently mask the other.
+- **Canonical syscontract preamble.** Every per-client writer must run `syscontracts.AddCanonicalSystemContracts(&cfg)` before producing state. The five EIP-mandated system contracts (BeaconRoots, HistoryStorage, WithdrawalQueue, ConsolidationQueue, DepositContract) must exist at their canonical addresses; without them besu refuses to boot and the other three clients compute a different root.
+
+The CI keystone job `cross-client-genesis-root` (defined in `.github/workflows/ci.yml`, exercising `examples/full-matrix-spec-feature.yaml`) re-asserts the invariant on every PR. When a divergence appears, the most likely cause is calibration drift (`internal/sizecal/`) or a missing syscontract preamble; less common but possible is per-client codec drift (`internal/reth/`, `internal/neth/`, etc.).
+
+## Performance characteristics
+
+State Actor's writer pipelines are streaming: total RAM stays bounded
+(~2 GB peak for the spec-driven path, regardless of total state size)
+because the streaming trie hasher (`internal/streamingtrie`) consumes one
+account at a time over a sorted key stream (`internal/streamsort`),
+emitting trie nodes as the stream advances rather than building the
+trie in memory. End-to-end throughput is dominated by the chosen
+client's on-disk format — Pebble compaction (geth), MDBX random-write
+IOPS (reth), RocksDB compaction (besu / nethermind). Numbers vary by
+host and would rot fast; benchmark on your own hardware with
+`--benchmark --verbose` if you need a concrete figure.

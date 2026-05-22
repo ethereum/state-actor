@@ -7,10 +7,11 @@
 # To use (any client):
 #   state-actor --client=geth --db=/tmp/story2 \
 #     --spec=examples/spec-eoa-bloat.yaml \
-#     --accounts=10000000 --target-size=20GB
+#     --target-size=20GB
 #
-# Spec writes the three bloated EOAs first; --accounts=10M synthetic EOAs
-# fill the remaining target-size budget.
+# Spec writes the three bloated EOAs first; the mainnet-shaped auto-fill
+# (20 % / 10 % / 70 % across account-trie / bytecode / storage) pads the
+# remaining target-size budget on top.
 entities:
   - kind: eoa
     name: bloated-eoa-10g

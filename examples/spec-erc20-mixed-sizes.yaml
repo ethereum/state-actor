@@ -4,12 +4,11 @@
 # To use:
 #   state-actor --client=reth --db=/tmp/story1 \
 #     --spec=examples/spec-erc20-mixed-sizes.yaml \
-#     --contracts=20 --min-slots=1 --max-slots=10 \
 #     --target-size=20GB
 #
-# Spec writes the three ERC-20s + five EOAs first; the existing synthetic-
-# fill loop then adds --contracts=20 random-code contracts on top until
-# --target-size is reached.
+# Spec writes the three ERC-20s + five EOAs first; the mainnet-shaped
+# auto-fill (20 % / 10 % / 70 % across account-trie / bytecode / storage)
+# pads the headroom on top until --target-size is reached.
 entities:
   # Three ERC-20s of decreasing size. Runtime bytecode is the vendored
   # OpenZeppelin v5.6.1 ERC20 deployed dispatcher

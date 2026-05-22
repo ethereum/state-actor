@@ -5,300 +5,200 @@
 </p>
 
 <p align="center">
-  <strong>High-performance Ethereum state generator for devnet testing</strong>
+  <strong>Generate client-ready Ethereum databases for geth, reth, besu, and nethermind &mdash; without going through each client's <code>init</code> path.</strong>
 </p>
 
 <p align="center">
   <a href="#quick-start">Quick Start</a> •
-  <a href="#features">Features</a> •
   <a href="#usage">Usage</a> •
-  <a href="#integration">Integration</a> •
-  <a href="docs/ARCHITECTURE.md">Architecture</a>
+  <a href="docs/RUNBOOK.md">Runbook</a> •
+  <a href="docs/SPEC.md">Spec format</a> •
+  <a href="docs/ARCHITECTURE.md">Architecture</a> •
+  <a href="AGENTS.md">For agents</a>
 </p>
+
+> [!TIP]
+> If you want Claude, Codex, Cursor, or another coding agent to operate
+> state-actor for you, point it at [`AGENTS.md`](AGENTS.md) (the entry
+> pointer) or directly at [`docs/SKILL.md`](docs/SKILL.md) (the deep doc).
+> The canonical syntax reference for what `--spec` can express is
+> [`examples/full-matrix-spec-feature.yaml`](examples/full-matrix-spec-feature.yaml) —
+> CI keeps it correct.
 
 ---
 
-State Actor generates realistic Ethereum state directly into a geth-compatible Pebble database (snapshot layer). Create bloated devnets with millions of accounts and storage slots to test client behavior under mainnet-like conditions.
+## Why
 
-## Quick Start
+You want a pre-populated Ethereum database that a client can boot against directly &mdash; for cross-client determinism tests, devnet bootstrapping, EIP-7702 / ERC-20 fixtures, or state-bloat experiments. The alternative (run the client's `init` against a genesis with millions of `alloc` entries) is slow and client-specific. State Actor writes each client's on-disk format directly: Pebble for geth, MDBX + RocksDB + nippy-jar for reth, single RocksDB + 8 Bonsai column families for besu, seven RocksDB instances for nethermind.
+
+Three flags carry most of the weight: `--client` (which client's format to write), `--spec` (concrete entities to include, declared in YAML), `--target-size` (the DB-size budget; auto-fills mainnet-shaped 20 % / 10 % / 70 % across account-trie / bytecode / storage up to the cap). One of `--spec` or `--target-size` is required; everything else has a sane default.
+
+## Quick start
 
 ```bash
-# Install
-go install github.com/nerolation/state-actor@latest
+# Smoke test: a small geth DB, no spec — auto-fill emits mainnet-shaped state.
+go run . --client=geth --db=/tmp/sa-geth/geth/chaindata --target-size=100MB
 
-# Generate
-state-actor \
-    --db ./chaindata \
-    --target-size 100MB \
-    --seed 42
+# Spec-driven: load a curated YAML verbatim (no --target-size, so the
+# spec is never truncated and no auto-fill runs on top).
+go run . --client=geth --db=/tmp/sa-spec/geth/chaindata \
+  --spec=examples/spec-minimal.yaml
 
-# Output:
-# State Root:  0x8e170135992c...
-# Genesis:     included (ready to use without geth init)
+# Pick a different client (Docker required for cgo clients).
+go run . --client=reth --db=/tmp/sa-reth \
+  --spec=examples/spec-minimal.yaml
 ```
 
-**No `geth init` required** — the database is ready to use immediately.
-
-## Features
-
-| Feature | Description |
-|---------|-------------|
-| ⚡ **Fast** | 350K+ storage slots/second |
-| 🎯 **Realistic** | Auto-fill emits a mainnet-shaped 20 % account-trie / 10 % bytecode / 70 % storage split |
-| 🔄 **Reproducible** | Seed-based generation for consistent tests |
-| 🔗 **Genesis Integration** | Merges with genesis.json, writes genesis block |
-| 📦 **Ready to Use** | No `geth init` needed — produces a geth-compatible Pebble database |
-| 🐳 **Docker Ready** | Pre-built images available |
+After the run, boot the client against the produced datadir &mdash; the per-client recipes are in [`docs/RUNBOOK.md`](docs/RUNBOOK.md).
 
 ## Installation
-
-### From Source
 
 ```bash
 git clone https://github.com/nerolation/state-actor.git
 cd state-actor
-go build -o state-actor .
+go build -o state-actor .            # geth client only (pure Go)
+docker build -f Dockerfile.reth -t state-actor-reth .  # cgo clients
 ```
 
-### Using Go Install
-
-```bash
-go install github.com/nerolation/state-actor@latest
-```
-
-### Docker
-
-```bash
-docker pull ghcr.io/nerolation/state-actor:latest
-# or build locally
-docker build -t state-actor:latest .
-```
+`besu`, `nethermind`, and `reth` need cgo bindings (RocksDB / MDBX). On macOS, build them via Docker; per-client `Dockerfile.<client>` files ship in this repo.
 
 ## Usage
 
-### Basic Usage
+### Generate a geth database
+
+Geth has a pure-Go writer. The path you pass to `--db` must end in `/geth/chaindata` &mdash; geth itself appends that suffix to its `--datadir`.
 
 ```bash
-# Minimal: auto-fill 100 MB of mainnet-shaped state
-state-actor --db ./chaindata --target-size 100MB
-
-# With a declarative spec (overlays auto-fill on top of the spec entities)
-state-actor \
-    --db ./chaindata \
-    --spec ./examples/full-matrix-spec-feature.yaml \
-    --target-size 1GB
+state-actor --client=geth --db=/tmp/sa-geth/geth/chaindata --target-size=1GB
 ```
 
-`--target-size` is **required** unless `--spec` is set. The auto-fill emits
-synthetic state in mainnet-shaped proportions (20 % account-trie / 10 %
-bytecode / 70 % storage); per-contract code is a truncated normal in
-`[1 KiB, 24 KiB]` centered at 5 KiB, and per-contract storage size is a
-truncated normal in `[1 KiB, 100 MiB]` whose mean is budget-derived.
-EOAs randomize balance / nonce / EIP-7702 delegation independently.
-
-### Command Line Options
-
-| Flag | Default | Description |
-|------|---------|-------------|
-| `--db` | (required) | Output database directory |
-| `--target-size` | - | Required unless `--spec` is set. Target DB size (e.g. `5GB`, `500MB`). Drives auto-fill of 20/10/70 mainnet-shaped synthetic state. With `--spec`, fills the headroom after the spec's projected cost. |
-| `--spec` | - | YAML state-spec file (see `docs/SPEC.md`). |
-| `--seed` | 1 | Random seed; pass `--seed=0` to use wall-clock time (non-reproducible). |
-| `--binary-trie` | false | Generate state for EIP-7864 binary trie mode |
-| `--chain-id` | 1337 | Chain ID embedded in the synthesized chainspec |
-| `--client` | geth | Target Ethereum client: `geth`, `nethermind`, `besu`, or `reth` |
-| `--archive` | false | Generate archive-mode DB (geth + reth only) |
-| `--verbose` | false | Verbose output |
-| `--benchmark` | false | Print detailed stats |
-
-### Output Format
-
-State Actor produces a Pebble database with geth's snapshot layer format.
-Ready to use with `geth --db.engine=pebble`.
+### Generate for reth, besu, or nethermind
 
 ```bash
-state-actor --db ./chaindata --genesis genesis.json ...
+docker run --rm -v /tmp/sa-reth:/data state-actor-reth \
+  ./state-actor --client=reth --db=/data --target-size=1GB
 ```
 
-| Aspect | Value |
-|--------|-------|
-| Database | Pebble |
-| Account key | `a` + keccak(addr) |
-| Storage key | `o` + keccak(addr) + keccak(slot) |
-| Encoding | SlimAccountRLP |
+Substitute `besu` / `nethermind` for `reth` (and pick the matching Dockerfile). The on-disk layout is documented per client in [`docs/RUNBOOK.md`](docs/RUNBOOK.md).
 
-### Trie Modes
+### Declare concrete entities with a spec
 
-By default, State Actor uses the **Merkle Patricia Trie (MPT)** for state root computation, matching standard Ethereum. To generate state for **binary trie mode** (EIP-7864), pass `--binary-trie`:
+The `--spec` flag points at a YAML file describing exactly which contracts and EOAs to write &mdash; ERC-20 tokens with chosen sizes, EIP-7702 delegating EOAs, raw bytecode contracts, address-mode demonstrations. See [`docs/SPEC.md`](docs/SPEC.md) for the schema; [`examples/README.md`](examples/README.md) is the picker.
 
 ```bash
-state-actor --db ./chaindata --target-size 100MB --binary-trie
+state-actor --client=geth --db=/tmp/sa/geth/chaindata \
+  --spec=examples/spec-erc20-mixed-sizes.yaml
 ```
 
-Binary trie state requires geth to run with `--override.verkle=0` (legacy flag name for EIP-7864).
+Without `--target-size`, only the spec entities are written &mdash; no synthetic fill runs on top, so there's no risk of random EOAs colliding with spec-derived addresses.
 
-> **Important:** Binary trie mode requires geth built from the same `go-ethereum` version
-> referenced in this project's `go.mod` (the binary trie key derivation must match). Using a
-> different geth version may produce incompatible state that geth cannot read.
+### Cap the database size
 
-### Recommended Configurations
-
-#### Local Testing (Quick)
-```bash
-state-actor --db ./chaindata --target-size 10MB --seed 1
-```
-
-#### CI/CD Pipeline
-```bash
-state-actor --db ./chaindata --target-size 100MB --seed 42
-```
-
-#### Mainnet-like State
-```bash
-state-actor --db ./chaindata --target-size 100GB --seed 12345
-```
-
-The auto-fill emits a fixed 20 / 10 / 70 split (account-trie / bytecode /
-storage) regardless of target size. The 24 KiB per-contract code clamp is
-mainnet-accurate (EIP-170); storage size per contract is a truncated
-normal in `[1 KiB, 100 MiB]` whose mean adapts to the target budget.
-
-#### With a Spec
-```bash
-state-actor \
-    --db ./chaindata \
-    --spec ./examples/full-matrix-spec-feature.yaml \
-    --target-size 1GB
-```
-
-The spec entities materialize as declared; `--target-size` fills the
-headroom with auto-filled synthetic state. If the spec already meets
-or exceeds the target, no auto-fill runs.
-
-## Genesis Integration
-
-When `--genesis` is provided, State Actor:
-
-1. **Loads genesis.json** — parses chain config and alloc accounts
-2. **Merges accounts** — includes alloc accounts at their exact addresses
-3. **Generates state** — adds random accounts/contracts
-4. **Computes state root** — combined root via StackTrie
-5. **Writes genesis block** — with correct state root
-
-This eliminates the state root mismatch problem and removes the need for `geth init`.
-
-### Supported Genesis Format
-
-Standard geth genesis.json:
-
-```json
-{
-  "config": {
-    "chainId": 32382,
-    "shanghaiTime": 0,
-    "cancunTime": 0,
-    "terminalTotalDifficulty": 0
-  },
-  "gasLimit": "0x1c9c380",
-  "difficulty": "0x0",
-  "alloc": {
-    "0x123...": { "balance": "0x..." },
-    "0xabc...": { "code": "0x...", "storage": {...} }
-  }
-}
-```
-
-## Integration with Kurtosis / ethereum-package
-
-See [docs/KURTOSIS.md](docs/KURTOSIS.md) for detailed integration guide.
-
-### Quick Integration
+`--target-size` is an upper bound on the projected trie footprint of the whole generated database. When set, the auto-fill emits mainnet-shaped synthetic state (20 % account-trie / 10 % bytecode / 70 % storage) up to the cap. With `--spec`, the spec entities count first; the auto-fill fills the headroom after their projected cost. If the spec alone would exceed the budget, the spec is silently truncated to the longest prefix that fits (with a warning on stderr) and no auto-fill runs. To generate a spec verbatim with no synthetic fill, omit `--target-size`.
 
 ```bash
-# 1. Generate state
-state-actor --db ./chaindata --target-size 1GB --seed 42
-
-# 2. Copy to geth data directory
-mkdir -p ./geth-data/geth
-cp -r ./chaindata ./geth-data/geth/chaindata
-
-# 3. Start geth (no init needed)
-geth --datadir ./geth-data --db.engine=pebble ...
+state-actor --client=reth --db=/tmp/sa --target-size=10GB
 ```
 
-## Auto-Fill Distribution
+Accepted suffixes: `KB`, `MB`, `GB`, `TB` (base-1024). Bare numbers are bytes.
 
-The auto-fill emits synthetic state in a fixed mainnet-shaped split:
+### Tune the genesis chainspec
 
-| Category | Share | Per-entity shape |
-|----------|------:|------------------|
-| Account trie | 20 % | 175 B per leaf — EOAs (90 % non-zero balance, 30 % EIP-7702 delegation, always non-zero nonce) and contract headers |
-| Bytecode | 10 % | Truncated normal centered at 5 KiB, clamped to `[1 KiB, 24 KiB]` (EIP-170-compliant) |
-| Storage | 70 % | Truncated normal in `[1 KiB, 100 MiB]` with budget-derived mean |
+```bash
+state-actor --client=geth --db=/tmp/sa/geth/chaindata \
+  --chain-id=12345 \
+  --fork=osaka \
+  --gas-limit=60000000 \
+  --timestamp=1700000000 \
+  --extra-data=0xdeadbeef
+```
 
-Contract count is pinned by the bytecode budget so per-contract code stays
-mainnet-realistic; EOA count is derived from the remaining account-trie
-budget. The ratios apply to the top-up portion only — `target_size` minus
-the projected cost of any `--spec` entities.
+Run `state-actor --list-forks` for accepted `--fork` values. The default fork is the latest one each `--client` supports (currently `osaka` across all four).
+
+## Boot a client against the generated DB
+
+The boot command differs per client. The full recipes &mdash; verbatim from each client's `TestE2ESuite` &mdash; are in [`docs/RUNBOOK.md`](docs/RUNBOOK.md).
+
+| Client | Recipe |
+|---|---|
+| geth | [docs/RUNBOOK.md#geth](docs/RUNBOOK.md#geth) |
+| reth | [docs/RUNBOOK.md#reth](docs/RUNBOOK.md#reth) |
+| besu | [docs/RUNBOOK.md#besu](docs/RUNBOOK.md#besu) |
+| nethermind | [docs/RUNBOOK.md#nethermind](docs/RUNBOOK.md#nethermind) |
+
+## Spec system at a glance
+
+A spec file lists entities &mdash; EOAs or contracts &mdash; with explicit addresses, name-derived addresses (`keccak256(seed || name)[12:]`), or position-derived addresses. Contracts can use a template (`erc20` is shipped today) or carry raw bytecode. EIP-7702 delegating EOAs are first-class.
+
+```yaml
+entities:
+  - kind: eoa
+    address: 0x1111111111111111111111111111111111111111
+    balance: "1000000000000000000"
+
+  - kind: contract
+    name: usdc-mock                           # name-derived address
+    template: erc20
+    parameters: { symbol: USDC, name: USD Coin, decimals: 18, total_owners: 1000 }
+    approximate_size_bytes: 100000000          # ~100 MB synthetic storage
+```
+
+Full schema: [`docs/SPEC.md`](docs/SPEC.md). Curated examples: [`examples/README.md`](examples/README.md).
+
+## CLI flags
+
+| Flag | Type | Default | Purpose |
+|---|---|---|---|
+| `--db` | string | (required) | Path to the database directory |
+| `--client` | string | `geth` | Target client: `geth`, `nethermind`, `besu`, `reth` |
+| `--spec` | string | (none) | Path to a YAML state-spec file; see `docs/SPEC.md`. Required if `--target-size` is unset. |
+| `--target-size` | string | (none) | Upper bound on the whole DB (`5GB`, `500MB`, …). Required if `--spec` is unset. With `--spec`, auto-fill fills the headroom after the spec; without `--spec`, drives the whole DB. Auto-fill emits a fixed 20 % / 10 % / 70 % split across account-trie / bytecode / storage. |
+| `--seed` | int | 1 | Random seed; `--seed=0` randomises (footgun) |
+| `--fork` | string | (latest) | Hard fork active at genesis; `--list-forks` lists choices |
+| `--chain-id` | int | 1337 | Chain ID embedded in the synthesized chainspec |
+| `--gas-limit` | uint | 30000000 | Genesis block gas limit |
+| `--timestamp` | uint | 0 | Genesis block timestamp (unix seconds) |
+| `--extra-data` | string | (empty) | Genesis block extraData (hex) |
+| `--archive` | bool | false | Archive-mode metadata; geth + reth only |
+| `--binary-trie` | bool | false | EIP-7864 binary trie; geth only |
+| `--group-depth` | int | 8 | Binary-trie group depth (1-8) |
+| `--list-forks` | bool | false | Print accepted `--fork` values and exit |
+| `--verbose` | bool | false | Verbose output |
+| `--benchmark` | bool | false | Print detailed timing stats |
+
+Run `state-actor --help` for the canonical list (this table is a snapshot).
+
+## When NOT to use State Actor
+
+- You need a real testnet's history. State Actor writes one genesis block; there is no chain to replay.
+- You need post-genesis transactions in the DB. The output is genesis state; drive the chain forward with a separate tool (`spamoor`, your own test harness).
+- The exact byte-shape of mainnet trie nodes matters more than state size. State Actor synthesises shapes; it does not mirror live state.
 
 ## Architecture
 
-See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for detailed architecture documentation.
-
-```
-┌─────────────────┐     ┌─────────────────┐
-│   CLI (main.go) │────▶│  genesis.json   │
-└────────┬────────┘     └────────┬────────┘
-         │                       │
-         ▼                       ▼
-┌─────────────────────────────────────────┐
-│              Generator                  │
-│  • Genesis accounts + Generated state   │
-│  • StackTrie (MPT) or BinaryTrie root   │
-└────────────────────┬────────────────────┘
-                     ▼
-           ┌─────────────────┐
-           │   GethWriter    │
-           │   (Pebble)      │
-           │   Snapshot fmt  │
-           └─────────────────┘
-```
-
-## Database Schema
-
-Snapshot layer format (Pebble):
-
-| Key | Value |
-|-----|-------|
-| `a` + keccak(addr) | SlimAccountRLP |
-| `o` + keccak(addr) + keccak(slot) | RLP(value) |
-| `c` + keccak(code) | bytecode |
-| `SnapshotRoot` | state root |
-
-Plus genesis metadata when `--genesis` is provided.
+See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the deep dive (writer phases, per-client format notes, the streaming-trie / streaming-sort packages). The short version: entity generation streams into a per-client writer that produces the client-native database directly, with cross-client determinism guaranteed by `internal/sizecal/`'s single global `bytesPerSlot` constant (identical across all four clients by design).
 
 ## Testing
 
 ```bash
-# Run all tests
-go test -v ./...
-
-# With race detector
-go test -race ./...
-
-# Run benchmarks
-go test -bench=. ./generator
+go test ./...                               # full suite
+go test -run TestE2ESuite ./client/...      # per-client end-to-end (Docker required for cgo clients)
+go test -short ./...                        # skip the e2e suites
 ```
+
+CI matrix lives in `.github/workflows/ci.yml`. The cross-client `cross-client-genesis-root` job pins the invariant: same `--seed` + same spec → identical state root across all four MPT clients.
 
 ## Contributing
 
-Contributions welcome! Please read [CONTRIBUTING.md](CONTRIBUTING.md) first.
+Read [`CONTRIBUTING.md`](CONTRIBUTING.md). Agent collaborators should start at [`AGENTS.md`](AGENTS.md).
 
 ## License
 
-MIT License - see [LICENSE](LICENSE)
+MIT &mdash; see [`LICENSE`](LICENSE).
 
 ## Acknowledgments
 
-- [go-ethereum](https://github.com/ethereum/go-ethereum) for the database and state primitives
-- [ethereum-package](https://github.com/ethpandaops/ethereum-package) for Kurtosis integration patterns
+- [go-ethereum](https://github.com/ethereum/go-ethereum) for the database and state primitives.
+- [reth](https://github.com/paradigmxyz/reth) for the MDBX writer reference.
+- [hyperledger/besu](https://github.com/hyperledger/besu) and [nethermind](https://github.com/NethermindEth/nethermind) for the chainspec formats.
+- [ethereum-package](https://github.com/ethpandaops/ethereum-package) for Kurtosis integration patterns.

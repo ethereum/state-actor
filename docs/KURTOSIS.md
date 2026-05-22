@@ -1,196 +1,111 @@
-# Kurtosis / ethereum-package Integration
+# Kurtosis / ethereum-package integration
 
-This guide explains how to integrate State Actor with [ethereum-package](https://github.com/ethpandaops/ethereum-package) for Kurtosis-based devnets.
+This guide explains how to use State Actor to pre-populate the execution-layer database of an [ethereum-package](https://github.com/ethpandaops/ethereum-package) participant in Kurtosis.
 
-## Overview
+State Actor produces a client-native database that the EL client can boot against directly — no `init` step required. The integration boils down to: generate the DB, hand its directory to the participant as a pre-mounted volume, set the right boot flags. The exact boot flags differ by client; see [`RUNBOOK.md`](RUNBOOK.md) for per-client recipes.
 
-State Actor can pre-generate bloated state that's immediately usable by geth nodes in your devnet, without requiring `geth init`.
+## Method 1 — pre-generate, then mount
 
-## Methods
-
-### Method 1: Pre-generate Before Kurtosis
-
-Generate state locally, then mount it into your Kurtosis package:
+The simplest path: generate the DB once on your workstation, package it, mount it into the participant.
 
 ```bash
-# 1. Get genesis from ethereum-package or create your own
-# ethereum-package generates genesis during EL/CL genesis data generation
+# 1. Generate a geth database with a curated spec.
+state-actor --client=geth \
+    --db=./bloated-chaindata/geth/chaindata \
+    --spec=examples/spec-erc20-mixed-sizes.yaml \
+    --chain-id=32382 --fork=osaka --gas-limit=60000000
 
-# 2. Generate state — pick any target size; the auto-fill produces a
-# mainnet-shaped 20 / 10 / 70 split (account trie / bytecode / storage).
-state-actor \
-    --db ./bloated-chaindata \
-    --target-size 1GB \
-    --seed 42
-
-# 3. Package for Kurtosis
+# 2. Package for Kurtosis.
 tar -czf bloated-state.tar.gz -C ./bloated-chaindata .
 ```
 
-Then in your Kurtosis config, mount the state:
+In the participant config, mount the unpacked tree and switch geth to Pebble. Pin the image to a tested tag (`v1.17.2` is what state-actor's own e2e suite uses; `latest` may drift):
 
 ```yaml
 participants:
   - el_type: geth
+    el_image: ethereum/client-go:v1.17.2
+    el_extra_params:
+      - --db.engine=pebble
     el_extra_env_vars:
       SKIP_GETH_INIT: "true"
     el_extra_mounts:
-      /pregenerated-state: "./bloated-state"
+      /pregenerated-state: "{{.StateArtifact}}"
 ```
 
-### Method 2: Starlark Module Integration
+State Actor wrote the genesis block as part of the database, so no `geth init` runs.
 
-Use the provided Starlark module to generate state as part of your Kurtosis package:
+For reth / besu / nethermind participants, the equivalent mounts plus boot flags are in [`RUNBOOK.md`](RUNBOOK.md). The key difference is that `--db.engine=pebble` is geth-specific; reth boots from `--chain=<chainspec.json>`, besu from `--genesis-file=<besu-chainspec.json>`, nethermind from a `--config=boot.cfg`.
 
-```python
-# Import the module
-load("github.com/nerolation/state-actor/integration/stategen_launcher.star", 
-     "generate_bloated_state")
+## Method 2 — Starlark module (legacy; geth-only)
 
-def run(plan, args):
-    # First, get genesis from your genesis generator
-    genesis_artifact = generate_genesis(plan, ...)
-    
-    # Generate bloated state
-    chaindata = generate_bloated_state(
-        plan,
-        output_artifact_name="bloated-chaindata",
-        genesis_artifact=genesis_artifact,
-        target_size="1GB",
-        seed=42,
-    )
-    
-    # Use chaindata artifact in geth config
-    # ...
-```
+> [!WARNING]
+> `integration/stategen_launcher.star` predates the multi-client + `--spec`
+> work AND the autofill rewrite. It calls a `stategen:latest` Docker image
+> (not built by this repo) and passes flags that no longer exist on
+> `state-actor` (`--genesis`, `--batch-size`, `--accounts`, `--contracts`,
+> `--max-slots`, `--min-slots`, `--distribution`). It will not run against
+> the current binary as-shipped. Use Method 1 (pre-generate, then mount)
+> until the Starlark module is rewritten.
 
-### Method 3: Custom Docker Image
-
-Build a geth image with the wrapper script:
-
-```dockerfile
-FROM ethereum/client-go:stable
-
-COPY geth-wrapper.sh /usr/local/bin/
-COPY bloated-chaindata /pregenerated-state/chaindata
-
-ENTRYPOINT ["/usr/local/bin/geth-wrapper.sh"]
-```
-
-## Starlark Module Reference
-
-### `generate_bloated_state`
+The module's legacy signature (preserved so existing Kurtosis packages keep parsing) is:
 
 ```python
 generate_bloated_state(
     plan,
     output_artifact_name,
-    genesis_artifact=None,      # Optional: genesis.json artifact
-    target_size="100MB",        # Target DB size; mainnet-shaped 20/10/70 auto-fill
-    seed=0,                     # Random seed (0 = random)
-    tolerations=[],             # K8s tolerations
-    node_selectors={},          # K8s node selectors
+    genesis_artifact = None,
+    num_accounts     = 10000,    # removed flag — has no effect
+    num_contracts    = 5000,     # removed flag — has no effect
+    max_slots        = 10000,    # removed flag — has no effect
+    min_slots        = 100,      # removed flag — has no effect
+    distribution     = "power-law",  # removed flag — has no effect
+    seed             = 0,
+    binary_trie      = False,
+    tolerations      = [],
+    node_selectors   = {},
 )
 ```
 
-Returns: Files artifact containing the generated chaindata.
+If you need the multi-client surface from a Kurtosis package today, drive `state-actor` from a `plan.run_sh(...)` step with the current CLI directly (see [`docs/SKILL.md`](SKILL.md) for the flag set), or use Method 1 above.
 
-## geth-wrapper.sh
+## Method 3 — custom client image
 
-The wrapper script handles pre-generated state:
+Bake the pre-generated state into a client image. Useful when the same devnet boots many times against the same state.
 
-```bash
-#!/bin/bash
-# Checks for pre-generated state at $PREGENERATED_STATE_PATH
-# If found, copies to geth data directory
-# If genesis block is present, skips geth init
-# Otherwise, runs geth init
-# Finally, starts geth with provided arguments
+```dockerfile
+FROM ethereum/client-go:v1.17.2
+COPY bloated-chaindata /pregenerated-state
+COPY geth-wrapper.sh /usr/local/bin/
+ENTRYPOINT ["/usr/local/bin/geth-wrapper.sh"]
 ```
 
-Environment variables:
-- `PREGENERATED_STATE_PATH`: Path to pre-generated chaindata (default: `/pregenerated-state/chaindata`)
-- `GENESIS_PATH`: Path to genesis.json (default: `/genesis/genesis.json`)
-- `GETH_DATADIR`: Geth data directory (default: `/data/geth/execution-data`)
+`integration/geth-wrapper.sh` copies the pre-generated state into `$GETH_DATADIR` on first boot and execs `geth` with the original arguments. Reth / besu / nethermind don't have a wrapper today; the equivalent step is a one-shot `cp -r` in the image's entrypoint.
 
-## Example: Full ethereum-package Config
+## Picking the right `--client`
 
-```yaml
-# bloated-devnet.yaml
-participants:
-  - el_type: geth
-    el_image: ethereum/client-go:stable
-    el_extra_params:
-      - --db.engine=pebble
-    el_extra_env_vars:
-      PREGENERATED_STATE_PATH: /pregenerated-state/chaindata
-    el_extra_mounts:
-      /pregenerated-state: "{{.StateArtifact}}"
-    cl_type: lighthouse
-    count: 2
-
-network_params:
-  network_id: "32382"
-  
-additional_services:
-  - prometheus_grafana
-```
-
-## Timing Considerations
-
-State generation timing in Kurtosis:
-
-1. **EL/CL Genesis Generation** → produces genesis.json
-2. **State Actor** → generates state with genesis
-3. **Node Launch** → nodes start with pre-generated state
-
-Ensure state generation completes before node launch. The Starlark module handles this ordering automatically.
-
-## Large State (Terabyte Scale)
-
-For very large state:
-
-### Pre-generate and Host
-
-```bash
-# Generate large state (may take hours)
-state-actor --db ./mainnet-scale \
-    --target-size 100GB \
-    --seed 12345
-
-# Compress
-tar -czf mainnet-scale.tar.gz -C ./mainnet-scale .
-
-# Upload to storage
-aws s3 cp mainnet-scale.tar.gz s3://your-bucket/
-```
-
-### Download at Launch
-
-```python
-def download_state(plan, url):
-    return plan.run_sh(
-        name="download-state",
-        run=f"wget -O /state.tar.gz {url} && tar -xzf /state.tar.gz -C /output",
-        store=[StoreSpec(src="/output", name="chaindata")],
-    )
-```
+`--client` must match the participant's `el_type` 1:1 (`geth` ↔ `geth`, etc.). `internal/clientpolicy/` validates the flag mix at parse time, so a mismatch fails fast at generation rather than as a confusing boot failure.
 
 ## Troubleshooting
 
-### State Root Mismatch
+### State-root mismatch on boot
 
-If geth reports state root mismatch:
-- Ensure `--genesis` flag is used
-- Verify genesis.json matches the one used by other nodes
+Most commonly: the participant's `network_id` / `chain-id` doesn't match the `--chain-id` you passed to State Actor. Less commonly: drift in the single global `bytesPerSlot` constant in `internal/sizecal/` versus the CI fixed-sizer (file a bug). Verify with:
 
-### Genesis Block Not Found
+```bash
+cast chain-id --rpc-url <participant-rpc>
+```
 
-If geth can't find genesis block:
-- Check that State Actor completed successfully
-- Verify database files were copied correctly
+### Spec entity unreachable after boot
 
-### Performance Issues
+If `eth_getCode` returns `0x` for an entity whose name you set in the spec, it's almost always a collision: the auto-fill wrote a random EOA / contract at the same name-derived address. Re-run without `--target-size` (so no auto-fill runs at all), or with a smaller `--target-size` so the spec entities exhaust the headroom first.
 
-For faster generation:
-- Use SSD storage
+### Participant boots but `eth_blockNumber` stays at `0x0`
+
+`besu` and `nethermind` participants don't self-mine — they need a CL driving the Engine API. The `ethereum-package` consensus-layer participants drive blocks automatically. If you're running State-Actor's output outside of `ethereum-package`, see [`RUNBOOK.md`](RUNBOOK.md) for the mock-CL pattern.
+
+## See also
+
+- [`RUNBOOK.md`](RUNBOOK.md) — per-client boot recipes (geth / reth / besu / nethermind).
+- [`SPEC.md`](SPEC.md) — `--spec` YAML schema.
+- [`examples/README.md`](../examples/README.md) — curated spec gallery.
