@@ -346,6 +346,18 @@ state-actor/
 └── docs/                            # SPEC.md, RUNBOOK.md, ARCHITECTURE.md, KURTOSIS.md
 ```
 
+## Cross-client determinism
+
+State Actor guarantees that the same `--seed`, the same `--spec`, and the same client-policy preamble produce **the same genesis state root** across all four MPT clients (geth / reth / besu / nethermind). This is the load-bearing invariant the project exists to enable.
+
+The mechanism is three-layered:
+
+- **Deterministic address derivation.** Spec address modes — explicit, name-derived (`keccak256(BE_u64(seed) || utf8(name))[12:]`), position-derived (same but with `anon-N`) — are pure functions of the spec input. Pinned at unit level by `internal/specbuild/derive_test.go:TestResolveAddressDeterministicAcrossRuns`.
+- **Per-client byte-budget calibration.** `--spec`'s `approximate_size_bytes` is converted to a synthesised slot count via `internal/sizecal/factors.json`. Each client has a calibration factor so the byte-cost of the resulting storage trie matches across writers. The CI invariance gate uses `sizecal.NewFixed(64)` for all four clients so test sizing can't silently mask a `Default()` drift.
+- **Canonical syscontract preamble.** Every per-client writer must run `syscontracts.AddCanonicalSystemContracts(&cfg)` before producing state. The five EIP-mandated system contracts (BeaconRoots, HistoryStorage, WithdrawalQueue, ConsolidationQueue, DepositContract) must exist at their canonical addresses; without them besu refuses to boot and the other three clients compute a different root.
+
+The CI keystone job `cross-client-genesis-root` (defined in `.github/workflows/ci.yml`, exercising `examples/full-matrix-spec-feature.yaml`) re-asserts the invariant on every PR. When a divergence appears, the most likely cause is calibration drift (`internal/sizecal/`) or a missing syscontract preamble; less common but possible is per-client codec drift (`internal/reth/`, `internal/neth/`, etc.).
+
 ## Performance characteristics
 
 State Actor's writer pipelines are streaming: total RAM stays bounded

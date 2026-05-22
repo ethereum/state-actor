@@ -276,12 +276,12 @@ cast chain-id --rpc-url http://<container-ip>:8545   # → 0x539
 
 | Symptom | Likely cause | Fix |
 |---|---|---|
-| `missing librocksdb` at build | cgo client built without the system RocksDB | Build via the per-client `Dockerfile.<client>` |
-| Reth: `mmap: cannot allocate memory` | `vm.max_map_count` too low | `sudo sysctl -w vm.max_map_count=1048576` |
-| Besu / Neth: empty `eth_blockNumber` indefinitely | No consensus layer driving the Engine API | Run a mock CL (see `internal/engineapi/`) or use `internal/e2e_testing.StartEngineDriver` |
+| `missing librocksdb` at build | cgo client built without the system RocksDB | Build via the per-client `Dockerfile.<client>` (see [Besu](#besu) / [Nethermind](#nethermind) / [Reth](#reth)) |
+| Reth: `mmap: cannot allocate memory` | `vm.max_map_count` too low | `sudo sysctl -w vm.max_map_count=1048576` (see [Reth](#reth) operational hygiene) |
+| Besu / Neth: empty `eth_blockNumber` indefinitely | No consensus layer driving the Engine API | Run a mock CL (see `internal/engineapi/`) or use `internal/e2e_testing.StartEngineDriver` ([Besu engine-API note](#besu), [Nethermind engine-API note](#nethermind)) |
 | `eth_getCode` returns `0x` for a name-derived spec entity | Synthetic fill collided with the derived address | Re-run with `--accounts=0 --contracts=0` |
-| Cross-client state-root divergence | Per-client `sizecal` drift, or missing canonical syscontracts | Check `internal/clientpolicy/` calibration; ensure `syscontracts.AddCanonicalSystemContracts` ran |
-| Reth: `database.version mismatch` | Boot image's reth doesn't match state-actor's pinned codec version | Pin the reth image tag; see `internal/reth/constants.go` for the supported version |
+| Cross-client state-root divergence | Per-client `sizecal` drift, or missing canonical syscontracts | See [`ARCHITECTURE.md#cross-client-determinism`](ARCHITECTURE.md#cross-client-determinism); check `internal/clientpolicy/` calibration; ensure `syscontracts.AddCanonicalSystemContracts` ran |
+| Reth: `database.version mismatch` | Boot image's reth doesn't match state-actor's pinned codec version | Pin the reth image tag; see `internal/reth/constants.go` ([Reth section](#reth)) |
 
 ## What's deliberately not in this document
 
