@@ -16,13 +16,11 @@ Generate state locally, then mount it into your Kurtosis package:
 # 1. Get genesis from ethereum-package or create your own
 # ethereum-package generates genesis during EL/CL genesis data generation
 
-# 2. Generate state
+# 2. Generate state — pick any target size; the auto-fill produces a
+# mainnet-shaped 20 / 10 / 70 split (account trie / bytecode / storage).
 state-actor \
     --db ./bloated-chaindata \
-    --genesis genesis.json \
-    --accounts 100000 \
-    --contracts 50000 \
-    --max-slots 10000 \
+    --target-size 1GB \
     --seed 42
 
 # 3. Package for Kurtosis
@@ -58,9 +56,7 @@ def run(plan, args):
         plan,
         output_artifact_name="bloated-chaindata",
         genesis_artifact=genesis_artifact,
-        num_accounts=100000,
-        num_contracts=50000,
-        max_slots=10000,
+        target_size="1GB",
         seed=42,
     )
     
@@ -90,11 +86,7 @@ generate_bloated_state(
     plan,
     output_artifact_name,
     genesis_artifact=None,      # Optional: genesis.json artifact
-    num_accounts=10000,         # EOA accounts to generate
-    num_contracts=5000,         # Contracts to generate
-    max_slots=10000,            # Max storage slots per contract
-    min_slots=100,              # Min storage slots per contract
-    distribution="power-law",   # Distribution type
+    target_size="100MB",        # Target DB size; mainnet-shaped 20/10/70 auto-fill
     seed=0,                     # Random seed (0 = random)
     tolerations=[],             # K8s tolerations
     node_selectors={},          # K8s node selectors
@@ -163,10 +155,7 @@ For very large state:
 ```bash
 # Generate large state (may take hours)
 state-actor --db ./mainnet-scale \
-    --genesis genesis.json \
-    --accounts 10000000 \
-    --contracts 5000000 \
-    --max-slots 100000 \
+    --target-size 100GB \
     --seed 12345
 
 # Compress

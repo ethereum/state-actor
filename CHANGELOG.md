@@ -2,6 +2,30 @@
 
 ## Unreleased
 
+### Breaking Changes
+
+- **Removed `--accounts`, `--contracts`, `--max-slots`, `--min-slots`,
+  `--distribution`, `--code-size` flags.** Synthetic state generation is
+  now driven by a single `--target-size` flag plus the new
+  `internal/autofill` Plan, which emits mainnet-shaped 20 / 10 / 70
+  proportions (account-trie / bytecode / contract storage) up to the
+  budget. Per-contract code is a truncated normal in `[1 KiB, 24 KiB]`
+  centered at 5 KiB; per-contract storage size is a truncated normal in
+  `[1 KiB, 100 MiB]` with budget-derived mean. EOAs randomize balance
+  (90 % non-zero), nonce (always non-zero), and EIP-7702 delegation
+  (30 %) independently. **Closes
+  [ethereum/state-actor#82](https://github.com/ethereum/state-actor/issues/82).**
+
+- **`--target-size` is now required when `--spec` is not set.**
+  Replaces the previous default-1100-entity silent behavior. Existing
+  invocations that combined `--spec` with default
+  `--accounts=1000 --contracts=100` (and worked around the collision
+  with `--accounts=0 --contracts=0`) become simply `--spec=...`.
+
+- **Golden state-root hashes regenerated.**
+  `entitygen.CanonicalOsakaMPTRoot` and the binary-trie golden in
+  `generator/generator_test.go` are pinned to the new auto-fill output.
+
 ### Added
 - **`--spec <file>.yaml` flag** — declarative state customization via YAML.
   Users can specify concrete EOAs + contracts (with optional ERC-20

@@ -80,8 +80,7 @@ deps:
 # Default knobs shared across smoke + suite targets.
 # ---------------------------------------------------------------------------
 
-ACCOUNTS ?= 1000
-CONTRACTS ?= 100
+TARGET_SIZE ?= 4MB
 SEED ?= 42
 
 # Pre-funded smoke addresses. Mirrors the three accounts that used to come
@@ -129,7 +128,7 @@ image-nethermind:
 	docker build -f Dockerfile.nethermind --target builder -t state-actor-nethermind-builder:latest .
 
 ## smoke-nethermind: End-to-end smoke — generate a small DB, boot Nethermind, send 100 dev-mode txs
-##   Usage: make smoke-nethermind ACCOUNTS=1000 CONTRACTS=100
+##   Usage: make smoke-nethermind TARGET_SIZE=4MB
 SA_DB ?= /tmp/sa-neth-smoke
 smoke-nethermind: docker-nethermind
 	rm -rf $(SA_DB) && mkdir -p $(SA_DB)
@@ -138,12 +137,12 @@ smoke-nethermind: docker-nethermind
 	  -v $(PWD)/client/nethermind/testdata:/test:ro \
 	  state-actor-nethermind:latest \
 	  --client=nethermind --db=/data \
-	  --accounts=$(ACCOUNTS) --contracts=$(CONTRACTS) --seed=$(SEED) \
+	  --target-size=$(TARGET_SIZE) --seed=$(SEED) \
 	  --chain-id=1337 --inject-accounts=$(SMOKE_INJECT_ADDRS) --verbose
 	bash $(PWD)/client/nethermind/testdata/validate-big-db.sh $(SA_DB)
 
 ## smoke-nethermind-spamoor: Generate a DB, boot Nethermind, then run spamoor erc20_bloater
-##   Usage: make smoke-nethermind-spamoor ACCOUNTS=1000 CONTRACTS=100
+##   Usage: make smoke-nethermind-spamoor TARGET_SIZE=4MB
 ##   Pre-req: spamoor on $PATH (override via SPAMOOR=/abs/path).
 smoke-nethermind-spamoor: docker-nethermind
 	rm -rf $(SA_DB) && mkdir -p $(SA_DB)
@@ -152,7 +151,7 @@ smoke-nethermind-spamoor: docker-nethermind
 	  -v $(PWD)/client/nethermind/testdata:/test:ro \
 	  state-actor-nethermind:latest \
 	  --client=nethermind --db=/data \
-	  --accounts=$(ACCOUNTS) --contracts=$(CONTRACTS) --seed=$(SEED) \
+	  --target-size=$(TARGET_SIZE) --seed=$(SEED) \
 	  --chain-id=1337 --inject-accounts=$(SMOKE_INJECT_ADDRS) --verbose
 	docker rm -f neth-smoke-spamoor 2>/dev/null || true
 	docker run --rm -d --name neth-smoke-spamoor \
@@ -183,7 +182,7 @@ image-besu:
 	docker build -f Dockerfile.besu --target builder -t state-actor-besu-builder:latest .
 
 ## smoke-besu: End-to-end smoke — generate a small DB, boot hyperledger/besu, send 100 dev-mode txs
-##   Usage: make smoke-besu ACCOUNTS=1000 CONTRACTS=100
+##   Usage: make smoke-besu TARGET_SIZE=4MB
 SA_BESU_DB ?= /tmp/sa-besu-smoke
 smoke-besu: docker-besu
 	rm -rf $(SA_BESU_DB) && mkdir -p $(SA_BESU_DB)
@@ -192,13 +191,13 @@ smoke-besu: docker-besu
 	  -v $(PWD)/client/besu/testdata:/test:ro \
 	  state-actor-besu:latest \
 	  --client=besu --db=/data \
-	  --accounts=$(ACCOUNTS) --contracts=$(CONTRACTS) --seed=$(SEED) \
+	  --target-size=$(TARGET_SIZE) --seed=$(SEED) \
 	  --chain-id=1337 --inject-accounts=$(SMOKE_INJECT_ADDRS) --verbose
 	bash $(PWD)/client/besu/testdata/validate-big-db-besu.sh $(SA_BESU_DB)
 
 ## smoke-besu-spamoor: Generate a DB, boot hyperledger/besu, then run spamoor erc20_bloater
 ##                     until BLOCKS blocks have been mined.
-##   Usage: make smoke-besu-spamoor ACCOUNTS=1000 CONTRACTS=100 BLOCKS=200
+##   Usage: make smoke-besu-spamoor TARGET_SIZE=4MB BLOCKS=200
 ##   Pre-req: spamoor on $PATH (override via SPAMOOR=/abs/path).
 BLOCKS ?= 200
 smoke-besu-spamoor: docker-besu
@@ -208,7 +207,7 @@ smoke-besu-spamoor: docker-besu
 	  -v $(PWD)/client/besu/testdata:/test:ro \
 	  state-actor-besu:latest \
 	  --client=besu --db=/data \
-	  --accounts=$(ACCOUNTS) --contracts=$(CONTRACTS) --seed=$(SEED) \
+	  --target-size=$(TARGET_SIZE) --seed=$(SEED) \
 	  --chain-id=1337 --inject-accounts=$(SMOKE_INJECT_ADDRS) --verbose
 	docker rm -f besu-smoke-spamoor 2>/dev/null || true
 	docker run --rm -d --name besu-smoke-spamoor \
@@ -247,10 +246,9 @@ docker-geth:
 ##   Builds the state-actor-geth image, generates a small DB at $(SA_DB_GETH),
 ##   then boots upstream ethereum/client-go against the same datadir and runs
 ##   RPC-based boot-readability checks.
-##   Usage: make smoke-geth ACCOUNTS=1000 CONTRACTS=100 SEED=42
+##   Usage: make smoke-geth TARGET_SIZE=4MB SEED=42
 SA_DB_GETH ?= /tmp/sa-geth-smoke
-GETH_SMOKE_ACCOUNTS ?= 1000
-GETH_SMOKE_CONTRACTS ?= 100
+GETH_SMOKE_TARGET_SIZE ?= 4MB
 GETH_SMOKE_SEED ?= 42
 smoke-geth: docker-geth
 	rm -rf $(SA_DB_GETH) && mkdir -p $(SA_DB_GETH)/geth/chaindata
@@ -258,7 +256,7 @@ smoke-geth: docker-geth
 	  -v $(SA_DB_GETH):/datadir \
 	  state-actor-geth:latest \
 	  --client=geth --db=/datadir/geth/chaindata \
-	  --accounts=$(GETH_SMOKE_ACCOUNTS) --contracts=$(GETH_SMOKE_CONTRACTS) \
+	  --target-size=$(GETH_SMOKE_TARGET_SIZE) \
 	  --seed=$(GETH_SMOKE_SEED) \
 	  --chain-id=1337 --fork=osaka --inject-accounts=$(SMOKE_INJECT_ADDRS) \
 	  --verbose 2>&1 \

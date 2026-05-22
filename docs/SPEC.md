@@ -2,8 +2,9 @@
 
 State-actor's `--spec` flag accepts a YAML file declaring concrete entities
 (EOAs + contracts) the writer must include in generated genesis state.
-Spec entities are written first; the synthetic-fill loop
-(`--accounts`/`--contracts`/`--target-size`) runs on top.
+Spec entities are written first; if `--target-size` is set, the
+20 / 10 / 70 mainnet-shaped auto-fill (see `internal/autofill`) runs on
+top, filling the headroom after the spec's projected cost.
 
 ## Quick start
 
@@ -134,16 +135,16 @@ Built-in non-template handlers (no `template:` field needed):
   EOA when `code:` is `0xef0100<addr>`; storage-bloated EOA when
   `approximate_size_bytes:` is set.
 
-## Composability with existing flags
+## Composability with `--target-size`
 
-- `--accounts`, `--contracts`, `--min-slots`, `--max-slots`,
-  `--distribution`: still drive the synthetic-fill loop. Spec entities
-  are written first, then the loop runs on top.
-- `--target-size`: still bounds the synthetic-fill loop. **If spec
-  entities alone exceed `--target-size`, `Config.Validate()` fails
-  loudly** with copy-pasteable guidance — no silent truncation.
+- `--target-size`: when set alongside `--spec`, the auto-fill emits
+  20 / 10 / 70 mainnet-shaped synthetic state up to the headroom
+  (`target_size` minus the spec's projected cost). If the spec already
+  meets or exceeds the target, no auto-fill runs (logged in `--verbose`).
+- When `--target-size` is **not** set but `--spec` is, only the spec
+  entities are written — no synthetic top-up.
 - `--seed`: drives both the spec's deterministic address derivation
-  AND the synthetic-fill loop's RNG. Same `--seed + --spec` always
+  AND the auto-fill RNG. Same `--seed + --spec + --target-size` always
   produces the same on-disk state on a given client.
 
 ## Determinism guarantees

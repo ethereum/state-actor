@@ -29,9 +29,7 @@ go install github.com/nerolation/state-actor@latest
 # Generate
 state-actor \
     --db ./chaindata \
-    --genesis genesis.json \
-    --accounts 10000 \
-    --contracts 5000 \
+    --target-size 100MB \
     --seed 42
 
 # Output:
@@ -46,7 +44,7 @@ state-actor \
 | Feature | Description |
 |---------|-------------|
 | ⚡ **Fast** | 350K+ storage slots/second |
-| 🎯 **Realistic** | Power-law distribution mimics mainnet state |
+| 🎯 **Realistic** | Auto-fill emits a mainnet-shaped 20 % account-trie / 10 % bytecode / 70 % storage split |
 | 🔄 **Reproducible** | Seed-based generation for consistent tests |
 | 🔗 **Genesis Integration** | Merges with genesis.json, writes genesis block |
 | 📦 **Ready to Use** | No `geth init` needed — produces a geth-compatible Pebble database |
@@ -81,34 +79,35 @@ docker build -t state-actor:latest .
 ### Basic Usage
 
 ```bash
-# Minimal: just generate random state
-state-actor --db ./chaindata --accounts 1000 --contracts 500
+# Minimal: auto-fill 100 MB of mainnet-shaped state
+state-actor --db ./chaindata --target-size 100MB
 
-# With genesis integration (recommended)
+# With a declarative spec (overlays auto-fill on top of the spec entities)
 state-actor \
     --db ./chaindata \
-    --genesis genesis.json \
-    --accounts 10000 \
-    --contracts 5000
+    --spec ./examples/full-matrix-spec-feature.yaml \
+    --target-size 1GB
 ```
+
+`--target-size` is **required** unless `--spec` is set. The auto-fill emits
+synthetic state in mainnet-shaped proportions (20 % account-trie / 10 %
+bytecode / 70 % storage); per-contract code is a truncated normal in
+`[1 KiB, 24 KiB]` centered at 5 KiB, and per-contract storage size is a
+truncated normal in `[1 KiB, 100 MiB]` whose mean is budget-derived.
+EOAs randomize balance / nonce / EIP-7702 delegation independently.
 
 ### Command Line Options
 
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--db` | (required) | Output database directory |
-| `--genesis` | - | Genesis JSON file (enables genesis block writing) |
-| `--accounts` | 1000 | Number of EOA accounts |
-| `--contracts` | 100 | Number of contracts |
-| `--max-slots` | 10000 | Max storage slots per contract |
-| `--min-slots` | 1 | Min storage slots per contract |
-| `--distribution` | power-law | Distribution: `power-law`, `uniform`, `exponential` |
-| `--seed` | 0 | Random seed (0 = random) |
-| `--code-size` | 1024 | Average contract code size |
+| `--target-size` | - | Required unless `--spec` is set. Target DB size (e.g. `5GB`, `500MB`). Drives auto-fill of 20/10/70 mainnet-shaped synthetic state. With `--spec`, fills the headroom after the spec's projected cost. |
+| `--spec` | - | YAML state-spec file (see `docs/SPEC.md`). |
+| `--seed` | 1 | Random seed; pass `--seed=0` to use wall-clock time (non-reproducible). |
 | `--binary-trie` | false | Generate state for EIP-7864 binary trie mode |
-| `--inject-accounts` | - | Comma-separated hex addresses to pre-fund with 999999999 ETH |
-| `--chain-id` | 0 | Override genesis chainId (0 = use value from genesis.json) |
-| `--target-size` | - | Target total DB size on disk (e.g. `5GB`, `500MB`). Stops when reached. |
+| `--chain-id` | 1337 | Chain ID embedded in the synthesized chainspec |
+| `--client` | geth | Target Ethereum client: `geth`, `nethermind`, `besu`, or `reth` |
+| `--archive` | false | Generate archive-mode DB (geth + reth only) |
 | `--verbose` | false | Verbose output |
 | `--benchmark` | false | Print detailed stats |
 
@@ -133,7 +132,7 @@ state-actor --db ./chaindata --genesis genesis.json ...
 By default, State Actor uses the **Merkle Patricia Trie (MPT)** for state root computation, matching standard Ethereum. To generate state for **binary trie mode** (EIP-7864), pass `--binary-trie`:
 
 ```bash
-state-actor --db ./chaindata --genesis genesis.json --accounts 10000 --contracts 5000 --binary-trie
+state-actor --db ./chaindata --target-size 100MB --binary-trie
 ```
 
 Binary trie state requires geth to run with `--override.verkle=0` (legacy flag name for EIP-7864).
@@ -146,28 +145,35 @@ Binary trie state requires geth to run with `--override.verkle=0` (legacy flag n
 
 #### Local Testing (Quick)
 ```bash
-state-actor --db ./chaindata --genesis genesis.json \
-    --accounts 1000 --contracts 500 --max-slots 100 --seed 1
+state-actor --db ./chaindata --target-size 10MB --seed 1
 ```
 
 #### CI/CD Pipeline
 ```bash
-state-actor --db ./chaindata --genesis genesis.json \
-    --accounts 10000 --contracts 5000 --max-slots 1000 --seed 42
+state-actor --db ./chaindata --target-size 100MB --seed 42
 ```
 
 #### Mainnet-like State
 ```bash
-state-actor --db ./chaindata --genesis genesis.json \
-    --accounts 1000000 --contracts 500000 --max-slots 50000 \
-    --distribution power-law --seed 12345
+state-actor --db ./chaindata --target-size 100GB --seed 12345
 ```
 
-#### Maximum Throughput
+The auto-fill emits a fixed 20 / 10 / 70 split (account-trie / bytecode /
+storage) regardless of target size. The 24 KiB per-contract code clamp is
+mainnet-accurate (EIP-170); storage size per contract is a truncated
+normal in `[1 KiB, 100 MiB]` whose mean adapts to the target budget.
+
+#### With a Spec
 ```bash
-state-actor --db ./chaindata --genesis genesis.json \
-    --accounts 100000 --contracts 50000 --max-slots 10000
+state-actor \
+    --db ./chaindata \
+    --spec ./examples/full-matrix-spec-feature.yaml \
+    --target-size 1GB
 ```
+
+The spec entities materialize as declared; `--target-size` fills the
+headroom with auto-filled synthetic state. If the spec already meets
+or exceeds the target, no auto-fill runs.
 
 ## Genesis Integration
 
@@ -210,8 +216,7 @@ See [docs/KURTOSIS.md](docs/KURTOSIS.md) for detailed integration guide.
 
 ```bash
 # 1. Generate state
-state-actor --db ./chaindata --genesis genesis.json \
-    --accounts 100000 --contracts 50000 --seed 42
+state-actor --db ./chaindata --target-size 1GB --seed 42
 
 # 2. Copy to geth data directory
 mkdir -p ./geth-data/geth
@@ -221,41 +226,20 @@ cp -r ./chaindata ./geth-data/geth/chaindata
 geth --datadir ./geth-data --db.engine=pebble ...
 ```
 
-## Performance
+## Auto-Fill Distribution
 
-| Scale | Accounts | Contracts | Slots | Time | Throughput |
-|-------|----------|-----------|-------|------|------------|
-| Small | 1K | 500 | ~11K | 64ms | 170K/s |
-| Medium | 10K | 5K | ~140K | 400ms | 350K/s |
-| Large | 100K | 50K | ~1.4M | 4s | 350K/s |
+The auto-fill emits synthetic state in a fixed mainnet-shaped split:
 
-**Estimated capacity**: ~20 million storage slots per minute.
+| Category | Share | Per-entity shape |
+|----------|------:|------------------|
+| Account trie | 20 % | 175 B per leaf — EOAs (90 % non-zero balance, 30 % EIP-7702 delegation, always non-zero nonce) and contract headers |
+| Bytecode | 10 % | Truncated normal centered at 5 KiB, clamped to `[1 KiB, 24 KiB]` (EIP-170-compliant) |
+| Storage | 70 % | Truncated normal in `[1 KiB, 100 MiB]` with budget-derived mean |
 
-## Distribution Types
-
-### Power-Law (Recommended)
-
-Pareto distribution where most contracts have few slots, but some have many. Accurately mimics real Ethereum state distribution.
-
-```bash
---distribution power-law
-```
-
-### Uniform
-
-All contracts have similar slot counts. Useful for specific test scenarios.
-
-```bash
---distribution uniform
-```
-
-### Exponential
-
-Exponential decay in slot counts. Middle ground between power-law and uniform.
-
-```bash
---distribution exponential
-```
+Contract count is pinned by the bytecode budget so per-contract code stays
+mainnet-realistic; EOA count is derived from the remaining account-trie
+budget. The ratios apply to the top-up portion only — `target_size` minus
+the projected cost of any `--spec` entities.
 
 ## Architecture
 
