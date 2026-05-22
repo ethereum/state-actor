@@ -11,6 +11,9 @@ Spec entities are written first; the synthetic-fill loop
 state-actor --client=reth --db=/tmp/mychain --spec=examples/spec-erc20-mixed-sizes.yaml --target-size=20GB
 ```
 
+Once the DB is written, boot the client per [`RUNBOOK.md`](RUNBOOK.md). For
+example specs covering each capability, see [`examples/README.md`](../examples/README.md).
+
 ## Schema
 
 ```yaml
@@ -77,6 +80,27 @@ deterministic `(key, value)` pairs derived from `(seed, address)`.
   entity finishes writing.
 - **Accuracy**: ±25% via per-client calibration factors
   (`internal/sizecal/factors.json`).
+
+### Sizing your generation
+
+Translating a total-byte budget into `--accounts` / `--contracts` /
+`--min-slots` / `--max-slots` is mostly arithmetic. Run a calibration
+pass (`--accounts=100000 --contracts=10000 --benchmark --verbose`) to
+get the per-entry sizes the client actually produces, then divide:
+
+| Category | Bytes per entry (approximate) |
+|---|---|
+| EOA account | ~45 B |
+| Contract account | ~75 B |
+| Storage slot | ~98 B |
+| Code entry | ~1.5 × `--code-size` |
+
+Pick a split (e.g. 20 % accounts / 70 % storage / 10 % code) and derive
+the four parameters from the per-entry sizes. For an explicit ERC-20
+or 7702 EOA whose storage you control via `approximate_size_bytes`,
+that share is exempt from the synthetic-fill arithmetic — the
+calibrated `sizecal` factor handles the conversion to slots
+internally.
 
 ## Templates
 
