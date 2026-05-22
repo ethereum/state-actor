@@ -35,7 +35,7 @@ One of:
 
 - `contract` — a smart contract with deployed bytecode. **Must** set
   exactly one of `template:` or `code:`. May set `approximate_size_bytes:`
-  to populate storage at scale.
+  to populate synthetic storage.
 - `eoa` — an externally-owned account. May set `code:` (e.g. an EIP-7702
   23-byte `0xef0100<addr>` delegation marker). May set
   `approximate_size_bytes:` for delegated-storage bloat. MUST NOT set
@@ -163,9 +163,12 @@ Built-in non-template handlers (no `template:` field needed):
 - `--accounts`, `--contracts`, `--min-slots`, `--max-slots`,
   `--distribution`: still drive the synthetic-fill loop. Spec entities
   are written first, then the loop runs on top.
-- `--target-size`: still bounds the synthetic-fill loop. **If spec
-  entities alone exceed `--target-size`, `Config.Validate()` fails
-  loudly** with copy-pasteable guidance — no silent truncation.
+- `--target-size`: an upper bound on the projected trie footprint of
+  the whole generated database — spec entities AND synthetic fill both
+  count toward it. If the spec alone exceeds the budget,
+  `internal/specbuild` truncates the entity list to the longest prefix
+  that fits and emits a `--target-size … truncated spec at entity[N]`
+  warning on stderr. To generate a spec verbatim, omit `--target-size`.
 - `--seed`: drives both the spec's deterministic address derivation
   AND the synthetic-fill loop's RNG. Same `--seed + --spec` always
   produces the same on-disk state on a given client.

@@ -31,14 +31,16 @@ Three flags carry most of the weight: `--client` (which client's format to write
 # Smoke test: a small geth DB, defaults, no spec.
 go run . --client=geth --db=/tmp/sa-geth/geth/chaindata --target-size=100MB
 
-# Spec-driven: load a curated YAML and let synthetic fill stop at 1 GB.
+# Spec-driven: load a curated YAML verbatim (no --target-size, so the
+# spec is never truncated; --accounts=0 --contracts=0 suppresses
+# synthetic fill).
 go run . --client=geth --db=/tmp/sa-spec/geth/chaindata \
-  --spec=examples/spec-erc20-mixed-sizes.yaml \
-  --accounts=0 --contracts=0 --target-size=1GB
+  --spec=examples/spec-minimal.yaml \
+  --accounts=0 --contracts=0
 
 # Pick a different client (Docker required for cgo clients).
 go run . --client=reth --db=/tmp/sa-reth \
-  --spec=examples/spec-eoa-bloat.yaml --accounts=0 --contracts=0
+  --spec=examples/spec-minimal.yaml --accounts=0 --contracts=0
 ```
 
 After the run, boot the client against the produced datadir &mdash; the per-client recipes are in [`docs/RUNBOOK.md`](docs/RUNBOOK.md).
@@ -87,7 +89,7 @@ When you use `--spec`, set `--accounts=0 --contracts=0` to suppress synthetic fi
 
 ### Cap the database size
 
-`--target-size` is a soft stop on the synthetic-fill loop. Spec entities are never capped.
+`--target-size` is an upper bound on the projected trie footprint of the whole generated database. Both spec entities and the synthetic-fill loop count toward the budget; if the spec alone would exceed the budget, the spec is silently truncated to the longest prefix that fits (with a warning on stderr). To generate a spec verbatim, omit `--target-size`.
 
 ```bash
 state-actor --client=reth --db=/tmp/sa --target-size=10GB
@@ -145,7 +147,7 @@ Full schema: [`docs/SPEC.md`](docs/SPEC.md). Curated examples: [`examples/README
 | `--db` | string | (required) | Path to the database directory |
 | `--client` | string | `geth` | Target client: `geth`, `nethermind`, `besu`, `reth` |
 | `--spec` | string | (none) | Path to a YAML state-spec file; see `docs/SPEC.md` |
-| `--target-size` | string | (none) | Soft cap on synthetic fill (`5GB`, `500MB`, …) |
+| `--target-size` | string | (none) | Upper bound on the whole DB (`5GB`, `500MB`, …). Truncates spec + synthetic fill together to fit. |
 | `--accounts` | int | 1000 | Number of synthetic EOAs |
 | `--contracts` | int | 100 | Number of synthetic contracts |
 | `--min-slots` | int | 1 | Min storage slots per synthetic contract |

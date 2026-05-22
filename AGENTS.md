@@ -102,7 +102,7 @@ The cross-client genesis-root invariant says: same `--seed`, same spec, same cli
 
 - **Besu / reth / nethermind require Docker** for the writer side (cgo dependencies; no native build on macOS). Only geth has a pure-Go writer.
 - **`--seed=0` is a footgun**: `main.go` rewrites it to `time.Now().UnixNano()`, i.e. randomises. For determinism use any non-zero seed. Bench convention is `--seed=42`.
-- **`--target-size` caps synthetic fill only**: spec entities are never capped. If your spec already exceeds the target, the generator stops as soon as the spec is written.
+- **`--target-size` is an upper bound on the whole database**: spec entities AND synthetic fill both count toward it. If the spec alone exceeds the budget, `internal/specbuild` silently truncates the entity list to the longest prefix that fits and emits a warning. To generate a spec verbatim without truncation risk, omit `--target-size`.
 - **`--archive` is geth/reth only**: rejected for besu and nethermind.
 - **`--binary-trie` is geth-only** (EIP-7864).
 - **When using `--spec`, pair it with `--accounts=0 --contracts=0`** to suppress synthetic fill — otherwise random EOAs and contracts can collide with spec-derived addresses.
