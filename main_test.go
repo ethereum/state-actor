@@ -44,10 +44,7 @@ func TestMainBenchmarkPrintsStats(t *testing.T) {
 	dbDir := filepath.Join(binDir, "chaindata")
 	run := exec.Command(binPath,
 		"--db", dbDir,
-		"--accounts", "10",
-		"--contracts", "3",
-		"--min-slots", "1",
-		"--max-slots", "2",
+		"--target-size", "2MB",
 		"--seed", "42",
 		"--benchmark",
 	)
@@ -152,8 +149,6 @@ func TestMainSpecFlagSmoke(t *testing.T) {
 	cmd := exec.Command(binPath,
 		"--db", dbDir,
 		"--spec", specPath,
-		"--accounts", "0",
-		"--contracts", "0",
 		"--seed", "42",
 	)
 	out, err := cmd.CombinedOutput()
