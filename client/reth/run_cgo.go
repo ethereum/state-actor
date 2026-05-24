@@ -6,7 +6,6 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"log"
 	mrand "math/rand"
 	"os"
 	"path/filepath"
@@ -24,15 +23,11 @@ import (
 
 const defaultStreamBatchSize = 100_000
 
-// contractStreamBatchSize bounds per-batch dirSize-sample overshoot for
-// the contract loop. The contract loop's dirSize check fires only
-// between batches, so the batch size IS the worst-case overshoot above
-// --target-size. Mean per-contract storage ≈ 35 KiB under the auto-fill
-// 20/10/70 split, so a 1K batch caps per-batch overshoot at ~35 MiB
-// (truncation-bound outliers can push one entity to ~100 MiB; that's
-// still 35× tighter than the previous 100K batch's ~3.5 GiB worst case).
-// EOAs keep defaultStreamBatchSize: per-EOA writes are ≤175 B trie cost
-// so peak overshoot stays ≤ ~17 MiB even with the larger batch.
+// contractStreamBatchSize sets the MDBX commit cadence for the contract
+// loop. Smaller than defaultStreamBatchSize because per-contract writes
+// (≈35 KiB mean storage under the 20/10/70 auto-fill split) are much
+// larger than per-EOA writes, so a 1K batch keeps txn working-set RAM
+// bounded.
 const contractStreamBatchSize = 1_000
 
 // runCgoNotAvailableError is nil under -tags cgo_reth (kept as a symbol
@@ -130,51 +125,8 @@ func RunCgo(ctx context.Context, cfg generator.Config, opts Options) (*generator
 	if plan != nil && (plan.NumEOAs > 0 || plan.NumContracts > 0) {
 		rng := mrand.New(mrand.NewSource(cfg.Seed))
 
-		// dirSize sample includes the temp Pebble sorter (streamsort-*/
-		// under cfg.DBPath, per internal/streamsort.New) — over-estimates
-		// production size, safer (stops earlier).
-		targetReached := false
-
-		// dirSize errors used to be silently swallowed (`err == nil &&`):
-		// a transient EMFILE / EIO during a long bench run would disable
-		// the early-stop entirely, blowing past --target-size. Now we log
-		// every failure and escalate to a fatal error after 3 consecutive
-		// ones — small enough to catch persistent EMFILE/EIO, large
-		// enough to ride out transient compaction-window stat failures.
-		consecutiveDirSizeFailures := 0
-		const dirSizeFailureEscalation = 3
-		// checkDirSizeOrFatal returns (reached, fatalErr). When the dirSize
-		// probe errors, increments the consecutive counter and (if the
-		// escalation threshold trips) returns a non-nil error the caller
-		// must propagate. On a healthy probe the counter resets.
-		checkDirSizeOrFatal := func(phase string) (bool, error) {
-			if cfg.TargetSize == 0 {
-				return false, nil
-			}
-			size, err := dirSize(cfg.DBPath)
-			if err != nil {
-				consecutiveDirSizeFailures++
-				log.Printf("WARN: reth %s: dirSize(%q) failed (attempt %d/%d): %v",
-					phase, cfg.DBPath, consecutiveDirSizeFailures, dirSizeFailureEscalation, err)
-				if consecutiveDirSizeFailures >= dirSizeFailureEscalation {
-					return false, fmt.Errorf("reth %s: dirSize failed %d consecutive times, aborting: %w",
-						phase, dirSizeFailureEscalation, err)
-				}
-				return false, nil
-			}
-			consecutiveDirSizeFailures = 0
-			if size >= cfg.TargetSize {
-				if cfg.Verbose {
-					log.Printf("reth %s: dirSize %d MiB >= target %d MiB — stopping",
-						phase, size>>20, cfg.TargetSize>>20)
-				}
-				return true, nil
-			}
-			return false, nil
-		}
-
 		remaining := plan.NumEOAs
-		for remaining > 0 && !targetReached {
+		for remaining > 0 {
 			b := batchSize
 			if remaining < b {
 				b = remaining
@@ -193,18 +145,11 @@ func RunCgo(ctx context.Context, cfg generator.Config, opts Options) (*generator
 			}
 			accountsCreated += b
 			remaining -= b
-			reached, err := checkDirSizeOrFatal("Phase 4b (EOA loop)")
-			if err != nil {
-				return nil, err
-			}
-			if reached {
-				targetReached = true
-			}
 		}
 
-		if plan.NumContracts > 0 && !targetReached {
+		if plan.NumContracts > 0 {
 			remaining := plan.NumContracts
-			for remaining > 0 && !targetReached {
+			for remaining > 0 {
 				b := contractStreamBatchSize
 				if remaining < b {
 					b = remaining
@@ -226,13 +171,6 @@ func RunCgo(ctx context.Context, cfg generator.Config, opts Options) (*generator
 				}
 				contractsCreated += b
 				remaining -= b
-				reached, err := checkDirSizeOrFatal("Phase 4c (contract loop)")
-				if err != nil {
-					return nil, err
-				}
-				if reached {
-					targetReached = true
-				}
 			}
 		}
 	}
@@ -314,24 +252,3 @@ func RunCgo(ctx context.Context, cfg generator.Config, opts Options) (*generator
 	return stats, nil
 }
 
-// dirSize returns the total disk-allocated bytes used by all regular
-// files under path. reth's mdbx.dat is sparse-preallocated (4 GiB
-// growth steps), so dirSize reads block count via syscall.Stat_t for
-// actual disk usage rather than os.FileInfo.Size() (which reports the
-// logical size). Windows falls back to logical size.
-func dirSize(path string) (uint64, error) {
-	var total uint64
-	err := filepath.Walk(path, func(_ string, info os.FileInfo, err error) error {
-		if err != nil {
-			if os.IsNotExist(err) {
-				return nil
-			}
-			return err
-		}
-		if !info.IsDir() {
-			total += apparentSize(info)
-		}
-		return nil
-	})
-	return total, err
-}
