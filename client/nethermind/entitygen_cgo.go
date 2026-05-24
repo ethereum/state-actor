@@ -6,10 +6,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"log"
 	mrand "math/rand"
-	"os"
-	"path/filepath"
 	"sort"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -170,49 +167,10 @@ func writeSyntheticAccounts(
 
 	rng := mrand.New(mrand.NewSource(cfg.Seed))
 
-	// Phase 1 is hybrid: account stashing goes to the temp Pebble, but
-	// contract storage tries write directly to the State DB — so dirSize
-	// sampling must happen inside the contract loop, not just Phase 2.
-	targetReached := false
-	// Silent-failure guard: dirSize / sink.flush errors used to silently
-	// disable the early-stop. After 3 consecutive failures we surface a
-	// fatal error instead — small enough to catch persistent EMFILE/EIO,
-	// large enough to ride out transient compaction-window stat failures.
-	consecutiveProbeFailures := 0
-	const probeFailureEscalation = 3
-	checkProductionSize := func() (uint64, bool, error) {
-		if cfg.TargetSize == 0 {
-			return 0, false, nil
-		}
-		if err := sink.flush(); err != nil {
-			consecutiveProbeFailures++
-			log.Printf("WARN: nethermind: sink.flush failed during dirSize probe (attempt %d/%d): %v",
-				consecutiveProbeFailures, probeFailureEscalation, err)
-			if consecutiveProbeFailures >= probeFailureEscalation {
-				return 0, false, fmt.Errorf("nethermind: dirSize probe failed %d consecutive times (flush): %w",
-					probeFailureEscalation, err)
-			}
-			return 0, false, nil
-		}
-		size, err := dirSize(cfg.DBPath)
-		if err != nil {
-			consecutiveProbeFailures++
-			log.Printf("WARN: nethermind: dirSize(%q) failed (attempt %d/%d): %v",
-				cfg.DBPath, consecutiveProbeFailures, probeFailureEscalation, err)
-			if consecutiveProbeFailures >= probeFailureEscalation {
-				return 0, false, fmt.Errorf("nethermind: dirSize probe failed %d consecutive times: %w",
-					probeFailureEscalation, err)
-			}
-			return 0, false, nil
-		}
-		consecutiveProbeFailures = 0
-		return size, size >= cfg.TargetSize, nil
-	}
-
 	plan := cfg.AutoFill
 
 	if plan != nil {
-		for i := 0; i < plan.NumEOAs && !targetReached; i++ {
+		for i := 0; i < plan.NumEOAs; i++ {
 			acc := plan.DrawEOA(rng)
 			data, err := gethrlp.EncodeToBytes(acc.StateAccount)
 			if err != nil {
@@ -236,13 +194,11 @@ func writeSyntheticAccounts(
 		}
 	}
 
-	const contractSampleEvery = 100
-
 	plannedContracts := 0
 	if plan != nil {
 		plannedContracts = plan.NumContracts
 	}
-	for i := 0; i < plannedContracts && !targetReached; i++ {
+	for i := 0; i < plannedContracts; i++ {
 		contract := plan.DrawContract(rng)
 		numSlots := len(contract.Storage)
 
@@ -301,19 +257,6 @@ func writeSyntheticAccounts(
 			stats.ContractsCreated++
 			stats.StorageSlotsCreated += numSlots
 		}
-		if (i+1)%contractSampleEvery == 0 {
-			size, reached, err := checkProductionSize()
-			if err != nil {
-				return common.Hash{}, err
-			}
-			if reached {
-				if cfg.Verbose {
-					log.Printf("nethermind Phase 1: dirSize %d MiB >= target %d MiB after %d contracts — stopping",
-						size>>20, cfg.TargetSize>>20, i+1)
-				}
-				targetReached = true
-			}
-		}
 	}
 
 	if err := sorter.Iterate(func(key, value []byte) error {
@@ -364,25 +307,6 @@ func encodeStorageValueNeth(value common.Hash) ([]byte, error) {
 type hashedSlot struct {
 	keyHash common.Hash
 	value   common.Hash
-}
-
-// dirSize returns the total bytes used by all regular files under path.
-// Returns 0 + nil if path doesn't exist yet.
-func dirSize(path string) (uint64, error) {
-	var total uint64
-	err := filepath.Walk(path, func(_ string, info os.FileInfo, err error) error {
-		if err != nil {
-			if os.IsNotExist(err) {
-				return nil
-			}
-			return err
-		}
-		if !info.IsDir() {
-			total += uint64(info.Size())
-		}
-		return nil
-	})
-	return total, err
 }
 
 // nethermindStorageHashBuilder adapts nethtrie.Builder to
