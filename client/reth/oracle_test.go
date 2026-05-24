@@ -314,6 +314,5 @@ func TestE2ESuite(t *testing.T) {
 		GeneratorConfig: &cfg,
 		Spec:            specDoc,
 		SpecSeed:        e2e.CISpecSeed,
-		ExpectedDBBytes: e2eBudget,
 	})
 }

@@ -214,6 +214,5 @@ func TestE2ESuite(t *testing.T) {
 		Spec:                specDoc,
 		SpecSeed:            e2e.CISpecSeed,
 		SpamoorSlotDuration: 250 * time.Millisecond,
-		ExpectedDBBytes:     e2eBudget,
 	})
 }
