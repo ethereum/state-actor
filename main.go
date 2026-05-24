@@ -38,7 +38,7 @@ var (
 	benchmark  = flag.Bool("benchmark", false, "Run in benchmark mode (print detailed stats)")
 	binaryTrie = flag.Bool("binary-trie", false, "Generate state for binary trie mode (EIP-7864)")
 
-	targetSize = flag.String("target-size", "", "Target total DB size on disk (e.g. '5GB', '500MB'). Required unless --spec is set. Drives auto-fill of 20/10/70 mainnet-shaped synthetic state up to the budget. With --spec, fills the headroom after the spec's projected cost; if the spec already meets the target, no auto-fill runs. Honored by geth, besu, nethermind, and reth.")
+	targetSize = flag.String("target-size", "", "Advisory budget (e.g. '5GB', '500MB') that sizes the auto-fill of 20/10/70 mainnet-shaped synthetic state. Required unless --spec is set. With --spec, fills the headroom after the spec's projected cost; if the spec already meets the target, no auto-fill runs. Not a hard on-disk cap — actual size may vary per client. Honored by geth, besu, nethermind, and reth.")
 
 	fork      = flag.String("fork", "", "Hard fork active at genesis. Empty (default) resolves to the latest fork the chosen --client can write. Use --list-forks to see all values.")
 	listForks = flag.Bool("list-forks", false, "Print the list of accepted --fork values and exit.")

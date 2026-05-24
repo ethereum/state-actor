@@ -24,7 +24,7 @@ Read these in this order. The first one is load-bearing — read it before you r
 |---|---|
 | `--client` | Which client format to write (`geth`, `reth`, `besu`, `nethermind`) |
 | `--spec` | Path to a YAML file declaring concrete entities (EOAs, contracts, ERC-20s, EIP-7702 delegations) |
-| `--target-size` | Upper bound on the projected trie footprint of the whole DB |
+| `--target-size` | Advisory budget that sizes the auto-fill of synthetic state. Not a hard on-disk cap — actual size may vary per client. |
 
 Everything else has a sane default. Run `state-actor --help` for the full list (22 flags).
 
