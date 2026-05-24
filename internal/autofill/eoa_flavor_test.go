@@ -1,8 +1,11 @@
 package autofill
 
 import (
+	"bytes"
 	mrand "math/rand"
 	"testing"
+
+	"github.com/ethereum/go-ethereum/crypto"
 
 	"github.com/nerolation/state-actor/internal/entitygen"
 )
@@ -57,6 +60,33 @@ func TestGenerateEOAFlavored_DelegationMarkerFormat(t *testing.T) {
 		}
 		if acc.Code[0] != 0xef || acc.Code[1] != 0x01 || acc.Code[2] != 0x00 {
 			t.Errorf("EOA[%d]: prefix got %x, want ef0100", i, acc.Code[:3])
+		}
+	}
+}
+
+// TestGenerateEOAFlavored_DelegationCodeHashMatchesCode pins the triple
+// invariant for EIP-7702 delegating EOAs: acc.Code, acc.CodeHash, and
+// acc.StateAccount.CodeHash MUST all agree. A future refactor that
+// updates one without the others would land on disk silently and only
+// surface as a cross-client state-root divergence (much further from
+// the root cause than necessary). The EVM resolves delegation by hash
+// → bytecode lookup, so a drift makes the delegated contract un-callable.
+func TestGenerateEOAFlavored_DelegationCodeHashMatchesCode(t *testing.T) {
+	rng := mrand.New(mrand.NewSource(42))
+	flavors := EOAFlavors{HasBalance: 0, HasDelegation: 1.0}
+	for i := range 100 {
+		acc := GenerateEOAFlavored(rng, flavors)
+		if len(acc.Code) != 23 {
+			t.Fatalf("EOA[%d]: code length %d, want 23", i, len(acc.Code))
+		}
+		wantHash := crypto.Keccak256Hash(acc.Code)
+		if acc.CodeHash != wantHash {
+			t.Errorf("EOA[%d]: Account.CodeHash %s != keccak(Code) %s",
+				i, acc.CodeHash.Hex(), wantHash.Hex())
+		}
+		if !bytes.Equal(acc.StateAccount.CodeHash, wantHash.Bytes()) {
+			t.Errorf("EOA[%d]: StateAccount.CodeHash %x != keccak(Code) %x",
+				i, acc.StateAccount.CodeHash, wantHash.Bytes())
 		}
 	}
 }

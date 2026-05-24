@@ -95,6 +95,15 @@ func TestGenerateContract_Determinism(t *testing.T) {
 	if c.CodeHash != crypto256(t, c.Code) {
 		t.Errorf("CodeHash != keccak(Code)")
 	}
+	// Triple invariant: Account.Code, Account.CodeHash, and
+	// StateAccount.CodeHash MUST all agree. Drift between them lands on
+	// disk silently and only surfaces as a cross-client state-root
+	// divergence — the EVM resolves contract code by hash → bytecode
+	// lookup, so a mismatch makes the contract un-callable.
+	if !bytes.Equal(c.StateAccount.CodeHash, c.CodeHash.Bytes()) {
+		t.Errorf("StateAccount.CodeHash %x != Account.CodeHash %x",
+			c.StateAccount.CodeHash, c.CodeHash.Bytes())
+	}
 	if len(c.Storage) != 5 {
 		t.Errorf("Storage slot count: got %d, want 5", len(c.Storage))
 	}

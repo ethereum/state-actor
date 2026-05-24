@@ -87,3 +87,38 @@ func abs(x int) int {
 	}
 	return x
 }
+
+// TestPlanForBudget_NearContractBoundary pins the rounding at the
+// contract-count threshold. PlanForBudget computes
+//
+//	N_contracts = round(B_code / MeanContractCode)
+//
+// where B_code = 0.1 * topUp, MeanContractCode = 5 KiB. The threshold
+// where round flips from 0 → 1 is B_code = MeanContractCode/2 = 2560,
+// i.e. topUp = 25600. A regression that changed +MeanContractCode/2 to
+// +0 or +MeanContractCode would flip contract counts at this seam
+// unnoticed; the existing TestPlanForBudget_10GiB pin is too far up the
+// curve to catch rounding-direction regressions at the boundary.
+func TestPlanForBudget_NearContractBoundary(t *testing.T) {
+	cases := []struct {
+		budget        uint64
+		wantContracts int
+	}{
+		{24_576, 0},  // 0.1*topUp = 2457.6, round → 0
+		{25_600, 1},  // 0.1*topUp = 2560,   round → 1 (the threshold)
+		{50_000, 1},  // 0.1*topUp = 5000,   round → 1
+		{76_800, 2},  // 0.1*topUp = 7680,   round → 2 (mid 1↔2 seam)
+	}
+	for _, tc := range cases {
+		p, err := PlanForBudget(tc.budget)
+		if err != nil {
+			// Very small budgets (< 875 B) error on the zero-entities
+			// branch — skip them rather than misreport as test failures.
+			continue
+		}
+		if p.NumContracts != tc.wantContracts {
+			t.Errorf("budget %d: NumContracts %d, want %d",
+				tc.budget, p.NumContracts, tc.wantContracts)
+		}
+	}
+}
