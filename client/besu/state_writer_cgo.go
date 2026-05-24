@@ -6,7 +6,6 @@ import (
 	"context"
 	"encoding/binary"
 	"fmt"
-	"log"
 	mrand "math/rand"
 	"runtime"
 	"sort"
@@ -67,26 +66,9 @@ func writeStateAndCollectRoot(
 
 	rng := mrand.New(mrand.NewSource(int64(cfg.Seed)))
 
-	// Phase 1 target-size: tracks raw entity bytes (over-estimates the
-	// final Bonsai DB size, lands slightly under target).
-	totalRawBytes := uint64(0)
-	targetReached := false
-	checkTarget := func(blobLen int) bool {
-		totalRawBytes += uint64(32 + blobLen)
-		if cfg.TargetSize > 0 && totalRawBytes >= cfg.TargetSize {
-			if cfg.Verbose {
-				log.Printf("besu Phase 1: raw bytes %d MiB >= target %d MiB — stopping entity emission early",
-					totalRawBytes>>20, cfg.TargetSize>>20)
-			}
-			targetReached = true
-			return true
-		}
-		return false
-	}
-
 	plan := cfg.AutoFill
 	if plan != nil {
-		for i := 0; i < plan.NumEOAs && !targetReached; i++ {
+		for i := 0; i < plan.NumEOAs; i++ {
 			if err := ctx.Err(); err != nil {
 				return common.Hash{}, nil, nil, err
 			}
@@ -100,9 +82,6 @@ func writeStateAndCollectRoot(
 			}
 			if err := sorter.Put(addrHash[:], blob); err != nil {
 				return common.Hash{}, nil, nil, err
-			}
-			if checkTarget(len(blob)) {
-				break
 			}
 		}
 	}
@@ -134,7 +113,7 @@ func writeStateAndCollectRoot(
 	}
 
 	if plan != nil {
-		for i := 0; i < plan.NumContracts && !targetReached; i++ {
+		for i := 0; i < plan.NumContracts; i++ {
 			if err := ctx.Err(); err != nil {
 				return common.Hash{}, nil, nil, err
 			}
@@ -147,9 +126,6 @@ func writeStateAndCollectRoot(
 			blob := encodeEntityContract(contract.StateAccount.Nonce, contract.StateAccount.Balance, contract.Code, slotMap)
 			if err := sorter.Put(addrHash[:], blob); err != nil {
 				return common.Hash{}, nil, nil, err
-			}
-			if checkTarget(len(blob)) {
-				break
 			}
 		}
 	}
