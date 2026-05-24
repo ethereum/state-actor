@@ -36,7 +36,7 @@
 //
 //	docker build -f Dockerfile.besu -t state-actor-besu .
 //	docker run --rm -v $PWD/_artifacts:/data state-actor-besu \
-//	  --client=besu --db=/data --accounts=1000 --seed=42
+//	  --client=besu --db=/data --target-size=500MB --seed=42
 //
 // # Pinned target
 //

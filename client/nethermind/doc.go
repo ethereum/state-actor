@@ -22,7 +22,7 @@
 //
 //	docker build -f Dockerfile.nethermind -t state-actor-nethermind .
 //	docker run --rm -v $PWD/_artifacts:/data state-actor-nethermind \
-//	  --client=nethermind --db=/data/neth --accounts=1000 --seed=42
+//	  --client=nethermind --db=/data/neth --target-size=500MB --seed=42
 //
 // # Pinned target
 //

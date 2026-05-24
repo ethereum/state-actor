@@ -24,6 +24,17 @@ import (
 
 const defaultStreamBatchSize = 100_000
 
+// contractStreamBatchSize bounds per-batch dirSize-sample overshoot for
+// the contract loop. The contract loop's dirSize check fires only
+// between batches, so the batch size IS the worst-case overshoot above
+// --target-size. Mean per-contract storage ≈ 35 KiB under the auto-fill
+// 20/10/70 split, so a 1K batch caps per-batch overshoot at ~35 MiB
+// (truncation-bound outliers can push one entity to ~100 MiB; that's
+// still 35× tighter than the previous 100K batch's ~3.5 GiB worst case).
+// EOAs keep defaultStreamBatchSize: per-EOA writes are ≤175 B trie cost
+// so peak overshoot stays ≤ ~17 MiB even with the larger batch.
+const contractStreamBatchSize = 1_000
+
 // runCgoNotAvailableError is nil under -tags cgo_reth (kept as a symbol
 // so TestRunCgoStubBuildPath compiles in both build modes).
 var runCgoNotAvailableError error = nil
@@ -119,9 +130,48 @@ func RunCgo(ctx context.Context, cfg generator.Config, opts Options) (*generator
 	if plan != nil && (plan.NumEOAs > 0 || plan.NumContracts > 0) {
 		rng := mrand.New(mrand.NewSource(cfg.Seed))
 
-		// dirSize sample includes the temp Pebble sorter (reth-sort-*/) —
-		// over-estimates production size, safer (stops earlier).
+		// dirSize sample includes the temp Pebble sorter (streamsort-*/
+		// under cfg.DBPath, per internal/streamsort.New) — over-estimates
+		// production size, safer (stops earlier).
 		targetReached := false
+
+		// dirSize errors used to be silently swallowed (`err == nil &&`):
+		// a transient EMFILE / EIO during a long bench run would disable
+		// the early-stop entirely, blowing past --target-size. Now we log
+		// every failure and escalate to a fatal error after 3 consecutive
+		// ones — small enough to catch persistent EMFILE/EIO, large
+		// enough to ride out transient compaction-window stat failures.
+		consecutiveDirSizeFailures := 0
+		const dirSizeFailureEscalation = 3
+		// checkDirSizeOrFatal returns (reached, fatalErr). When the dirSize
+		// probe errors, increments the consecutive counter and (if the
+		// escalation threshold trips) returns a non-nil error the caller
+		// must propagate. On a healthy probe the counter resets.
+		checkDirSizeOrFatal := func(phase string) (bool, error) {
+			if cfg.TargetSize == 0 {
+				return false, nil
+			}
+			size, err := dirSize(cfg.DBPath)
+			if err != nil {
+				consecutiveDirSizeFailures++
+				log.Printf("WARN: reth %s: dirSize(%q) failed (attempt %d/%d): %v",
+					phase, cfg.DBPath, consecutiveDirSizeFailures, dirSizeFailureEscalation, err)
+				if consecutiveDirSizeFailures >= dirSizeFailureEscalation {
+					return false, fmt.Errorf("reth %s: dirSize failed %d consecutive times, aborting: %w",
+						phase, dirSizeFailureEscalation, err)
+				}
+				return false, nil
+			}
+			consecutiveDirSizeFailures = 0
+			if size >= cfg.TargetSize {
+				if cfg.Verbose {
+					log.Printf("reth %s: dirSize %d MiB >= target %d MiB — stopping",
+						phase, size>>20, cfg.TargetSize>>20)
+				}
+				return true, nil
+			}
+			return false, nil
+		}
 
 		remaining := plan.NumEOAs
 		for remaining > 0 && !targetReached {
@@ -143,21 +193,19 @@ func RunCgo(ctx context.Context, cfg generator.Config, opts Options) (*generator
 			}
 			accountsCreated += b
 			remaining -= b
-			if cfg.TargetSize > 0 {
-				if size, err := dirSize(cfg.DBPath); err == nil && size >= cfg.TargetSize {
-					if cfg.Verbose {
-						log.Printf("reth Phase 4b: dirSize %d MiB >= target %d MiB — stopping EOA loop",
-							size>>20, cfg.TargetSize>>20)
-					}
-					targetReached = true
-				}
+			reached, err := checkDirSizeOrFatal("Phase 4b (EOA loop)")
+			if err != nil {
+				return nil, err
+			}
+			if reached {
+				targetReached = true
 			}
 		}
 
 		if plan.NumContracts > 0 && !targetReached {
 			remaining := plan.NumContracts
 			for remaining > 0 && !targetReached {
-				b := batchSize
+				b := contractStreamBatchSize
 				if remaining < b {
 					b = remaining
 				}
@@ -178,14 +226,12 @@ func RunCgo(ctx context.Context, cfg generator.Config, opts Options) (*generator
 				}
 				contractsCreated += b
 				remaining -= b
-				if cfg.TargetSize > 0 {
-					if size, err := dirSize(cfg.DBPath); err == nil && size >= cfg.TargetSize {
-						if cfg.Verbose {
-							log.Printf("reth Phase 4c: dirSize %d MiB >= target %d MiB — stopping contract loop",
-								size>>20, cfg.TargetSize>>20)
-						}
-						targetReached = true
-					}
+				reached, err := checkDirSizeOrFatal("Phase 4c (contract loop)")
+				if err != nil {
+					return nil, err
+				}
+				if reached {
+					targetReached = true
 				}
 			}
 		}

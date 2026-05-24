@@ -94,7 +94,7 @@ Without `--target-size`, only the spec entities are written &mdash; no synthetic
 
 ### Cap the database size
 
-`--target-size` is an upper bound on the projected trie footprint of the whole generated database. When set, the auto-fill emits mainnet-shaped synthetic state (20 % account-trie / 10 % bytecode / 70 % storage) up to the cap. With `--spec`, the spec entities count first; the auto-fill fills the headroom after their projected cost. If the spec alone would exceed the budget, the spec is silently truncated to the longest prefix that fits (with a warning on stderr) and no auto-fill runs. To generate a spec verbatim with no synthetic fill, omit `--target-size`.
+`--target-size` is an upper bound on the projected trie footprint of the whole generated database. When set, the auto-fill emits mainnet-shaped synthetic state (20 % account-trie / 10 % bytecode / 70 % storage) up to the cap. With `--spec`, the spec entities count first; the auto-fill fills the headroom after their projected cost. If the spec alone would exceed the budget, the spec is truncated to the longest prefix that fits, with a warning on stderr; no auto-fill runs in that case. To generate a spec verbatim with no synthetic fill, omit `--target-size`.
 
 ```bash
 state-actor --client=reth --db=/tmp/sa --target-size=10GB

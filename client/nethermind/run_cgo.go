@@ -6,14 +6,14 @@
 //
 // runImpl drives writer paths off generator.Config:
 //
-//   - Empty alloc (no --accounts/--contracts, no --genesis with non-zero
-//     alloc, no --spec): the seven RocksDBs get a block-0 row each with
+//   - Empty alloc (no --spec, no --target-size, no --genesis with non-zero
+//     alloc): the seven RocksDBs get a block-0 row each with
 //     WasProcessed=true so Nethermind's BlockTree boot detection skips its
 //     own loader. State/Code stay empty (state root = EmptyTreeHash).
-//   - Any non-empty input (synthetic --accounts/--contracts, --genesis
-//     alloc, or --spec PreAlloc entities): writeSyntheticAccounts handles
-//     all three uniformly. Spec storage flows through the streaming
-//     Phase 0; genesis alloc + synthetic accounts feed the addrHash-
+//   - Any non-empty input (auto-fill Plan from --target-size, spec
+//     PreAlloc entities from --spec, or --genesis alloc): writeSyntheticAccounts
+//     handles all three uniformly. Spec storage flows through the streaming
+//     Phase 0; genesis alloc + auto-fill entities feed the addrHash-
 //     sorted state-trie build via a temp Pebble.
 
 package nethermind

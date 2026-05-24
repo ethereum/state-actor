@@ -127,7 +127,7 @@ cast code    0x<a-known-spec-contract> --rpc-url ... # → the spec's bytecode
 
 ### Reproduce a CI failure locally
 
-CI loads `examples/full-matrix-spec-feature.yaml` on top of `--seed=42 --target-size=100MB` (mirrored across all four `TestE2ESuite` constants). The auto-fill (mainnet-shaped 20 / 10 / 70 split) adds ~100 MB of synthetic state before spamoor; the spec entities are written first, the auto-fill fills the headroom. Re-run:
+CI loads `examples/full-matrix-spec-feature.yaml` on top of `--seed=42 --target-size=100MB` (mirrored across all four `TestE2ESuite` constants). The auto-fill (mainnet-shaped 20 / 10 / 70 split) emits synthetic state to fill the headroom between the spec's projected cost and `--target-size` — the spec entities are written first, the auto-fill fills the gap. Re-run:
 
 ```bash
 go test -run TestE2ESuite ./client/<client>/... -v
@@ -141,7 +141,7 @@ The cross-client genesis-root invariant says: same `--seed`, same spec, same cli
 
 - **Besu / reth / nethermind require Docker** for the writer side (cgo dependencies; no native build on macOS). Only geth has a pure-Go writer.
 - **`--seed=0` is a footgun**: `main.go` rewrites it to `time.Now().UnixNano()`, i.e. randomises. For determinism use any non-zero seed. Bench convention is `--seed=42`.
-- **`--target-size` is required when `--spec` is not set**: drives the mainnet-shaped auto-fill (20 % account-trie / 10 % bytecode / 70 % storage) over the whole budget. With `--spec`, spec entities count first; the auto-fill fills the headroom on top. If the spec alone exceeds the budget, `internal/specbuild` silently truncates the entity list to the longest prefix that fits, emits a warning, and no auto-fill runs.
+- **`--target-size` is required when `--spec` is not set**: drives the mainnet-shaped auto-fill (20 % account-trie / 10 % bytecode / 70 % storage) over the whole budget. With `--spec`, spec entities count first; the auto-fill fills the headroom on top. If the spec alone exceeds the budget, `internal/specbuild` truncates the entity list to the longest prefix that fits and emits a `--target-size … truncated spec at entity[N]` warning to stderr; no auto-fill runs in that case.
 - **`--archive` is geth/reth only**: rejected for besu and nethermind.
 - **`--binary-trie` is geth-only** (EIP-7864).
 - **When using `--spec` alone, omit `--target-size`** — that way no auto-fill runs on top and random EOAs can't collide with spec-derived addresses. Set both only when you want the auto-fill to pad the headroom.

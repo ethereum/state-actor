@@ -45,16 +45,18 @@ and runs `validate-big-db.sh` end-to-end.
 # 1. Build the image (one-time / on source change)
 make docker-nethermind
 
-# 2. Generate ~44 GB datadir (~28 min on Apple Silicon, single core)
+# 2. Generate ~44 GB datadir (~28 min on Apple Silicon, single core).
+#    Auto-fill emits the mainnet-shaped 20 / 10 / 70 split up to
+#    --target-size; the legacy --accounts/--contracts/--max-slots/
+#    --min-slots/--distribution/--code-size flags were removed in
+#    #82's follow-up — those pre-#82 invocations no longer parse.
 mkdir /tmp/sa-neth-big
 docker run --rm \
   -v /tmp/sa-neth-big:/data \
   -v $PWD/client/nethermind/testdata:/test:ro \
   state-actor-nethermind:latest \
   --client=nethermind --db=/data \
-  --accounts=6500000 --contracts=650000 \
-  --distribution=uniform --min-slots=200 --max-slots=400 \
-  --code-size=512 \
+  --target-size=44GB \
   --genesis=/test/genesis-funded.json --seed=42 --verbose
 
 # 3. Boot Nethermind against it

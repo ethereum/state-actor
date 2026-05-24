@@ -17,8 +17,8 @@ import (
 
 // FlagValues is the subset of CLI flags ValidateForClient needs to make a
 // per-client compatibility decision. The rest of the flags either apply
-// uniformly to every client (--accounts, --contracts, --seed, ...) or are
-// validated by the flag parser itself (--db required, --extra-data hex
+// uniformly to every client (--seed, --target-size, --spec, --db, ...) or
+// are validated by the flag parser itself (--db required, --extra-data hex
 // well-formed, ...).
 type FlagValues struct {
 	BinaryTrie bool   // --binary-trie
