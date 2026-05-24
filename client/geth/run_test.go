@@ -15,7 +15,7 @@ import (
 
 	"github.com/nerolation/state-actor/generator"
 	"github.com/nerolation/state-actor/internal/autofill"
-	"github.com/nerolation/state-actor/internal/sizecal"
+	"github.com/nerolation/state-actor/internal/templates"
 )
 
 func gethTestPlan(tb testing.TB, budget uint64) *autofill.Plan {
@@ -125,30 +125,35 @@ func TestPopulateRootMatchesEntitygen(t *testing.T) {
 	}
 }
 
-// TestPopulateTargetSizeStopsAccurately verifies origin-scoped Phase 1
-// emission halts when the projected trie footprint reaches cfg.TargetSize.
-// The assertion measures projected trie bytes (sizecal-formula on the
-// stats counters), not dirSize — cfg.TargetSize is a trie-only budget,
-// so geth's flat-state + Pebble overhead inflate dirSize by ~50% on top
-// (by design, not a regression).
+// TestPopulateEmitsFullPlan asserts that Populate emits exactly
+// plan.NumEOAs + plan.NumContracts entities even when cfg.TargetSize is
+// set well below the plan's projected footprint. Post-Fix-A, TargetSize
+// is advisory — the autofill Plan is the single source of truth for
+// entity counts, so all four MPT clients must produce identical entity
+// streams given the same Plan.
 //
-// Mirrors TestTargetSizeStopsAccurately_MPT in generator/, but runs
-// against client/geth.Populate directly so it's independent of the
-// generator MPT registration shim.
-func TestPopulateTargetSizeStopsAccurately(t *testing.T) {
+// Pre-Fix-A this test would have failed: the projection-based early-stop
+// in writeStateAndCollectRoot fired once projectedTrieBytes >= TargetSize,
+// truncating the plan mid-loop. That gate diverged per client (raw bytes,
+// dirSize, projection) and was the root cause of cross-client state-root
+// divergence at high-spec-utilization bench scales — see the cross-client
+// invariance test in internal/e2e_testing.
+func TestPopulateEmitsFullPlan(t *testing.T) {
 	if testing.Short() {
-		t.Skip("skipping target-size accuracy test in -short mode")
+		t.Skip("skipping full-plan test in -short mode")
 	}
 	dir := t.TempDir()
-	const target uint64 = 200 * 1024 * 1024 // 200 MiB
-	plan := gethTestPlan(t, 5*target)        // generous safety upper bound
+	plan := gethTestPlan(t, 1<<20) // 1 MiB → ~1.2K EOAs + ~20 contracts
 	cfg := generator.Config{
 		DBPath:         filepath.Join(dir, "geth", "chaindata"),
 		AutoFill:       plan,
 		Seed:           42,
 		TrieMode:       generator.TrieModeMPT,
 		WriteTrieNodes: true,
-		TargetSize:     target,
+		// TargetSize is set deliberately small (128 KiB) so the OLD
+		// projection-based early-stop would fire after ~750 EOAs (175 B
+		// each → 128 KiB). The full plan (~1.2K + 20) MUST still emit.
+		TargetSize: 128 << 10,
 	}
 
 	stats, err := Populate(context.Background(), cfg, Options{})
@@ -156,29 +161,110 @@ func TestPopulateTargetSizeStopsAccurately(t *testing.T) {
 		t.Fatalf("Populate: %v", err)
 	}
 	if stats.StateRoot == (common.Hash{}) {
-		t.Fatal("state root unexpectedly zero after target-size stop")
+		t.Fatal("state root unexpectedly zero")
+	}
+	if stats.AccountsCreated != plan.NumEOAs {
+		t.Errorf("AccountsCreated: got %d, want %d (full plan)",
+			stats.AccountsCreated, plan.NumEOAs)
+	}
+	if stats.ContractsCreated != plan.NumContracts {
+		t.Errorf("ContractsCreated: got %d, want %d (full plan)",
+			stats.ContractsCreated, plan.NumContracts)
+	}
+}
+
+// TestPopulateEmitsFullPlan_HighSpecUtilization is the cross-client
+// invariance regression gate for Fix A in the regime that originally
+// surfaced the bug — autofill headroom is narrow because a fat spec
+// dominates the TargetSize budget.
+//
+// The 100 GB bloatnet bench had a 98 GB spec and a 100 GB target,
+// leaving autofill ~2 GB of headroom. Pre-Fix-A, geth's projection
+// accumulator (also fed by spec entities, see addProjection at the
+// genesis-alloc loop) crossed TargetSize before the autofill loop even
+// started, so geth emitted the full plan only by accident (its
+// projection underestimated PreAlloc's true on-disk cost in that run).
+// The other three clients' raw-bytes / dirSize accumulators fired
+// almost immediately on autofill start at differing points, producing
+// divergent entity counts (reth: 12 % of plan, nethermind: 100 contracts).
+//
+// This test simulates that regime at unit scale: a 1 MiB target with
+// 900 KiB of synthetic PreAlloc → ~100 KiB of autofill headroom. Post-
+// Fix-A the writer ignores TargetSize for stop decisions and emits the
+// full plan regardless. Pre-Fix-A this test would have failed.
+//
+// Cross-client coverage: besu / reth / nethermind have parallel
+// TestRunCgoEmitsFullPlan / TestRunEmitsFullPlan unit tests that
+// exercise the same gate-removal invariant in their writer packages.
+// Together with the existing 100 MiB cross-client-genesis-root CI
+// aggregator, this triplet covers the bug at the unit and integration
+// levels.
+func TestPopulateEmitsFullPlan_HighSpecUtilization(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping high-spec-utilization test in -short mode")
 	}
 
-	// Projected trie bytes from the Phase 1 accumulator's formula.
-	// Tolerance ±5%: Phase 1 stops the moment projection >= target, so the
-	// worst-case overshoot is one entity (~7 KB for a max-slot contract
-	// at ~50 slots × 140 B + 175 B). Far inside the bound.
-	bAcct := sizecal.BytesPerAccount("")
-	bSlot := sizecal.BytesPerSlot("")
-	projected := uint64(stats.AccountsCreated+stats.ContractsCreated)*bAcct +
-		uint64(stats.StorageSlotsCreated)*bSlot
-	diff := float64(projected) - float64(target)
-	if diff < 0 {
-		diff = -diff
+	const (
+		target          uint64 = 1 << 20 // 1 MiB
+		preAllocCount          = 5000     // ~5000 × 175 B ≈ 875 KiB ≈ 85 % of target
+		preAllocBalance        = 1_000_000_000_000_000_000
+	)
+
+	// Build a deterministic PreAlloc list. Addresses derived from a fixed
+	// seed so the test is byte-identical across runs.
+	preAlloc := make([]templates.PreAllocEntity, preAllocCount)
+	for i := 0; i < preAllocCount; i++ {
+		var addr common.Address
+		// Address bytes: 4-byte big-endian index in the last 4 bytes.
+		// Trivial collision-free derivation; not meant to be realistic.
+		addr[16] = byte(i >> 24)
+		addr[17] = byte(i >> 16)
+		addr[18] = byte(i >> 8)
+		addr[19] = byte(i)
+		preAlloc[i] = templates.PreAllocEntity{
+			Address: addr,
+			Account: &types.StateAccount{
+				Nonce:    uint64(i),
+				Balance:  uint256.NewInt(preAllocBalance),
+				Root:     types.EmptyRootHash,
+				CodeHash: types.EmptyCodeHash.Bytes(),
+			},
+		}
 	}
-	pct := diff / float64(target)
-	const tolerance = 0.05
-	t.Logf("projected trie: accounts+contracts=%d slots=%d → %d B; target=%d diff=%.1f%% tol=%.1f%%",
-		stats.AccountsCreated+stats.ContractsCreated, stats.StorageSlotsCreated,
-		projected, target, pct*100, tolerance*100)
-	if pct > tolerance {
-		t.Errorf("projected trie %.1f%% off target (proj=%d target=%d), tol=%.1f%%",
-			pct*100, projected, target, tolerance*100)
+
+	dir := t.TempDir()
+	plan := gethTestPlan(t, 256<<10) // ~300 EOAs + ~5 contracts
+	cfg := generator.Config{
+		DBPath:         filepath.Join(dir, "geth", "chaindata"),
+		AutoFill:       plan,
+		PreAlloc:       preAlloc,
+		Seed:           42,
+		TrieMode:       generator.TrieModeMPT,
+		WriteTrieNodes: true,
+		// TargetSize is fat-spec dominated: PreAlloc fills ~85 %, so
+		// the OLD projection accumulator (incl. spec entities) would
+		// trip before autofill even started. The full autofill plan
+		// MUST still emit.
+		TargetSize: target,
+	}
+
+	stats, err := Populate(context.Background(), cfg, Options{})
+	if err != nil {
+		t.Fatalf("Populate: %v", err)
+	}
+	if stats.StateRoot == (common.Hash{}) {
+		t.Fatal("state root unexpectedly zero")
+	}
+	// stats.AccountsCreated counts both PreAlloc EOAs and autofill EOAs
+	// (geth's writer increments the same field in both loops).
+	wantAccounts := preAllocCount + plan.NumEOAs
+	if stats.AccountsCreated != wantAccounts {
+		t.Errorf("AccountsCreated: got %d, want %d (preAlloc=%d + plan.NumEOAs=%d)",
+			stats.AccountsCreated, wantAccounts, preAllocCount, plan.NumEOAs)
+	}
+	if stats.ContractsCreated != plan.NumContracts {
+		t.Errorf("ContractsCreated: got %d, want %d (full plan)",
+			stats.ContractsCreated, plan.NumContracts)
 	}
 }
 

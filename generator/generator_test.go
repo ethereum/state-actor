@@ -13,7 +13,6 @@ import (
 	"github.com/ethereum/go-ethereum/rlp"
 
 	"github.com/nerolation/state-actor/internal/autofill"
-	"github.com/nerolation/state-actor/internal/sizecal"
 )
 
 // mustPlan returns the autofill Plan for the given budget or fails the test.
@@ -849,32 +848,6 @@ func TestTargetSizeStopsEarly(t *testing.T) {
 	}
 }
 
-// assertProjectedTrieSizeNearTarget verifies that the run's projected
-// trie-only footprint (computed from the stats counters with the same
-// sizecal constants Phase 1 uses to decide when to stop) lands within
-// tolerance of target. Unlike assertDBSizeWithin, this does not depend
-// on Pebble compression, flat-state overhead, or fixed file metadata —
-// it directly tests Phase 1's stop accuracy.
-func assertProjectedTrieSizeNearTarget(t *testing.T, stats *Stats, target uint64, tolerance float64) {
-	t.Helper()
-	bAcct := sizecal.BytesPerAccount("")
-	bSlot := sizecal.BytesPerSlot("")
-	projected := uint64(stats.AccountsCreated+stats.ContractsCreated)*bAcct +
-		uint64(stats.StorageSlotsCreated)*bSlot
-	diff := float64(projected) - float64(target)
-	if diff < 0 {
-		diff = -diff
-	}
-	ratio := diff / float64(target)
-	t.Logf("projected trie: accounts+contracts=%d slots=%d → %d B; target=%d diff=%.1f%% tol=%.1f%%",
-		stats.AccountsCreated+stats.ContractsCreated, stats.StorageSlotsCreated,
-		projected, target, ratio*100, tolerance*100)
-	if ratio > tolerance {
-		t.Errorf("projected trie size %.1f%% off target (%d vs %d), tolerance %.1f%%",
-			ratio*100, projected, target, tolerance*100)
-	}
-}
-
 // assertDBSizeWithin fails the test if the on-disk size of dbPath differs
 // from target by more than tolerance (a fraction, e.g. 0.35 for ±35%).
 // Uses the same filesystem walk main.go's post-run report uses, so the
@@ -940,32 +913,35 @@ func TestTargetSizeStopsAccurately_Bintrie(t *testing.T) {
 	assertDBSizeWithin(t, dbPath, target, 0.40)
 }
 
-// TestTargetSizeStopsAccurately_MPT exercises the MPT path's origin-scoped
-// Phase 1 stop. The assertion measures the projected trie footprint
-// (bytesPerAccount × accounts + bytesPerSlot × slots) rather than dirSize,
-// because cfg.TargetSize is a TRIE-ONLY budget — geth's flat-state and
-// Pebble overhead add ~50% more disk on top, which is by design.
+// TestTargetSizeEmitsFullPlan_MPT asserts that the MPT generator path
+// emits exactly plan.NumEOAs + plan.NumContracts entities even when
+// cfg.TargetSize is set well below the plan's projected footprint.
+// Post-Fix-A, TargetSize is advisory — the autofill Plan is the single
+// source of truth for entity counts.
 //
-// Tolerance is ±5%: Phase 1 stops the moment projection ≥ target, so the
-// worst-case overshoot is one entity's projection (~14 KB for a max-slot
-// contract at ~100 slots × 140 B + 175 B). Within a 500 MB target that's
-// ~0.003 % — the ±5% bound is generous on top of that.
-func TestTargetSizeStopsAccurately_MPT(t *testing.T) {
+// Pre-Fix-A the geth writer's projection accumulator stopped emission
+// once the running projection hit TargetSize, truncating the plan
+// mid-loop. That gate (and its three per-client analogues in besu /
+// reth / nethermind) was the root cause of cross-client state-root
+// divergence at high-spec-utilization bench scales.
+func TestTargetSizeEmitsFullPlan_MPT(t *testing.T) {
 	if testing.Short() {
-		t.Skip("skipping long target-size test in -short mode")
+		t.Skip("skipping target-size test in -short mode")
 	}
-	const target uint64 = 500 * 1024 * 1024 // 500 MB
 	tmpDir := t.TempDir()
 	dbPath := filepath.Join(tmpDir, "testdb")
 
-	plan := mustPlan(t, 5*target)
+	plan := mustPlan(t, 1<<20) // 1 MiB → ~1.2K EOAs + ~20 contracts
 	config := Config{
 		DBPath:         dbPath,
 		AutoFill:       plan,
 		Seed:           43,
 		TrieMode:       TrieModeMPT,
 		WriteTrieNodes: true,
-		TargetSize:     target,
+		// TargetSize deliberately small: the OLD projection-based
+		// early-stop in client/geth would have fired after ~750 EOAs
+		// (175 B × 750 ≈ 128 KiB). The full plan MUST still emit.
+		TargetSize: 128 << 10,
 	}
 
 	gen, err := New(config)
@@ -979,10 +955,17 @@ func TestTargetSizeStopsAccurately_MPT(t *testing.T) {
 	}
 	gen.Close()
 
-	t.Logf("MPT target=%s: %d contracts, %d slots, root=%s",
-		fmtBytes(target), stats.ContractsCreated, stats.StorageSlotsCreated,
+	t.Logf("MPT plan emit: %d accounts, %d contracts, %d slots, root=%s",
+		stats.AccountsCreated, stats.ContractsCreated, stats.StorageSlotsCreated,
 		stats.StateRoot.Hex())
-	assertProjectedTrieSizeNearTarget(t, stats, target, 0.05)
+	if stats.AccountsCreated != plan.NumEOAs {
+		t.Errorf("AccountsCreated: got %d, want %d (full plan)",
+			stats.AccountsCreated, plan.NumEOAs)
+	}
+	if stats.ContractsCreated != plan.NumContracts {
+		t.Errorf("ContractsCreated: got %d, want %d (full plan)",
+			stats.ContractsCreated, plan.NumContracts)
+	}
 }
 
 // TestTargetSizeApproxDeterministic asserts that two bintrie runs with

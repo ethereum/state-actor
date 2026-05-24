@@ -15,20 +15,22 @@ import (
 	"github.com/nerolation/state-actor/internal/autofill"
 )
 
-// TestRunTargetSizeStopsAccurately verifies the Phase 2 dirSize sampling
-// in entitygen_cgo.go stops production-DB writes (State + Code RocksDBs)
-// when cfg.TargetSize is reached, landing the on-disk size within a
-// reasonable tolerance of the target.
+// TestRunEmitsFullPlan asserts that Run emits exactly
+// plan.NumEOAs + plan.NumContracts entities even when cfg.TargetSize is
+// set well below the plan's projected footprint. Post-Fix-A, TargetSize
+// is advisory — the autofill Plan is the single source of truth for
+// entity counts, so all four MPT clients must produce identical entity
+// streams given the same Plan.
 //
-// Mirrors client/geth/run_test.go:TestPopulateTargetSizeStopsAccurately —
-// same target, same generous upper-bound count, same ±20% tolerance.
-//
-// NumContracts is set to a large safety upper bound so the Phase 1 5×
-// raw-byte cap kicks in long before the loop completes — Phase 2's
-// per-1024-entity dirSize stop then lands the directory size near target.
-func TestRunTargetSizeStopsAccurately(t *testing.T) {
+// Pre-Fix-A this test would have failed: the dirSize early-stop in
+// entitygen_cgo.go sampled the State + Code RocksDB sizes every 100
+// contracts and stopped emission once the sum exceeded TargetSize.
+// At small TargetSize values the gate fired during the first sample,
+// truncating the plan to ~100 contracts — which is exactly the failure
+// mode seen on the 100 GB bloatnet bench.
+func TestRunEmitsFullPlan(t *testing.T) {
 	if testing.Short() {
-		t.Skip("skipping target-size accuracy test in -short mode")
+		t.Skip("skipping full-plan test in -short mode")
 	}
 	dir := t.TempDir()
 
@@ -39,21 +41,20 @@ func TestRunTargetSizeStopsAccurately(t *testing.T) {
 		t.Fatalf("BuildSynthetic: %v", err)
 	}
 
-	// 200 MiB matches geth's target. Smaller targets would need a
-	// proportionally tighter sample cadence to stay in band; the 1024-
-	// entity cadence in entitygen_cgo.go is calibrated for this size.
-	const target uint64 = 200 * 1024 * 1024
-	plan, err := autofill.PlanForBudget(5 * target) // generous safety upper bound
+	plan, err := autofill.PlanForBudget(1 << 20) // 1 MiB → ~1.2K EOAs + ~20 contracts
 	if err != nil {
 		t.Fatalf("PlanForBudget: %v", err)
 	}
 	cfg := generator.Config{
-		DBPath:     filepath.Join(dir, "neth"),
-		AutoFill:   plan,
-		Seed:       42,
-		TrieMode:   generator.TrieModeMPT,
-		Genesis:    g,
-		TargetSize: target,
+		DBPath:   filepath.Join(dir, "neth"),
+		AutoFill: plan,
+		Seed:     42,
+		TrieMode: generator.TrieModeMPT,
+		Genesis:  g,
+		// TargetSize is set deliberately small (128 KiB) so the OLD
+		// dirSize early-stop would have fired on the first sample. The
+		// full plan MUST still emit.
+		TargetSize: 128 << 10,
 	}
 
 	stats, err := Run(context.Background(), cfg, Options{})
@@ -61,23 +62,14 @@ func TestRunTargetSizeStopsAccurately(t *testing.T) {
 		t.Fatalf("Run: %v", err)
 	}
 	if stats.StateRoot == (common.Hash{}) {
-		t.Fatal("state root unexpectedly zero after target-size stop")
+		t.Fatal("state root unexpectedly zero")
 	}
-
-	actual, err := dirSize(cfg.DBPath)
-	if err != nil {
-		t.Fatalf("dirSize: %v", err)
+	if stats.AccountsCreated != plan.NumEOAs {
+		t.Errorf("AccountsCreated: got %d, want %d (full plan)",
+			stats.AccountsCreated, plan.NumEOAs)
 	}
-	const tolerance = 0.20
-	diff := float64(actual) - float64(target)
-	if diff < 0 {
-		diff = -diff
-	}
-	pct := diff / float64(target)
-	t.Logf("nethermind DB size: actual=%d target=%d diff=%.1f%% tolerance=%.1f%%",
-		actual, target, pct*100, tolerance*100)
-	if pct > tolerance {
-		t.Errorf("DB size %.1f%% off target (%d vs %d), tolerance %.1f%%",
-			pct*100, actual, target, tolerance*100)
+	if stats.ContractsCreated != plan.NumContracts {
+		t.Errorf("ContractsCreated: got %d, want %d (full plan)",
+			stats.ContractsCreated, plan.NumContracts)
 	}
 }
