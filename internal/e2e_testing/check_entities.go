@@ -17,10 +17,10 @@ import (
 // t.Errorf. Returns false on any mismatch, true if everything checks
 // out.
 //
-// Used by the per-client e2e suites at "0x0" (Phase 4: oracle re-query
-// against genesis) and "latest" (Phase 6: oracle re-query post-spamoor,
-// asserting entitygen entities are unchanged because spamoor touches a
-// disjoint address space).
+// Used by the per-client e2e suites at "latest" both pre-spamoor
+// (Phase 4: fast-fail oracle re-query before block production) and
+// post-spamoor (Phase 6: assert entitygen entities are unchanged
+// because spamoor touches a disjoint address space).
 //
 // Caveat: callers should pass the SAME (eoas, contracts) pair the
 // writer wrote — i.e. the output of Reproduce(cfg) with matching seed/

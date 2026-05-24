@@ -19,9 +19,21 @@ import (
 // chainspec / neth boot.cfg / reth --dev / geth --dev knobs differ.
 //
 // Once the client's RPC is up, every per-client suite runs the SAME
-// phases 3-7 against it: capture genesis stateRoot, oracle re-query at
-// "0x0", spamoor for ~100 blocks, oracle re-query at "latest", write
-// the final result.json. RunSuitePhases executes that sequence.
+// phases 3-7 against it: capture genesis stateRoot, pre-spamoor oracle
+// re-query at "latest", spamoor for ~100 blocks, post-spamoor oracle
+// re-query at "latest", write the final result.json. RunSuitePhases
+// executes that sequence.
+//
+// Why both pre- and post-spamoor queries use "latest" (not "0x0"):
+// geth's --dev mode runs PathDB in default full-gcmode, which prunes
+// block 0's state once the chain advances past the ~128-block history
+// window. With autofill-scale entity counts the pre-spamoor sweep
+// takes longer than 128 sec at --dev.period=1, so any in-flight
+// query at "0x0" trips "historical state not available" mid-iteration.
+// Querying at "latest" sidesteps the limit and still verifies the
+// genesis entities — spamoor's deployer is the only address that
+// mutates state, so our random EOAs/contracts read identically at
+// any tip.
 type SuitePhasesCfg struct {
 	// ClientName is one of "besu" / "geth" / "nethermind" / "reth".
 	// Goes into the SuiteResult JSON for the cross-client aggregator.
@@ -125,7 +137,7 @@ func RunSuitePhases(t *testing.T, cfg SuitePhasesCfg) {
 		AssertGenesisHeaderMatches(t, cfg.RPCURL, cfg.GeneratorConfig.Genesis)
 	}
 
-	// ---- Phase 4: oracle re-query at "0x0" ----
+	// ---- Phase 4: pre-spamoor oracle re-query at "latest" ----
 	// 4a — chain-level invariants: chainId + canonical syscontracts.
 	// Cheap fail-fast for misconfigured genesis (besu chainspec drift,
 	// missing syscontract injection, etc.) before walking entities.
@@ -141,26 +153,26 @@ func RunSuitePhases(t *testing.T, cfg SuitePhasesCfg) {
 	if !CheckChainID(t, cfg.RPCURL, chainID) {
 		t.Fatalf("genesis chain-id mismatch; aborting before spamoor phase")
 	}
-	if !CheckCanonicalSyscontracts(t, cfg.RPCURL, "0x0") {
-		t.Fatalf("canonical syscontracts missing at genesis; aborting before spamoor phase")
+	if !CheckCanonicalSyscontracts(t, cfg.RPCURL, "latest") {
+		t.Fatalf("canonical syscontracts missing; aborting before spamoor phase")
 	}
 	// 4b — entitygen synthetic entities (RNG-driven).
-	if !CheckEntities(t, cfg.RPCURL, cfg.EOAs, cfg.Contracts, "0x0") {
-		t.Fatalf("genesis-state oracle re-query (entitygen) failed; aborting before spamoor phase")
+	if !CheckEntities(t, cfg.RPCURL, cfg.EOAs, cfg.Contracts, "latest") {
+		t.Fatalf("pre-spamoor oracle re-query (entitygen) failed; aborting before spamoor phase")
 	}
 	// 4c — InjectAddresses (eth_getBalance > 0) + GenesisAccounts
 	// (eth_getCode matches, explicit non-zero nonces match). Catches
 	// writer-level drops of any field — see CheckInjections docstring.
-	if !CheckInjections(t, cfg.RPCURL, cfg.GeneratorConfig, "0x0") {
-		t.Fatalf("genesis-state oracle re-query (injections + alloc) failed; aborting before spamoor phase")
+	if !CheckInjections(t, cfg.RPCURL, cfg.GeneratorConfig, "latest") {
+		t.Fatalf("pre-spamoor oracle re-query (injections + alloc) failed; aborting before spamoor phase")
 	}
 	// 4d — ERC-20 template oracle: name/symbol/decimals/totalSupply +
 	// every explicit owner/allowance + sampled random ones. Verifies
 	// the vendored OZ v5 bytecode is RPC-callable and every spec'd
 	// field landed on every client.
 	if cfg.Spec != nil {
-		if !CheckERC20Templates(t, cfg.RPCURL, cfg.Spec, cfg.SpecSeed, "0x0") {
-			t.Fatalf("genesis-state oracle re-query (erc20 templates) failed; aborting before spamoor phase")
+		if !CheckERC20Templates(t, cfg.RPCURL, cfg.Spec, cfg.SpecSeed, "latest") {
+			t.Fatalf("pre-spamoor oracle re-query (erc20 templates) failed; aborting before spamoor phase")
 		}
 	}
 	// 4e — DB-size check: confirm the generated state landed within
