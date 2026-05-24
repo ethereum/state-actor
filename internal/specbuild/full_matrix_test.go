@@ -9,15 +9,18 @@ import (
 
 // TestBuildFullMatrix parses + validates + builds
 // examples/full-matrix-spec-feature.yaml against every supported client
-// calibration. Pins the entity count so a future change to either the
-// YAML or the templates surfaces here before it reaches CI's e2e jobs.
+// calibration. Pins the entity count + cross-client PreAlloc count
+// equality so a future change to either the YAML or the templates
+// surfaces here before it reaches CI's e2e jobs.
 //
 // The full-matrix YAML is the canonical fixture every per-client e2e
 // suite loads (via internal/e2e_testing.LoadCISpec): same YAML, same
 // seed, same sizer → byte-identical PreAlloc across all four MPT
-// clients. The cross-client genesis-root invariant job depends on
-// that byte-identity, so any drift here surfaces in the unit-test
-// CI job before reaching the per-client e2e legs.
+// clients. This test enforces COUNT equality only; byte-identity is
+// enforced downstream by the cross-client-genesis-root aggregator
+// job in .github/workflows/ci.yml. Count divergence here therefore
+// indicates a template/parser drift; byte divergence detected by the
+// aggregator indicates a codec/calibration drift.
 func TestBuildFullMatrix(t *testing.T) {
 	s, err := spec.ParseFile("../../examples/full-matrix-spec-feature.yaml")
 	if err != nil {
