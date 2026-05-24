@@ -44,51 +44,60 @@ State Actor generates Ethereum state in three phases:
 │  ┌─────────────────────────────────────────────────────────────────────┐ │
 │  │                    generator/generator.go                           │ │
 │  │                                                                     │ │
-│  │  ┌───────────────┐  ┌───────────────┐  ┌───────────────┐           │ │
-│  │  │ Account Gen   │  │ Contract Gen  │  │ Storage Gen   │           │ │
-│  │  │               │  │               │  │               │           │ │
-│  │  │ • Random addr │  │ • Random addr │  │ • Distribution│           │ │
-│  │  │ • Balance     │  │ • Code        │  │ • Key/value   │           │ │
-│  │  │ • Nonce       │  │ • Storage     │  │ • RLP encode  │           │ │
-│  │  └───────┬───────┘  └───────┬───────┘  └───────┬───────┘           │ │
-│  │          │                  │                  │                    │ │
-│  │          └──────────────────┼──────────────────┘                    │ │
+│  │  ┌────────────────────┐         ┌────────────────────────┐         │ │
+│  │  │ Spec PreAlloc      │         │ internal/autofill.Plan │         │ │
+│  │  │                    │         │                        │         │ │
+│  │  │ • Explicit / named │         │ • PlanForBudget(b)     │         │ │
+│  │  │   / position-derived│        │ • DrawEOA(rng)         │         │ │
+│  │  │ • Templates (erc20,│         │ • DrawContract(rng)    │         │ │
+│  │  │   raw, eoa, 7702)  │         │   20/10/70 mainnet     │         │ │
+│  │  └─────────┬──────────┘         └───────────┬────────────┘         │ │
+│  │            │                                │                      │ │
+│  │            └────────────────┬───────────────┘                      │ │
 │  │                             ▼                                       │ │
 │  │  ┌─────────────────────────────────────────────────────────────┐   │ │
-│  │  │                    StackTrie Builder                        │   │ │
-│  │  │  • Sort accounts by hash(address)                           │   │ │
-│  │  │  • Sort storage by hash(slot)                               │   │ │
-│  │  │  • Compute storage roots per account                        │   │ │
-│  │  │  • Compute global state root                                │   │ │
+│  │  │              Streaming Trie + Sort                          │   │ │
+│  │  │  • internal/streamsort: out-of-core key sort                │   │ │
+│  │  │  • internal/streamingtrie: O(depth) RAM, hash on the fly    │   │ │
+│  │  │  • Per-account storage roots spliced into StateAccount.Root │   │ │
+│  │  │  • Global state root emitted in Phase 2                     │   │ │
 │  │  └─────────────────────────────────────────────────────────────┘   │ │
 │  │                             │                                       │ │
 │  │                             ▼                                       │ │
 │  │  ┌─────────────────────────────────────────────────────────────┐   │ │
-│  │  │                   Batch Writer                              │   │ │
-│  │  │  • Parallel workers                                         │   │ │
-│  │  │  • Configurable batch size                                  │   │ │
-│  │  │  • Write to Pebble                                          │   │ │
+│  │  │       Per-client Writer (client/<name>/)                    │   │ │
+│  │  │  • generator.Writer interface                               │   │ │
+│  │  │  • geth: pure-Go Pebble. reth/besu/nethermind: cgo.         │   │ │
 │  │  └─────────────────────────────────────────────────────────────┘   │ │
 │  └─────────────────────────────────────────────────────────────────────┘ │
 └──────────────────────────────────────────────────────────────────────────┘
                                     │
                                     ▼
 ┌──────────────────────────────────────────────────────────────────────────┐
-│                         Pebble Database                                   │
+│                  Client-native DB (per --client)                          │
 │  ┌─────────────────────────────────────────────────────────────────────┐ │
-│  │                    Snapshot Layer                                   │ │
-│  │  Key: a + hash(addr)           Value: SlimAccountRLP               │ │
+│  │                    Snapshot Layer (geth MPT)                        │ │
+│  │  Key: a + hash(addr)           Value: full StateAccount RLP        │ │
 │  │  Key: o + hash(addr) + hash(k) Value: RLP(trimmed_value)           │ │
 │  │  Key: c + hash(code)           Value: bytecode                     │ │
 │  │  Key: SnapshotRoot             Value: state_root                   │ │
 │  ├─────────────────────────────────────────────────────────────────────┤ │
-│  │                   Genesis Metadata                                  │ │
+│  │            Flat State (geth binary-trie / EIP-7864)                 │ │
+│  │  Key: vX + stem(31)            Value: stem blob (group payloads)   │ │
+│  │  Key: vN + path(<=31)          Value: serialized trie node         │ │
+│  │  Key: c + hash(code)           Value: bytecode                     │ │
+│  ├─────────────────────────────────────────────────────────────────────┤ │
+│  │                   Genesis Metadata (geth)                           │ │
 │  │  Key: h + num + hash           Value: block_header_rlp             │ │
 │  │  Key: b + num + hash           Value: block_body_rlp               │ │
 │  │  Key: H + num                  Value: canonical_hash               │ │
 │  │  Key: LastBlock                Value: head_block_hash              │ │
 │  │  Key: LastHeader               Value: head_header_hash             │ │
 │  │  Key: ethereum-config-...      Value: chain_config_json            │ │
+│  ├─────────────────────────────────────────────────────────────────────┤ │
+│  │  reth: MDBX state tables + RocksDB history + nippy-jar static_files│ │
+│  │  besu: single RocksDB w/ 8 Bonsai column families + chainspec.json │ │
+│  │  nethermind: 7 RocksDB instances + parity-format chainspec sidecar │ │
 │  └─────────────────────────────────────────────────────────────────────┘ │
 └──────────────────────────────────────────────────────────────────────────┘
 ```
@@ -131,87 +140,93 @@ the target is reached.
 
 ### 2. Account Generation
 
-The generator creates accounts in memory before writing:
+The generator emits entities in three layers, in order:
 
 ```go
-// Genesis accounts first (preserve exact addresses)
-for addr, acc := range config.GenesisAccounts {
-    // Include at exact address
-}
+// 1. Canonical syscontracts (BeaconRoots, HistoryStorage, WithdrawalQueue,
+//    ConsolidationQueue, DepositContract) at their hardcoded addresses.
+syscontracts.AddCanonicalSystemContracts(&config)
 
-// Then generated accounts
-for i := 0; i < config.NumAccounts; i++ {
-    // Random address, balance, nonce
-}
+// 2. Spec PreAlloc entities (explicit / name-derived / position-derived).
+//    Materialized into config.GenesisAccounts / config.GenesisCode by
+//    Config.Validate(), then streamed by per-client writers.
+for _, pe := range config.PreAlloc { /* ... */ }
 
-// Then generated contracts
-for i := 0; i < config.NumContracts; i++ {
-    // Random address, code, storage slots
-    // Storage count from distribution
+// 3. Auto-fill synthetic entities (only when config.AutoFill != nil — i.e.
+//    when --target-size is set). The Plan's NumEOAs / NumContracts are
+//    pre-derived from the top-up budget; each Draw* method emits one
+//    entity using the canonical entitygen RNG sequence so all 5 client
+//    emission sites (geth-MPT, geth-bintrie, reth, besu, nethermind)
+//    produce byte-identical entities for the same seed.
+if plan := config.AutoFill; plan != nil {
+    for i := 0; i < plan.NumEOAs && !targetReached; i++ {
+        acc := plan.DrawEOA(rng)
+        // ... write to streamsort sorter ...
+    }
+    for i := 0; i < plan.NumContracts && !targetReached; i++ {
+        contract := plan.DrawContract(rng)
+        // ... write to streamsort sorter ...
+    }
 }
 ```
 
+Per-client emission sites stop early when the on-disk size hits
+`config.TargetSize` (sampled via `dirSize` for reth/nethermind, projected
+via per-entity byte estimates for geth/besu).
+
 ### 3. State Root Computation
 
-StackTrie requires sorted keys for correct root:
+StackTrie requires sorted keys for correct root. The streaming pipeline
+sorts on disk via `internal/streamsort` so the trie hasher sees keys in
+hash order without buffering the full account set in memory:
 
 ```go
-// Sort all accounts by hash(address)
-sort.Slice(allAccounts, func(i, j int) bool {
-    return bytes.Compare(
-        allAccounts[i].addrHash[:],
-        allAccounts[j].addrHash[:],
-    ) < 0
+// Phase 1 has already written entities to a Pebble sorter keyed by
+// keccak256(address). Phase 2 iterates in sorted order:
+sorter.Iterate(func(addrHash []byte, entityBlob []byte) error {
+    // For each account with storage: build per-account storage trie
+    // via internal/streamingtrie, splice the storage root into the
+    // StateAccount, then re-encode the FULL StateAccount RLP (not
+    // SlimAccountRLP — geth's PathDB requires the full form).
+    accountTrie.Update(addrHash, fullStateAccountRLP)
+    return nil
 })
-
-// For each account with storage:
-//   1. Sort storage keys by hash(slot)
-//   2. Build storage trie
-//   3. Get storage root
-//   4. Update account.Root
-
-// Build account trie
-for _, acc := range allAccounts {
-    accountTrie.Update(acc.addrHash[:], slimAccountRLP)
-}
 
 stateRoot := accountTrie.Hash()
 ```
 
 ### 4. Database Writing
 
-Parallel batch writers for throughput:
+Each `--client` owns its on-disk format and ships its own writer adapter
+in `client/<name>/`. The shared streaming pipeline (`internal/streamsort`
++ `internal/streamingtrie`) feeds the per-client writer one account at
+a time over a sorted key stream — no in-memory account list, no
+configurable worker pool / batch size at the generator level.
 
-```go
-// Worker pool for batch commits
-for i := 0; i < config.Workers; i++ {
-    go func() {
-        for batch := range batchChan {
-            batch.Write()
-        }
-    }()
-}
+- **geth-MPT** (`client/geth/state_writer.go:44-55`): two-phase
+  streamsort. Phase 1 collects entities into a sorted Pebble store
+  keyed by `addrHash`; Phase 2 iterates the sorted output, builds per-
+  account storage tries via `internal/streamingtrie`, writes the
+  production Pebble in keccak order, and feeds the outer account trie.
+- **geth-bintrie** (`generator/generator.go:140-200`): producer-
+  consumer pipeline. The producer emits accounts/contracts into a
+  channel; the consumer writes to a temp Pebble + streams a binary
+  StackTrie. Phase 2 reads the temp DB to produce the genesis state
+  root + stem-blob flat state.
+- **reth** (`client/reth/run_cgo.go:81-194`): cgo + libmdbx. Streams
+  EOAs in 100 K batches and contracts in 1 K batches into MDBX state
+  tables, with a per-batch `dirSize` sample driving the target-size
+  early stop.
+- **besu** (`client/besu/state_writer_cgo.go:60-160`): cgo + librocksdb.
+  Single RocksDB with 8 Bonsai column families; per-entity raw-bytes
+  accumulator drives the target-size stop.
+- **nethermind** (`client/nethermind/{run_cgo,entitygen_cgo}.go`): cgo
+  + grocksdb. Seven RocksDB instances; periodic `dirSize` sample
+  (every 100 contracts) drives the target-size stop.
 
-// Write all data
-for _, acc := range allAccounts {
-    // Write storage slots
-    for key, value := range acc.storage {
-        batch.Put(storageKey(acc.addrHash, keyHash), rlpValue)
-    }
-    // Write code
-    if len(acc.code) > 0 {
-        batch.Put(codeKey(acc.codeHash), acc.code)
-    }
-    // Write account
-    batch.Put(accountKey(acc.addrHash), slimAccountRLP)
-    
-    // Flush batch when full
-    if batchCount >= config.BatchSize {
-        batchChan <- batch
-        batch = db.NewBatch()
-    }
-}
-```
+Each adapter implements the `generator.Writer` interface
+(`WriteAccount`, `WriteStorage`, `WriteCode`, `SetStateRoot`, …); the
+generator core only sees the abstract Writer surface.
 
 ### 5. Genesis Block Writing
 
@@ -246,9 +261,21 @@ StackTrie requires keys in sorted order to produce correct roots. We sort:
 - Accounts by `keccak256(address)`
 - Storage slots by `keccak256(slot)`
 
-### Power-Law Distribution
+### Auto-fill Distribution
 
-Real Ethereum state follows a power-law distribution: a few contracts (Uniswap, etc.) have millions of slots while most have very few. We use Pareto distribution to simulate this.
+Synthetic top-up (`internal/autofill`) emits a fixed mainnet-shaped split:
+**20 % account-trie / 10 % bytecode / 70 % contract storage** (constants
+in [`internal/sizecal/factors.go`](../internal/sizecal/factors.go)).
+Per-contract code is a truncated normal in `[1 KiB, 24 KiB]` centered at
+5 KiB (`MeanContractCode`); per-contract storage size is a truncated
+normal in `[1 KiB, 100 MiB]` whose mean is budget-derived — typically
+~35 KiB at any target scale. EOAs randomize balance (90 % non-zero),
+nonce (always non-zero), and EIP-7702 delegation (30 %) independently.
+
+Spec-loaded entities (`--spec`) are separate: their distribution comes
+from the YAML schema (per-entity `approximate_size_bytes` resolved via
+`internal/sizecal.SlotsForBytes`) and is independent of the auto-fill
+shape above.
 
 ### Genesis Account Preservation
 
@@ -258,9 +285,17 @@ When merging genesis accounts, we preserve their exact addresses (not random). T
 
 Deep-branch accounts use phantom entries to force branch nodes at every nibble depth in a storage trie. For a legitimate slot with trie key `T = keccak256(pad32(slotIndex))`, we construct `D` phantom keys where phantom `d` matches `T` on nibbles `[0..d-1]` but differs at nibble `d`. These are written to the snapshot via `WriteRawStorage` (bypassing `keccak256`) and inserted directly into the StackTrie. The legitimate slot's `SLOAD` path traverses all `D` branch nodes.
 
-### Parallel Batch Writers
+### Streaming Pipeline (no worker pool)
 
-Pebble performs best with parallel batch commits. We use a worker pool to maximize throughput while maintaining ordering within batches.
+The generator streams entities through `internal/streamsort` (out-of-core
+key sort) into `internal/streamingtrie` (O(depth)-RAM hasher) into the
+per-client writer. Total RAM stays bounded (~2 GB peak) regardless of
+total state size; the bottleneck is the client DB's compaction/write
+throughput, not generator-side batching. No worker pool, no configurable
+batch size at the generator level. Per-client writers may internally
+batch (e.g., reth's 100 K EOA + 1 K contract MDBX-txn batches at
+`client/reth/run_cgo.go:25`) for FFI/txn-amortization reasons, but those
+are implementation details of the writer adapter.
 
 ## Client Adapters
 
