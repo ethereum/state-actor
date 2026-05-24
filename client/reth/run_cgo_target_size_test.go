@@ -68,7 +68,7 @@ func TestRunCgoTargetSizeStopsAccurately(t *testing.T) {
 	if err != nil {
 		t.Fatalf("dirSize: %v", err)
 	}
-	const tolerance = 0.20
+	const tolerance = 0.10
 	diff := float64(actual) - float64(target)
 	if diff < 0 {
 		diff = -diff
@@ -79,5 +79,32 @@ func TestRunCgoTargetSizeStopsAccurately(t *testing.T) {
 	if pct > tolerance {
 		t.Errorf("DB size %.1f%% off target (%d vs %d), tolerance %.1f%%",
 			pct*100, actual, target, tolerance*100)
+	}
+
+	// Hard per-batch overshoot ceiling. Independent of percentage check:
+	// the contract loop's dirSize sample fires only between batches, so
+	// the worst-case overshoot is contractStreamBatchSize × per-contract
+	// bytes. At contractStreamBatchSize=1000 with ~35 KiB mean storage
+	// per contract, that's ~35 MiB worst case; allow 50 MiB headroom for
+	// MDBX 4-GiB-step rounding + truncation-bound outliers. A regression
+	// that ratchets contractStreamBatchSize back up would fail here even
+	// if the percentage check happened to pass at a generous target.
+	const maxBatchOvershootBytes = 50 * 1024 * 1024
+	if actual > target+maxBatchOvershootBytes {
+		t.Errorf("overshoot %d B exceeds %d MiB per-batch cap (regression in contractStreamBatchSize?)",
+			actual-target, maxBatchOvershootBytes/1024/1024)
+	}
+}
+
+// TestContractStreamBatchSize pins the per-batch overshoot cap. If a
+// future commit bumps contractStreamBatchSize, this test fails alone —
+// the maxBatchOvershootBytes assertion in TestRunCgoTargetSize* tests
+// is a derived check that would also fail, but pinning the constant
+// here surfaces the intent.
+func TestContractStreamBatchSize(t *testing.T) {
+	const want = 1_000
+	if contractStreamBatchSize != want {
+		t.Errorf("contractStreamBatchSize = %d, want %d (raising this re-introduces the 3.5 GiB target-size overshoot bug)",
+			contractStreamBatchSize, want)
 	}
 }

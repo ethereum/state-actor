@@ -41,6 +41,14 @@ type ReproduceCfg struct {
 // Caveat: writers may advance the RNG further on a draw collision with
 // genesis/system contracts; Reproduce assumes the canonical-MPT
 // invariant configuration (no pre-existing collisions).
+//
+// nil-Plan semantics: when cfg.AutoFill == nil, returns (nil, nil). This
+// is semantically distinct from a Plan that legitimately requested zero
+// entities (NumEOAs=0 AND NumContracts=0), which also returns empty
+// slices — but via the populated-Plan code path. Callers who care about
+// the distinction (e.g. tests verifying that auto-fill DID run) MUST
+// supply a non-nil Plan; the function intentionally does NOT error on
+// nil-AutoFill because spec-only runs legitimately have no auto-fill.
 func Reproduce(cfg ReproduceCfg) (eoas, contracts []*entitygen.Account) {
 	if cfg.AutoFill == nil {
 		return nil, nil

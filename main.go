@@ -106,6 +106,10 @@ func main() {
 		if err != nil {
 			log.Fatalf("Invalid --target-size: %v", err)
 		}
+		if parsedTargetSize == 0 {
+			log.Fatalf("--target-size must be positive (got %q); set a positive value or omit the flag entirely",
+				*targetSize)
+		}
 	}
 
 	// Reject --archive for clients that have no archive code path.
@@ -405,6 +409,9 @@ func parseSize(s string) (uint64, error) {
 	val, err := strconv.ParseUint(s, 10, 64)
 	if err != nil {
 		return 0, fmt.Errorf("invalid size format %q (use e.g. '5GB', '500MB')", s)
+	}
+	if val == 0 {
+		return 0, fmt.Errorf("size must be positive: %s", s)
 	}
 	return val, nil
 }

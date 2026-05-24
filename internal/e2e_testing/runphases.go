@@ -176,6 +176,16 @@ func RunSuitePhases(t *testing.T, cfg SuitePhasesCfg) {
 		if !CheckDBSize(t, cfg.GeneratorConfig.DBPath, cfg.ExpectedDBBytes, tolerance) {
 			t.Fatalf("DB size check failed; aborting before spamoor phase")
 		}
+	} else {
+		// Log the skip so a future test that accidentally drops
+		// ExpectedDBBytes (or its DBPath) at least surfaces the no-op in
+		// test output — silent skip would mask a missing check.
+		var dbPath string
+		if cfg.GeneratorConfig != nil {
+			dbPath = cfg.GeneratorConfig.DBPath
+		}
+		t.Logf("Phase 4e: CheckDBSize skipped (ExpectedDBBytes=%d, DBPath=%q)",
+			cfg.ExpectedDBBytes, dbPath)
 	}
 
 	if cfg.SkipBlockProduction {
