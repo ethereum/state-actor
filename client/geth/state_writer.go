@@ -6,8 +6,6 @@ import (
 	"fmt"
 	"log"
 	mrand "math/rand"
-	"os"
-	"path/filepath"
 	"runtime"
 	"sort"
 	"sync"
@@ -22,7 +20,6 @@ import (
 	"github.com/ethereum/go-ethereum/trie"
 
 	"github.com/nerolation/state-actor/generator"
-	"github.com/nerolation/state-actor/internal/sizecal"
 	"github.com/nerolation/state-actor/internal/streamingtrie"
 	"github.com/nerolation/state-actor/internal/streamsort"
 )
@@ -80,29 +77,6 @@ func writeStateAndCollectRoot(
 
 	rng := mrand.New(mrand.NewSource(int64(cfg.Seed)))
 
-	// Origin-scoped target-size: accumulate projected on-disk trie bytes
-	// per entity using the same sizecal constants internal/specbuild uses.
-	// Stops emission once projection reaches cfg.TargetSize, so Phase 2
-	// processes every entity Phase 1 emits — no orphaned account-trie
-	// state. Replaces the prior 5x raw-bytes safety cap; the dirSize
-	// sampling that used to live in Phase 2 is gone.
-	bAcct := sizecal.BytesPerAccount("")
-	bSlot := sizecal.BytesPerSlot("")
-	var projectedTrieBytes uint64
-	targetReached := false
-	addProjection := func(slotCount int) bool {
-		projectedTrieBytes += bAcct + bSlot*uint64(slotCount)
-		if cfg.TargetSize > 0 && projectedTrieBytes >= cfg.TargetSize {
-			if cfg.Verbose && !targetReached {
-				log.Printf("geth MPT Phase 1: projected trie %d MiB >= target %d MiB — stopping entity emission",
-					projectedTrieBytes>>20, cfg.TargetSize>>20)
-			}
-			targetReached = true
-			return true
-		}
-		return false
-	}
-
 	// genesisAddrs prevents synthetic RNG addresses from colliding with
 	// pre-allocated genesis addresses.
 	genesisAddrs := make(map[common.Address]struct{}, len(cfg.GenesisAccounts))
@@ -135,12 +109,11 @@ func writeStateAndCollectRoot(
 		if err := sorter.Put(addrHash[:], blob); err != nil {
 			return common.Hash{}, nil, fmt.Errorf("phase1 genesis alloc: %w", err)
 		}
-		addProjection(len(slots))
 	}
 
 	plan := cfg.AutoFill
 	if plan != nil {
-		for i := 0; i < plan.NumEOAs && !targetReached; i++ {
+		for i := 0; i < plan.NumEOAs; i++ {
 			if err := ctx.Err(); err != nil {
 				return common.Hash{}, nil, err
 			}
@@ -162,10 +135,9 @@ func writeStateAndCollectRoot(
 			if len(stats.SampleEOAs) < 3 {
 				stats.SampleEOAs = append(stats.SampleEOAs, acc.Address)
 			}
-			addProjection(0)
 		}
 
-		for i := 0; i < plan.NumContracts && !targetReached; i++ {
+		for i := 0; i < plan.NumContracts; i++ {
 			if err := ctx.Err(); err != nil {
 				return common.Hash{}, nil, err
 			}
@@ -194,7 +166,6 @@ func writeStateAndCollectRoot(
 			if len(stats.SampleContracts) < 3 {
 				stats.SampleContracts = append(stats.SampleContracts, contract.Address)
 			}
-			addProjection(len(contract.Storage))
 		}
 	}
 
@@ -329,25 +300,6 @@ func writeStateAndCollectRoot(
 	stats.TotalBytes = stats.AccountBytes + stats.StorageBytes + stats.CodeBytes
 
 	return stateRoot, stats, nil
-}
-
-// dirSize returns the total bytes used by all regular files under
-// path. Returns 0 + nil if path doesn't exist yet.
-func dirSize(path string) (uint64, error) {
-	var total uint64
-	err := filepath.Walk(path, func(_ string, info os.FileInfo, err error) error {
-		if err != nil {
-			if os.IsNotExist(err) {
-				return nil
-			}
-			return err
-		}
-		if !info.IsDir() {
-			total += uint64(info.Size())
-		}
-		return nil
-	})
-	return total, err
 }
 
 // sortedSlot is a (keccak(slotKey), RLP value) pair sorted by slotHash.
