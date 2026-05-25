@@ -31,36 +31,35 @@ const chunkSlots = 1024
 // per-txn commit latency without unbounded RAM growth.
 const chunkChanCap = 4
 
-// slotPrepared holds the four pre-encoded byte buffers a single slot
-// contributes to MDBX. Produced on the worker goroutine, consumed on
-// the main goroutine inside Mdbx.Update — no encoding work in the
-// hot write path.
+// slotPrepared holds the per-slot byte buffers + raw key a single slot
+// contributes. Produced on the worker goroutine, consumed on the main
+// goroutine inside Mdbx.Update — no encoding work in the hot write path.
+// rawKey lets the consumer route an archive-mode StoragesHistory put
+// into the RocksDB CF (envs.HistorySink builds the StorageShardedKey
+// internally).
 type slotPrepared struct {
-	plainEntry  []byte // PlainStorageState value (encoded rawKey || value)
-	hashedEntry []byte // HashedStorages value (encoded keyHash || value)
-	changeEntry []byte // StorageChangeSets value (encoded rawKey || 0); nil in full mode
-	sskKey      []byte // StoragesHistory key (StorageShardedKey-encoded); nil in full mode
+	rawKey      common.Hash // slot key (untouched); StoragesHistory sink arg
+	hashedEntry []byte      // HashedStorages value (encoded keyHash || value)
+	changeEntry []byte      // StorageChangeSets value (encoded rawKey || 0); nil in full mode
 }
 
 // preparedEntity carries everything the consumer needs to commit one
-// entity's storage to MDBX. The worker fills chunkCh in keccak-
-// ascending order, then sends the computed root via rootCh and closes
-// chunkCh. errCh carries any IterateRoot failure surfacing on the
-// worker side. trieRows are pre-encoded StoragesTrie DupSort values
-// (each entry = SubKey(33 bytes) || BranchNodeCompact bytes); the
-// consumer writes them under the DupSort main key ent.addrHash after
-// the per-slot rows land. Emitted in path-lex order so cursor.AppendDup
-// takes the fast path.
+// entity's storage. The worker fills chunkCh in keccak-ascending order,
+// then sends the computed root via rootCh and closes chunkCh. errCh
+// carries any IterateRoot failure surfacing on the worker side. trieRows
+// are pre-encoded StoragesTrie DupSort values (each entry = packed
+// SubKey(33 bytes) || BranchNodeCompact bytes); the consumer writes them
+// under the DupSort main key ent.addrHash after the per-slot rows land.
+// Emitted in path-lex order so cursor.AppendDup takes the fast path.
 type preparedEntity struct {
-	idx        int
-	addr       common.Address
-	addrHash   common.Hash
-	blockKey   []byte         // BlockNumberAddress-encoded
-	historyVal []byte         // EncodeIntegerList([0]) — fixed per entity for genesis pre-state
-	chunkCh    chan []slotPrepared
-	rootCh     chan common.Hash
-	errCh      chan error
-	trieRows   [][]byte
+	idx      int
+	addr     common.Address
+	addrHash common.Hash
+	blockKey []byte // BlockNumberAddress-encoded
+	chunkCh  chan []slotPrepared
+	rootCh   chan common.Hash
+	errCh    chan error
+	trieRows [][]byte
 }
 
 // streamSpecStorage writes each PreAlloc entity's Storage into reth's
@@ -108,18 +107,10 @@ func streamSpecStorage(ctx context.Context, envs *Envs, cfg *generator.Config, s
 	defer cancelDrain(nil)
 
 	entityCh := make(chan int, workers*2)
-	// drainedCh is unbuffered — the consumer applies back-pressure on
-	// the workers (only one entity in flight on the writer side beyond
-	// the workers' local chunk buffers). Buffer of workers*2 to absorb
-	// small latency spikes.
+	// preparedCh buffer of workers*2 absorbs small latency spikes; the
+	// consumer applies back-pressure via the per-entity chunkCh inside
+	// each preparedEntity.
 	preparedCh := make(chan *preparedEntity, workers*2)
-
-	// EncodeIntegerList([0]) is identical for every slot in a genesis
-	// pre-state import — encode once on the caller goroutine, reuse
-	// across all workers.
-	var sharedHistoryBuf bytes.Buffer
-	iReth.EncodeIntegerList(&sharedHistoryBuf, []uint64{0})
-	historyVal := sharedHistoryBuf.Bytes()
 
 	var wg sync.WaitGroup
 	for w := 0; w < workers; w++ {
@@ -130,7 +121,7 @@ func streamSpecStorage(ctx context.Context, envs *Envs, cfg *generator.Config, s
 				if drainCtx.Err() != nil {
 					return
 				}
-				if err := drainAndEncodeEntity(drainCtx, cfg, i, historyVal, preparedCh); err != nil {
+				if err := drainAndEncodeEntity(drainCtx, cfg, i, preparedCh); err != nil {
 					cancelDrain(err)
 					return
 				}
@@ -202,13 +193,12 @@ func streamSpecStorage(ctx context.Context, envs *Envs, cfg *generator.Config, s
 
 // drainAndEncodeEntity runs on a worker goroutine. It drains the
 // entity's storage iter into a streamsort, then walks the sorted store
-// driving the HashBuilder AND pre-encoding all 4 per-slot byte buffers
+// driving the HashBuilder AND pre-encoding the per-slot byte buffers
 // into chunks sent to the consumer via ent.chunkCh.
 func drainAndEncodeEntity(
 	drainCtx context.Context,
 	cfg *generator.Config,
 	idx int,
-	historyVal []byte,
 	preparedCh chan<- *preparedEntity,
 ) error {
 	pe := &cfg.PreAlloc[idx]
@@ -225,14 +215,13 @@ func drainAndEncodeEntity(
 	blockKey.EncodeKey(&blockKeyBuf)
 
 	ent := &preparedEntity{
-		idx:        idx,
-		addr:       addr,
-		addrHash:   addrHash,
-		blockKey:   blockKeyBuf.Bytes(),
-		historyVal: historyVal,
-		chunkCh:    make(chan []slotPrepared, chunkChanCap),
-		rootCh:     make(chan common.Hash, 1),
-		errCh:      make(chan error, 1),
+		idx:      idx,
+		addr:     addr,
+		addrHash: addrHash,
+		blockKey: blockKeyBuf.Bytes(),
+		chunkCh:  make(chan []slotPrepared, chunkChanCap),
+		rootCh:   make(chan common.Hash, 1),
+		errCh:    make(chan error, 1),
 	}
 
 	// Hand the preparedEntity to the consumer BEFORE starting iteration
@@ -249,17 +238,21 @@ func drainAndEncodeEntity(
 	archive := cfg.Archive
 
 	// Per-entity trie emissions: HashBuilder emits in path-lex order as
-	// it walks the sorted slots. Worker pre-encodes each emission into a
-	// StorageTrieEntry value (SubKey||BNC) and accumulates into
-	// trieRows. The consumer drains trieRows into StoragesTrie within
-	// the same per-entity Mdbx.Update txn AFTER the slot rows land —
-	// keeping the cursor.AppendDup fast path intact for both sides.
+	// it walks the sorted slots. Worker pre-encodes each emission as a
+	// packed StorageTrieEntry value (33-byte SubKey || BNC; v2 format)
+	// and accumulates into trieRows. The consumer drains trieRows into
+	// StoragesTrie within the same per-entity Mdbx.Update txn AFTER the
+	// slot rows land — keeping the cursor.AppendDup fast path intact.
 	// Memory per entity: O(trie nodes) ≈ small multiple of slot count.
 	trieRows := make([][]byte, 0, 64)
 	emit := func(path iReth.StoredNibbles, node iReth.BranchNodeCompact) error {
+		if path.Length == 0 {
+			// Skip root branch — see TestNoRootCacheRows.
+			return nil
+		}
 		var valBuf bytes.Buffer
 		entry := iReth.StorageTrieEntry{SubKey: path, Node: node}
-		entry.EncodeCompact(&valBuf)
+		entry.EncodePackedCompact(&valBuf)
 		trieRows = append(trieRows, valBuf.Bytes())
 		return nil
 	}
@@ -282,12 +275,7 @@ func drainAndEncodeEntity(
 	sink := func(keyHash, rawKey, value common.Hash) error {
 		slotValueU256 := uint256.NewInt(0).SetBytes(value[:])
 
-		prep := slotPrepared{}
-
-		plainEntry := iReth.StorageEntry{Key: rawKey, Value: slotValueU256}
-		var plainBuf bytes.Buffer
-		plainEntry.EncodeCompact(&plainBuf)
-		prep.plainEntry = plainBuf.Bytes()
+		prep := slotPrepared{rawKey: rawKey}
 
 		hashedEntry := iReth.StorageEntry{Key: keyHash, Value: slotValueU256}
 		var hashedBuf bytes.Buffer
@@ -299,17 +287,6 @@ func drainAndEncodeEntity(
 			var changeBuf bytes.Buffer
 			changeEntry.EncodeCompact(&changeBuf)
 			prep.changeEntry = changeBuf.Bytes()
-
-			// StoragesHistory key is only built in archive mode; in full
-			// mode the consumer skips the Put entirely.
-			ssk := iReth.StorageShardedKey{
-				Address:     addr,
-				StorageKey:  rawKey,
-				BlockNumber: ^uint64(0),
-			}
-			var sskBuf bytes.Buffer
-			ssk.EncodeKey(&sskBuf)
-			prep.sskKey = sskBuf.Bytes()
 		}
 
 		pending = append(pending, prep)
@@ -357,38 +334,29 @@ func consumeEntity(
 		}
 		for chunk := range ent.chunkCh {
 			for _, prep := range chunk {
-				if err := txn.Put(envs.MdbxDBIs["PlainStorageState"], ent.addr[:], prep.plainEntry, 0); err != nil {
-					return fmt.Errorf("PlainStorageState %s: %w", ent.addr.Hex(), err)
-				}
 				if err := txn.Put(envs.MdbxDBIs["HashedStorages"], ent.addrHash[:], prep.hashedEntry, 0); err != nil {
 					return fmt.Errorf("HashedStorages %s: %w", ent.addrHash.Hex(), err)
 				}
 				if prep.changeEntry != nil {
-					// Archive mode: write the StorageChangeSets row.
+					// Archive mode: write StorageChangeSets (MDBX) + route
+					// StoragesHistory to RocksDB CF (v2).
 					if err := txn.Put(envs.MdbxDBIs["StorageChangeSets"], ent.blockKey, prep.changeEntry, 0); err != nil {
 						return fmt.Errorf("StorageChangeSets %s: %w", ent.addr.Hex(), err)
 					}
-				}
-				if prep.sskKey != nil {
-					// Archive mode: write the StoragesHistory row.
-					if err := txn.Put(envs.MdbxDBIs["StoragesHistory"], prep.sskKey, ent.historyVal, 0); err != nil {
+					if err := envs.HistorySink().PutStorageHistory(ent.addr, prep.rawKey, 0); err != nil {
 						return fmt.Errorf("StoragesHistory %s: %w", ent.addr.Hex(), err)
 					}
 				}
-				localBytes += uint64(len(prep.plainEntry))
+				// Stats: bank HashedStorages entry bytes.
+				localBytes += uint64(len(prep.hashedEntry))
 			}
 		}
-		// Drain pre-encoded trie rows into StoragesTrie under the
-		// DupSort main key keccak(address). Worker emitted them in
-		// path-lex order WITHIN each entity, but entities themselves
-		// are processed in PreAlloc index order (not addrHash-sorted),
-		// so AppendDup's "main key >= last key in DB" precondition
-		// fails on cross-entity boundaries (MDBX_EKEYMISMATCH).
-		// Plain Put is correct: the sub-key (path) is encoded inside
-		// the row's first 33 bytes and stays in DupSort order via
-		// MDBX's own dup-set sorting. Without these rows reth's
-		// payload builder falls back to a linear HashedStorages walk
-		// per block.
+		// Drain pre-encoded trie rows into StoragesTrie keyed by
+		// keccak(address). Plain Put (not AppendDup): entities are
+		// processed in PreAlloc index order (not addrHash-sorted), so
+		// AppendDup would trip MDBX_EKEYMISMATCH on cross-entity
+		// boundaries. Sub-key ordering is preserved by MDBX's per-key
+		// dup-sort regardless.
 		if len(ent.trieRows) > 0 {
 			for _, row := range ent.trieRows {
 				if err := txn.Put(envs.MdbxDBIs["StoragesTrie"], ent.addrHash[:], row, 0); err != nil {

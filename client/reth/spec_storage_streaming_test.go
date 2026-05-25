@@ -72,9 +72,11 @@ func TestStreamSpecStorageParallelDeterminism(t *testing.T) {
 	}
 }
 
-// TestStreamSpecStorageNoStorageEntities: empty PreAlloc and pure-EOA
-// PreAlloc must skip the writer loop entirely — stats.StorageBytes
-// stays zero, no MDBX txn for storage opens.
+// TestStreamSpecStorageNoStorageEntities: a pure-EOA PreAlloc must skip
+// the storage writer loop entirely — stats.StorageBytes stays zero, no
+// MDBX txn for storage opens. (The empty-PreAlloc case is now redundant
+// — generator.Config.Validate rejects empty configs at the top of
+// RunCgo, so the writer loop is unreachable for nil PreAlloc anyway.)
 func TestStreamSpecStorageNoStorageEntities(t *testing.T) {
 	addr := common.HexToAddress("0xaabbccddeeff00112233445566778899aabbccdd")
 	pureEOA := []templates.PreAllocEntity{{
@@ -88,22 +90,15 @@ func TestStreamSpecStorageNoStorageEntities(t *testing.T) {
 		Storage: nil,
 	}}
 
-	for name, preAlloc := range map[string][]templates.PreAllocEntity{
-		"empty":   nil,
-		"pureEOA": pureEOA,
-	} {
-		t.Run(name, func(t *testing.T) {
-			stats, err := RunCgo(context.Background(), generator.Config{
-				DBPath:   t.TempDir(),
-				PreAlloc: preAlloc,
-			}, Options{})
-			if err != nil {
-				t.Fatalf("RunCgo: %v", err)
-			}
-			if stats.StorageBytes != 0 {
-				t.Errorf("StorageBytes = %d, want 0", stats.StorageBytes)
-			}
-		})
+	stats, err := RunCgo(context.Background(), generator.Config{
+		DBPath:   t.TempDir(),
+		PreAlloc: pureEOA,
+	}, Options{})
+	if err != nil {
+		t.Fatalf("RunCgo: %v", err)
+	}
+	if stats.StorageBytes != 0 {
+		t.Errorf("StorageBytes = %d, want 0", stats.StorageBytes)
 	}
 }
 

@@ -6,39 +6,22 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 )
 
-// StoredNibbles is reth's legacy v1 65-byte nibble path used as the AccountsTrie
-// key and as the StoragesTrie sub-key. One nibble per byte (low 4 bits used),
-// right-padded with zeros to 64 bytes, followed by a length byte.
+// StoredNibbles is a nibble path with a fixed-64-byte buffer + an
+// explicit Length suffix. Two encoders use the same struct:
 //
-// Wire (MDBX key, fixed 65 bytes):
-//
-//	nibbles[64] (one nibble per byte, low 4 bits, right-padded zeros) || length[1]
-//
-// Matches StoredNibbles::to_compact / StoredNibblesSubKey::to_compact in
-// reth-trie-common (nibbles.rs lines 101-128). Reth's ProviderFactory defaults
-// to StorageSettings::v1() when no metadata row is present (see
-// crates/storage/provider/src/providers/database/mod.rs:132), which selects the
-// LegacyKeyAdapter and reads this 65-byte form via StorageTrieEntry::from_compact
-// (storage.rs:38-43). The 33-byte PackedStoredNibbles variant is only used when
-// storage_v2 = true is explicitly written into the Metadata table — that mode
-// also expects RocksDB history sidecars + static-file changesets, which a
-// one-shot genesis writer does not produce.
+//   - EncodeKey: 65-byte form (nibbles[64] || length[1]). Used as the
+//     StoragesTrie DupSort SubKey inside StorageTrieEntry. See reth-
+//     trie-common nibbles.rs.
+//   - EncodePackedAccountKey / EncodePackedCompact: 33-byte packed form
+//     (two nibbles per byte, padded to 32 bytes + 1 nibble-count byte).
+//     This is what reth v2's PackedKeyAdapter expects for AccountsTrie /
+//     StoragesTrie reads.
 type StoredNibbles struct {
 	Length  byte
 	Nibbles [64]byte
 }
 
-// EncodeKey writes the FIXED 65-byte form (nibbles[64] || length[1]). This is
-// the wire layout reth uses for StoredNibblesSubKey (StoragesTrie DupSort
-// sub-key, inside the StorageTrieEntry value) — see reth-trie-common
-// nibbles.rs:113-128 and reth/crates/storage/db-api/src/models/mod.rs:135-141
-// (Encoded = [u8; 65]).
-//
-// NOTE: this is NOT the right encoder for an AccountsTrie KEY. Reth's
-// tables::AccountsTrie uses StoredNibbles::Encode = ArrayVec<u8, 64> (variable
-// length, raw nibbles, no padding, no length byte) — see
-// reth/crates/storage/db-api/src/models/mod.rs:121-127. For AccountsTrie
-// keys, use EncodeAccountKey below.
+// EncodeKey writes the 65-byte form (nibbles[64] || length[1]).
 func (s *StoredNibbles) EncodeKey(buf *bytes.Buffer) {
 	buf.Write(s.Nibbles[:])
 	buf.WriteByte(s.Length)
@@ -52,33 +35,36 @@ func (s *StoredNibbles) DecodeKey(b []byte) {
 	s.Length = b[64]
 }
 
-// EncodeAccountKey writes the VARIABLE-length form (just s.Nibbles[:s.Length],
-// 0..=64 bytes, no padding, no length suffix). This is the wire layout reth's
-// tables::AccountsTrie expects for keys (StoredNibbles::Encode in
-// reth/crates/storage/db-api/src/models/mod.rs:121-127 returns
-// ArrayVec<u8, 64>; decoding reconstructs Length = len(value) via
-// from_compact at line 131).
-func (s *StoredNibbles) EncodeAccountKey(buf *bytes.Buffer) {
-	if int(s.Length) > 64 {
-		panic("StoredNibbles: Length > 64")
-	}
-	buf.Write(s.Nibbles[:s.Length])
-}
-
-// DecodeAccountKey is the inverse: every byte of b is one nibble, Length =
-// len(b). Mirrors reth's StoredNibbles::from_compact(value, value.len()).
-func (s *StoredNibbles) DecodeAccountKey(b []byte) {
-	if len(b) > 64 {
-		panic("StoredNibbles: account key longer than 64 bytes")
-	}
-	*s = StoredNibbles{}
-	s.Length = byte(len(b))
-	copy(s.Nibbles[:], b)
-}
-
 // StoredNibblesSubKey is the StoragesTrie DupSort sub-key (after the 32-byte
 // hashed-address main key). Same 65-byte layout as StoredNibbles.
 type StoredNibblesSubKey = StoredNibbles
+
+// EncodePackedAccountKey writes the 33-byte packed form to buf — the wire
+// layout reth's PackedAccountsTrie key uses under storage_v2. Two nibbles
+// per byte (high nibble in upper 4 bits, low nibble in lower 4 bits), right-
+// padded to 32 bytes; the 33rd byte carries the actual nibble count.
+//
+// Mirrors PackedStoredNibbles::to_compact_array in reth-trie-common
+// (nibbles.rs).
+//
+// SAFE under storage_v2=true only — a non-v2 reader would decode this as a
+// 33-NIBBLE path (one nibble per byte) and silently corrupt the trie.
+func (s *StoredNibbles) EncodePackedAccountKey(buf *bytes.Buffer) {
+	if int(s.Length) > 64 {
+		panic("StoredNibbles: Length > 64")
+	}
+	var out [33]byte
+	n := int(s.Length)
+	pairs := n / 2
+	for i := 0; i < pairs; i++ {
+		out[i] = (s.Nibbles[2*i] << 4) | s.Nibbles[2*i+1]
+	}
+	if n%2 == 1 {
+		out[pairs] = s.Nibbles[2*pairs] << 4
+	}
+	out[32] = s.Length
+	buf.Write(out[:])
+}
 
 // BranchNodeCompact mirrors alloy_trie::BranchNodeCompact (alloy-trie 0.9.5,
 // nodes/branch.rs). Used as the value of AccountsTrie / StoragesTrie.
@@ -188,43 +174,36 @@ func readBEU16(b []byte) uint16 {
 	return uint16(b[0])<<8 | uint16(b[1])
 }
 
-// StorageTrieEntry is the DupSort value of StoragesTrie. The 65-byte SubKey is
-// also encoded inside the value so reth's StorageTrieEntry::from_compact can
-// self-describe (storage.rs:38-43).
-//
-// Wire:
-//
-//	65 bytes SubKey (StoredNibblesSubKey) || BranchNodeCompact bytes
-//
-// SubKey layout matches StoredNibblesSubKey::to_compact (reth-trie-common
-// nibbles.rs:113-129): nibbles[64] (one nibble per byte, right-padded) ||
-// length[1]. Length byte is at byte 64 (the end).
+// StorageTrieEntry is the DupSort value of StoragesTrie. Under v2 we use the
+// 33-byte packed SubKey form via EncodePackedCompact; reth's
+// PackedStorageTrieEntry::from_compact decodes it (storage.rs).
 type StorageTrieEntry struct {
 	SubKey StoredNibblesSubKey
 	Node   BranchNodeCompact
 }
 
-func (e *StorageTrieEntry) EncodeCompact(buf *bytes.Buffer) int {
-	written := 0
-	written += copy(bufWrite(buf, 64), e.SubKey.Nibbles[:])
-	written += copy(bufWrite(buf, 1), []byte{e.SubKey.Length})
+// EncodePackedCompact writes the v2 StoragesTrie DupSort value layout: 33-byte
+// PackedStoredNibblesSubKey (32 packed nibble pairs + 1 nibble-count byte)
+// followed by the BranchNodeCompact bytes.
+//
+// SAFE to use with storage_v2=true only — see EncodePackedAccountKey for the
+// gating rationale.
+func (e *StorageTrieEntry) EncodePackedCompact(buf *bytes.Buffer) int {
+	if int(e.SubKey.Length) > 64 {
+		panic("StorageTrieEntry: SubKey.Length > 64")
+	}
+	var out [33]byte
+	n := int(e.SubKey.Length)
+	pairs := n / 2
+	for i := 0; i < pairs; i++ {
+		out[i] = (e.SubKey.Nibbles[2*i] << 4) | e.SubKey.Nibbles[2*i+1]
+	}
+	if n%2 == 1 {
+		out[pairs] = e.SubKey.Nibbles[2*pairs] << 4
+	}
+	out[32] = e.SubKey.Length
+	buf.Write(out[:])
+	written := 33
 	written += e.Node.EncodeCompact(buf)
 	return written
-}
-
-func (e *StorageTrieEntry) DecodeCompact(data []byte, totalLen int) int {
-	if totalLen < 65 {
-		panic("StorageTrieEntry: totalLen < 65 (SubKey truncated)")
-	}
-	if len(data) < totalLen {
-		panic("StorageTrieEntry: buffer shorter than totalLen")
-	}
-	copy(e.SubKey.Nibbles[:], data[0:64])
-	e.SubKey.Length = data[64]
-	nodeLen := totalLen - 65
-	consumed := e.Node.DecodeCompact(data[65:], nodeLen)
-	if consumed != nodeLen {
-		panic("StorageTrieEntry: inner node consumed != totalLen-65")
-	}
-	return totalLen
 }

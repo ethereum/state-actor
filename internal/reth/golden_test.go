@@ -91,21 +91,53 @@ func TestGoldenIntegerList(t *testing.T) {
 	}
 }
 
-// TestGoldenStorageTrieEntry is skipped: the Rust fixture generator at
-// testdata/gen/src/main.rs uses PackedStorageTrieEntry (33-byte packed SubKey,
-// storage v2). Our writer now produces the 65-byte legacy StoredNibblesSubKey
-// because reth's ProviderFactory defaults to StorageSettings::v1() when the
-// Metadata table has no storage_settings row (see
-// crates/storage/provider/src/providers/database/mod.rs:132). v1 reads via
-// StorageTrieEntry::from_compact (storage.rs:38-43), which expects 65-byte
-// SubKeys; v2 (packed) also pulls in RocksDB sidecars and static-file
-// changesets that a one-shot genesis writer does not produce.
-//
-// Algorithmic correctness is now covered by TestHashBuilderRootMatchesStackTrieProperty
-// (hash_builder_test.go) which cross-validates the root hash against
-// go-ethereum's StackTrie across 50 random trials, independent of wire format.
+// TestGoldenStorageTrieEntry cross-validates EncodePackedCompact against the
+// Rust fixture generator at testdata/gen/src/main.rs (PackedStorageTrieEntry,
+// the wire format reth's PackedStorageTrieEntry::from_compact decodes under
+// storage_v2). Catches encoder drift on every reth-codecs bump.
 func TestGoldenStorageTrieEntry(t *testing.T) {
-	t.Skip("Rust fixtures are pinned to packed v2 33-byte SubKey; writer now uses legacy v1 65-byte SubKey")
+	cases := loadFixtures(t)["StorageTrieEntry"]
+	if len(cases) == 0 {
+		t.Fatal("no StorageTrieEntry fixtures (regenerate via testdata/gen/)")
+	}
+
+	bncMinimal := BranchNodeCompact{StateMask: 0, TreeMask: 0, HashMask: 0}
+	hAA := common.HexToHash("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+	hBB := common.HexToHash("0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
+
+	inputs := map[string]StorageTrieEntry{
+		"ste_minimal": {
+			SubKey: StoredNibbles{Length: 0},
+			Node:   bncMinimal,
+		},
+		"ste_basic": {
+			SubKey: StoredNibbles{Length: 4, Nibbles: [64]byte{1, 2, 3, 4}},
+			Node: BranchNodeCompact{
+				StateMask: 0x0001, TreeMask: 0, HashMask: 0x0001,
+				Hashes: []common.Hash{hAA},
+			},
+		},
+		"ste_with_root": {
+			SubKey: StoredNibbles{Length: 8, Nibbles: [64]byte{1, 2, 3, 4, 5, 6, 7, 8}},
+			Node: BranchNodeCompact{
+				StateMask: 0x0003, TreeMask: 0x0002, HashMask: 0x0003,
+				Hashes: []common.Hash{hAA, hBB}, RootHash: &hBB,
+			},
+		},
+	}
+
+	for _, fx := range cases {
+		in, ok := inputs[fx.Label]
+		if !ok {
+			t.Fatalf("unknown fixture label %q — Rust and Go are out of sync", fx.Label)
+		}
+		var buf bytes.Buffer
+		in.EncodePackedCompact(&buf)
+		got := hex.EncodeToString(buf.Bytes())
+		if got != fx.Hex {
+			t.Errorf("%s:\n  go   = %s\n  rust = %s", fx.Label, got, fx.Hex)
+		}
+	}
 }
 
 // unpackNibbles converts a byte slice to individual nibbles (each byte → 2 nibbles,

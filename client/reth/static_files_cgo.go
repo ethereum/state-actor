@@ -14,6 +14,8 @@ package reth
 //       static_file_{segment}_0_499999          — LZ4-compressed column data (NO extension)
 //       static_file_{segment}_0_499999.off      — offset table (1+n*8 bytes)
 //       static_file_{segment}_0_499999.conf     — bincode NippyJar<SegmentHeader>
+//   - Change-based segments (account/storage changesets) additionally produce:
+//       static_file_{segment}_0_499999.csoff    — 16-byte changeset offset records
 //
 //   - Data file: each column value is independently LZ4-compressed (raw block format,
 //     matching lz4_flex::block::compress — no size prefix). Columns are concatenated.
@@ -37,10 +39,16 @@ package reth
 //     See headerCompactBytes for a detailed layout derivation.
 //
 // Segments written:
-//   - headers:             3 columns, 1 row  (genesis header)
-//   - transactions:        1 column,  0 rows
-//   - receipts:            1 column,  0 rows
-//   - transaction-senders: 1 column,  0 rows
+//   - headers:              3 columns, 1 row  (genesis header)
+//   - transactions:         1 column,  0 rows
+//   - receipts:             1 column,  0 rows
+//   - transaction-senders:  1 column,  0 rows
+//   - account-change-sets:  1 column,  1 row  (empty bootstrap shell + .csoff)
+//   - storage-change-sets:  1 column,  1 row  (empty bootstrap shell + .csoff)
+//
+// The change-based shells are required for reth's persistence service to accept
+// block-1 appends; without them reth crashes at the first block with
+// UnexpectedStaticFileBlockNumber(AccountChangeSets, 1, 0).
 //
 // file naming: DEFAULT_BLOCKS_PER_STATIC_FILE = 500_000 so block 0 lives in
 // the range 0..=499999. The filename contains the segment string (kebab-case).
@@ -85,11 +93,21 @@ type staticFileSegment struct {
 }
 
 var (
-	segHeaders      = staticFileSegment{"headers", 0, 3}
-	segTransactions = staticFileSegment{"transactions", 1, 1}
-	segReceipts     = staticFileSegment{"receipts", 2, 1}
-	segTxSenders    = staticFileSegment{"transaction-senders", 3, 1}
+	segHeaders           = staticFileSegment{"headers", 0, 3}
+	segTransactions      = staticFileSegment{"transactions", 1, 1}
+	segReceipts          = staticFileSegment{"receipts", 2, 1}
+	segTxSenders         = staticFileSegment{"transaction-senders", 3, 1}
+	segAccountChangeSets = staticFileSegment{"account-change-sets", 4, 1}
+	segStorageChangeSets = staticFileSegment{"storage-change-sets", 5, 1}
 )
+
+// isChangeBased mirrors reth's StaticFileSegment::is_change_based
+// (crates/static-file/types/src/segment.rs). Change-based segments
+// (AccountChangeSets, StorageChangeSets) carry a 5th SegmentHeader field
+// (changeset_offsets_len) and a .csoff sidecar file.
+func (s staticFileSegment) isChangeBased() bool {
+	return s.enumIdx == 4 || s.enumIdx == 5
+}
 
 // WriteStaticFiles writes block-0 segments under <datadir>/static_files/.
 //
@@ -121,6 +139,17 @@ func WriteStaticFiles(datadir string, header *types.Header) error {
 	// 2–4. Empty tx/receipt/senders segments — 0 rows.
 	for _, seg := range []staticFileSegment{segTransactions, segReceipts, segTxSenders} {
 		if err := writeSegment(sfDir, seg, header, nil); err != nil {
+			return fmt.Errorf("WriteStaticFiles: %s: %w", seg.name, err)
+		}
+	}
+
+	// 5–6. Empty AccountChangeSets / StorageChangeSets bootstrap shells (1 row,
+	// empty content + .csoff). Reth's persistence service expects these
+	// segments at block_range=Some(0..=0) so block-1 appends pass
+	// writer.rs's check_next_block_number. Not history data — a
+	// minimum-viable shell, correct for both archive and full-node modes.
+	for _, seg := range []staticFileSegment{segAccountChangeSets, segStorageChangeSets} {
+		if err := writeSegment(sfDir, seg, header, [][]byte{nil}); err != nil {
 			return fmt.Errorf("WriteStaticFiles: %s: %w", seg.name, err)
 		}
 	}
@@ -186,12 +215,30 @@ func writeSegment(dir string, seg staticFileSegment, header *types.Header, colDa
 	}
 
 	// ---- .conf configuration file ---------------------------
-	confBytes, err := buildConfFile(seg, header, rows, uncompressedSize)
+	// changeset_offsets_len: 1 record (block 0 = empty changeset) for the change-based
+	// bootstrap shell; 0 / unused for non-change-based segments.
+	var changesetOffsetsLen uint64
+	if seg.isChangeBased() {
+		changesetOffsetsLen = 1
+	}
+	confBytes, err := buildConfFile(seg, header, rows, uncompressedSize, changesetOffsetsLen)
 	if err != nil {
 		return fmt.Errorf("build .conf: %w", err)
 	}
 	if err := os.WriteFile(base+".conf", confBytes, 0o644); err != nil {
 		return fmt.Errorf("write .conf: %w", err)
+	}
+
+	// ---- .csoff sidecar (change-based segments only) --------
+	// Fixed-width 16-byte records: [offset u64 LE | num_changes u64 LE]. For the
+	// block-0 bootstrap shell we write a single record of zeros: the changeset
+	// starts at offset 0 in the data file and contains 0 changes. Mirrors
+	// reth crates/static-file/types/src/changeset_offsets.rs (RECORD_SIZE=16).
+	if seg.isChangeBased() {
+		csoffBytes := make([]byte, 16) // single 16-byte zero record
+		if err := os.WriteFile(base+".csoff", csoffBytes, 0o644); err != nil {
+			return fmt.Errorf("write .csoff: %w", err)
+		}
 	}
 
 	return nil
@@ -257,12 +304,14 @@ func buildOffsetsFile(columns uint64, colData [][]byte) []byte {
 //
 // For non-empty segments: compressor = Some(Lz4) → [0x01, 0x01, 0x00, 0x00, 0x00].
 // For empty segments (rows=0): compressor = None → [0x00].
-func buildConfFile(seg staticFileSegment, header *types.Header, rows uint64, uncompressedSize uint64) ([]byte, error) {
+func buildConfFile(seg staticFileSegment, header *types.Header, rows uint64, uncompressedSize uint64, changesetOffsetsLen uint64) ([]byte, error) {
 	// --- SegmentHeader ---
 	// For headers: block_range=Some(0..=0), tx_range=None
 	// For tx/receipt/senders: block_range=Some(0..=0), tx_range=Some(0..=0)
 	//   (even with 0 rows, block_range=Some tells reth the segment covers block 0)
-	userHeaderBytes := buildSegmentHeaderBytes(seg)
+	// For change-based (account/storage changesets): block_range=Some(0..=0),
+	//   tx_range=None, plus a 5th changeset_offsets_len field.
+	userHeaderBytes := buildSegmentHeaderBytes(seg, changesetOffsetsLen)
 
 	// --- NippyJar ---
 	out := make([]byte, 0, 85+len(userHeaderBytes))
@@ -293,10 +342,14 @@ func buildConfFile(seg staticFileSegment, header *types.Header, rows uint64, unc
 //
 // All genesis segments use block_range=Some(0..=0) so that iter_static_files
 // finds them. Tx-based segments (transactions, receipts, senders) additionally
-// use tx_range=Some(0..=0).
+// use tx_range=Some(0..=0). Change-based segments (account/storage changesets)
+// have tx_range=None AND a 5th changeset_offsets_len:u64 field.
 //
 // The expected_block_range spans the full file slot: 0..=499_999.
-func buildSegmentHeaderBytes(seg staticFileSegment) []byte {
+//
+// changesetOffsetsLen is the record count in the matching .csoff sidecar;
+// for non-change-based segments it must be 0 and is not serialized.
+func buildSegmentHeaderBytes(seg staticFileSegment, changesetOffsetsLen uint64) []byte {
 	out := make([]byte, 0, 64)
 
 	// expected_block_range: 0..=499_999
@@ -308,9 +361,11 @@ func buildSegmentHeaderBytes(seg staticFileSegment) []byte {
 	out = appendLE64(out, 0) // start
 	out = appendLE64(out, 0) // end
 
-	// tx_range: None for headers (block-based), Some(0..=0) for tx-based
+	// tx_range: None for block-based (Headers) and change-based (AccountChangeSets,
+	// StorageChangeSets) per StaticFileSegment::is_tx_based. Some(0..=0) for the
+	// three tx-based segments (Transactions, Receipts, TransactionSenders).
 	switch seg.enumIdx {
-	case 0: // Headers — block based, no tx range
+	case 0, 4, 5: // Headers, AccountChangeSets, StorageChangeSets — no tx range
 		out = append(out, 0x00) // None
 	default: // Transactions, Receipts, TransactionSenders — tx-based
 		out = append(out, 0x01) // Some
@@ -320,6 +375,13 @@ func buildSegmentHeaderBytes(seg staticFileSegment) []byte {
 
 	// segment enum discriminant (u32 LE)
 	out = appendLE32(out, seg.enumIdx)
+
+	// changeset_offsets_len: 5th field, only for change-based segments. Reth's
+	// SegmentHeader Serialize impl (crates/static-file/types/src/segment.rs)
+	// uses len=5 when segment.is_change_based() and serialize_field("changeset_offsets", ...).
+	if seg.isChangeBased() {
+		out = appendLE64(out, changesetOffsetsLen)
+	}
 
 	return out
 }
@@ -377,43 +439,13 @@ func buildSegmentHeaderBytes(seg staticFileSegment) []byte {
 // 11. parent_beacon_block_root (Option<B256>): specialized_to_compact, writes B256 raw if Some.
 //
 //  12. extra_fields (Option<HeaderExt>): when Some (Prague-active genesis).
-//     Option<HeaderExt> uses reth's NON-specialized Compact encoding —
-//     unlike the four sibling Option fields above (withdrawals_root /
-//     base_fee_per_gas / blob_gas_used / excess_blob_gas /
-//     parent_beacon_block_root) which use specialized_to_compact and
-//     emit raw bytes only. The non-specialized form
-//     (reth-codecs-0.3.1 lib.rs:302-322 Option<T>::to_compact) writes:
-//
-//     varuint(N) || HeaderExt_bytes      (N = len(HeaderExt_bytes))
-//
-//     HeaderExt is itself Compact-derived with three optional fields
-//     (requests_hash, block_access_list_hash, slot_number) and a 1-byte
-//     inner bitflag (HeaderExt::bitflag_encoded_bytes() == 1, per
-//     reth-codecs-0.3.1 alloy/header.rs:191):
-//
-//     - inner_bitflag bit 0 = requests_hash presence
-//     - inner_bitflag bit 1 = block_access_list_hash presence
-//     - inner_bitflag bit 2 = slot_number presence
-//     - then, in declaration order:
-//     requests_hash         (Option<B256>, specialized — 32 bytes raw)
-//     block_access_list_hash (Option<B256>, specialized — 32 bytes raw)
-//     slot_number           (Option<u64>,  varuint(len) + BE bytes)
-//
-//     For Prague-active genesis genesisheader.Build sets only RequestsHash,
-//     so the inner HeaderExt is 33 bytes (0x01 + 32-byte B256). varuint(33)
-//     is a single byte 0x21 — total per-field 34 bytes appended.
-//
-//     This is REQUIRED for reth's RPC layer to decode the genesis header
-//     correctly. Omitting the entire HeaderExt produced "block not found"
-//     for every eth_call against block "0x0" — the col-2 sidecar and
-//     HeaderNumbers entry reference the full-RLP header hash (RequestsHash
-//     included), and reth's decoder recomputes the keccak from the
-//     static-file bytes; without RequestsHash in the stream that recompute
-//     landed on a different hash than HeaderNumbers indexes by. Omitting
-//     the varuint prefix (a previous attempt) caused
-//     Option<HeaderExt>::from_compact to misread the inner bitflag as
-//     varuint(N), then run off the end of buf inside `Compact for [u8;N]`
-//     at lib.rs:448:20.
+//     Uses the NON-specialized Option<T> form (reth-codecs-0.3.1
+//     lib.rs): `varuint(N) || HeaderExt_bytes`. HeaderExt is itself
+//     Compact-derived with three optional fields (requests_hash,
+//     block_access_list_hash, slot_number) prefixed by a 1-byte inner
+//     bitflag (bits 0/1/2 = presence). For Prague-active genesis only
+//     RequestsHash is set, so inner = 0x01 || 32-byte B256 (33 bytes),
+//     varuint(33) = 0x21 → 34 bytes appended.
 //
 // 13. extra_data (Bytes): written verbatim (last field, length = buf.len() - consumed).
 //
@@ -526,18 +558,8 @@ func headerCompactBytes(h *types.Header) ([]byte, error) {
 	}
 
 	// 12. extra_fields = Some(HeaderExt{requests_hash: Some(B256)}) when
-	//     Prague is active.
-	//     Option<HeaderExt> is the first NON-specialized Option in the
-	//     parent Header struct, so reth-codecs-0.3.1 Option<T>::to_compact
-	//     (lib.rs:302-322) prefixes the inner bytes with varuint(len).
-	//     Specialized Option<B256> / Option<u64> elsewhere in this header
-	//     have NO length prefix — only the generic Compact-derived struct
-	//     case does. Omitting the prefix mis-aligns reth's decoder and
-	//     panics at lib.rs:448:20 (Compact for [u8;N]).
-	//
-	//     For a Prague-active genesis we only set requests_hash, so the
-	//     inner HeaderExt is 33 bytes (1-byte bitflag = 0x01 + 32-byte
-	//     B256) and varuint(33) is a single byte 0x21 — total 34 bytes.
+	//     Prague is active. Non-specialized Option<T> form: varuint(len) ||
+	//     inner. See doc-comment header for the wire-format rationale.
 	if hasExtraFields {
 		var inner []byte
 		inner = append(inner, 0x01) // bitflag: requests_hash = Some
@@ -577,6 +599,12 @@ func tdCompactBytes() []byte {
 // With a CompressBlockBound-sized destination buffer, compression always succeeds
 // (n > 0) regardless of input incompressibility.
 func lz4CompressBlock(src []byte) ([]byte, error) {
+	// Empty input → empty output. Matches lz4_flex::block::compress (Vec::new() in,
+	// Vec::new() out) and the writer path that reth's append_account_changeset
+	// (Vec::new(), 0) exercises when appending an empty block-0 changeset row.
+	if len(src) == 0 {
+		return nil, nil
+	}
 	bound := lz4.CompressBlockBound(len(src))
 	dst := make([]byte, bound)
 	var c lz4.Compressor
@@ -585,7 +613,7 @@ func lz4CompressBlock(src []byte) ([]byte, error) {
 		return nil, err
 	}
 	if n == 0 {
-		// Should never happen with a CompressBlockBound-sized buffer, but guard anyway.
+		// Should never happen with a CompressBlockBound-sized buffer for non-empty src.
 		return nil, fmt.Errorf("lz4CompressBlock: unexpected n=0 for src len=%d", len(src))
 	}
 	return dst[:n], nil

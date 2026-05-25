@@ -8,19 +8,28 @@
 //
 //	stats, err := reth.RunCgo(ctx, cfg, reth.Options{})
 //
-// RunCgo writes the on-disk artifacts reth boot validates:
+// RunCgo writes the on-disk artifacts reth boot validates. The datadir is a
+// v2 layout (Metadata.storage_settings = {"storage_v2":true}):
 //
-//   - <datadir>/db/mdbx.dat — MDBX env with all named DBIs
-//     (PlainAccountState, HashedAccounts, AccountChangeSets,
-//     AccountsHistory, PlainStorageState, HashedStorages,
-//     StorageChangeSets, StoragesHistory, Bytecodes, plus 15 metadata
-//     tables incl. StageCheckpoints/Metadata/HeaderNumbers/etc.)
+//   - <datadir>/db/mdbx.dat — MDBX env. Canonical state lives in
+//     HashedAccounts + HashedStorages; Plain* tables are declared but
+//     empty under storage_v2. Trie + changeset + metadata tables
+//     (AccountsTrie, StoragesTrie, AccountChangeSets, StorageChangeSets,
+//     Bytecodes, StageCheckpoints, HeaderNumbers, BlockBodyIndices,
+//     PruneCheckpoints, etc.) stay MDBX-resident.
 //   - <datadir>/db/database.version — schema version sentinel ("2")
-//   - <datadir>/rocksdb/* — RocksDB env with v2 history-table column
-//     families
-//   - <datadir>/static_files/{headers,transactions,receipts,
-//     transaction-senders}/static_file_*_0_499999.{conf,sf,off} — block-0
-//     segment files in the nippy-jar format
+//   - <datadir>/rocksdb/* — RocksDB env with the v2 history CFs
+//     (AccountsHistory + StoragesHistory + TransactionHashNumbers + the
+//     default CF). The two history CFs receive writes under
+//     cfg.Archive=true; default-mode runs leave them empty (PruneCheckpoint
+//     markers tell reth's read path "history pruned before block 1",
+//     routing historical-tag queries through HashedAccounts).
+//   - <datadir>/static_files/static_file_<segment>_0_499999 (no extension)
+//     + .conf + .off (+ .csoff for change-based segments) — block-0
+//     nippy-jar segment files for headers, transactions, receipts,
+//     transaction-senders, account-change-sets, storage-change-sets. The
+//     two change-based segments are required as empty bootstrap shells so
+//     reth's persistence service can append block 1 cleanly.
 //   - <datadir>/chainspec.json — sidecar reth boot revalidates
 //
 // The state root in the genesis header is computed from the generated
@@ -59,9 +68,9 @@
 // # Build tag gating
 //
 // The cgo path lives behind `//go:build cgo_reth`. Without that tag,
-// RunCgo returns errNotImplemented pointing at Dockerfile.reth (see
-// run_stub.go). Local Go builds without libmdbx + librocksdb headers
-// remain compilable but cannot exercise the cgo path.
+// RunCgo returns runCgoNotAvailableError pointing at Dockerfile.reth
+// (see run_stub.go). Local Go builds without libmdbx + librocksdb
+// headers remain compilable but cannot exercise the cgo path.
 //
 // # Validation
 //
@@ -84,7 +93,7 @@
 //   - sidecars.go: database.version writer
 //   - state_root.go / storage_root.go: HashBuilder-driven state-root
 //     computation (sliced + streaming variants)
-//   - temp_sort_cgo.go: Pebble-backed temp sorter for streaming Phase 4
+//   - internal/streamsort: Pebble-backed temp sorter for streaming Phase 4
 //   - chainspec.go: chainspec JSON writer (built from cfg.Genesis)
 //   - header.go: genesis header construction
 //   - options.go: Options struct (reserved); buildAllocAccounts helper

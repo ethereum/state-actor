@@ -13,37 +13,32 @@ import (
 	iReth "github.com/nerolation/state-actor/internal/reth"
 )
 
-// WriteMetadata populates the minimum-boot MDBX metadata into envs.
-// header is the genesis header (block 0). chainID is reth's chain ID.
-// archive controls whether to write PruneCheckpoint markers (see below).
+// WriteMetadata populates the minimum-boot MDBX metadata into envs in a
+// single atomic transaction. header must be the genesis header (block 0);
+// archive controls whether to write PruneCheckpoint markers.
 //
-// Writes the following tables in a single atomic transaction:
-//   - Metadata.storage_v2 = Compact-encoded StorageSettings{storage_v2: true}
-//     (1-byte bitflag header with the single bit set = 0x01).
-//   - StageCheckpoints: one entry per stage in iReth.StageIDsAll (15 entries),
-//     Compact-encoded StageCheckpoint{BlockNumber: 0}.
+// Tables written:
+//   - Metadata.storage_settings = SCALE-prefixed JSON `{"storage_v2":true}`
+//     (selects reth's v2 reader/writer surface).
+//   - StageCheckpoints: one entry per stage in iReth.StageIDsAll (15 entries).
 //   - HeaderNumbers: header.Hash() → BE u64(0).
 //   - BlockBodyIndices: BE u64(0) → Compact StoredBlockBodyIndices{0, 0}.
-//   - PruneCheckpoints (NON-ARCHIVE ONLY): two rows for AccountHistory +
-//     StorageHistory with block_number=Some(0), prune_mode=Before(1).
-//     Triggers reth's HistoricalStateProvider.MaybeInPlainState branch
-//     (historical.rs:861-867) so eth_getBalance on genesis accounts reads
-//     PlainAccountState directly instead of returning NotYetWritten when
-//     history-index tables are empty in non-archive mode.
+//   - PruneCheckpoints (NON-ARCHIVE ONLY): AccountHistory + StorageHistory
+//     rows with block_number=Some(0), prune_mode=Before(1). Tells reth's
+//     read path "history pruned before block 1" so historical-tag queries
+//     route through HashedAccounts/HashedStorages instead of returning
+//     NotYetWritten when the RocksDB history CFs are empty.
 //
-// VersionHistory is intentionally NOT written here. Reth's init_db writes its
-// own ClientVersion entry keyed by the current Unix timestamp on every boot.
-// ChainState is left empty; reth populates it lazily on finality.
-//
-// NOTE: the Number=0 guard below is a forward-compatibility trap. If a future
-// caller switches to a non-genesis header, this guard must be relaxed.
-func WriteMetadata(envs *Envs, header *types.Header, chainID uint64, archive bool) error {
+// VersionHistory is intentionally NOT written — reth's init_db writes its
+// own ClientVersion on every boot. ChainState is left empty; reth populates
+// it lazily on finality.
+func WriteMetadata(envs *Envs, header *types.Header, archive bool) error {
 	if header.Number.Sign() != 0 {
 		return fmt.Errorf("WriteMetadata: header must be block 0, got %s", header.Number)
 	}
 	return envs.Mdbx.Update(func(txn *mdbx.Txn) error {
-		if err := writeStorageV2Flag(txn, envs.MdbxDBIs["Metadata"]); err != nil {
-			return fmt.Errorf("Metadata.storage_v2: %w", err)
+		if err := writeStorageSettings(txn, envs.MdbxDBIs["Metadata"]); err != nil {
+			return fmt.Errorf("Metadata.storage_settings: %w", err)
 		}
 		if err := writeStageCheckpoints(txn, envs.MdbxDBIs["StageCheckpoints"], 0); err != nil {
 			return fmt.Errorf("StageCheckpoints: %w", err)
@@ -63,19 +58,12 @@ func WriteMetadata(envs *Envs, header *types.Header, chainID uint64, archive boo
 	})
 }
 
-// writePruneCheckpoints writes the two non-archive-mode PruneCheckpoint rows
-// for AccountHistory and StorageHistory. Together they trigger reth's
-// MaybeInPlainState read-path fallback (see WriteMetadata doc).
-//
-// Both rows use the same value: PruneCheckpoint{
-//
-//	block_number: Some(0),
-//	tx_number:    None,
-//	prune_mode:   PruneMode::Before(1),
-//
-// }. The block_number-is-Some bit is what flips reth's history_info() from
-// NotYetWritten to MaybeInPlainState; the prune_mode value is informational
-// (mirrors what reth's own pruner would write after a single run).
+// writePruneCheckpoints writes non-archive-mode PruneCheckpoint rows for
+// AccountHistory + StorageHistory. Both rows use the same value:
+// {block_number: Some(0), tx_number: None, prune_mode: Before(1)}. The
+// block_number-is-Some bit tells reth's read path "history pruned before
+// block 1" so historical-tag queries route through Hashed* state instead of
+// returning NotYetWritten.
 func writePruneCheckpoints(txn *mdbx.Txn, dbi mdbx.DBI) error {
 	ckpt := iReth.PruneCheckpoint{
 		BlockNumber: iReth.U64Ptr(0),
@@ -95,13 +83,28 @@ func writePruneCheckpoints(txn *mdbx.Txn, dbi mdbx.DBI) error {
 	return nil
 }
 
-// writeStorageV2Flag puts Compact-encoded StorageSettings{storage_v2: true}
-// (single byte 0x01) under the key "storage_v2" in the Metadata table.
+// writeStorageSettings puts a SCALE-wrapped JSON storage_settings row into
+// the Metadata table.
 //
-// StorageSettings has one bool field. Compact derives a 1-bit bitflag header
-// (padded to 1 byte). storage_v2=true sets that bit → 0x01.
-func writeStorageV2Flag(txn *mdbx.Txn, dbi mdbx.DBI) error {
-	return txn.Put(dbi, []byte("storage_v2"), []byte{0x01}, 0)
+// Wire: `outer_len_prefix[1 byte] || inner_json[19 bytes]`.
+//
+// Reth's Metadata table value type is Vec<u8> with a SCALE Decompress impl
+// (reth-codecs-0.3.1/src/compress/scale.rs). For inner lengths 0-63 the
+// SCALE compact-length prefix is a single byte = (len << 2). Reth's trait
+// reader (storage-api/src/metadata.rs) then serde-decodes the inner
+// bytes as StorageSettings. Our payload is 19 bytes (`{"storage_v2":true}`)
+// so the prefix is 0x4C.
+func writeStorageSettings(txn *mdbx.Txn, dbi mdbx.DBI) error {
+	inner := []byte(`{"storage_v2":true}`)
+	if len(inner) > 63 {
+		// Defensive: switch to 2-byte SCALE prefix if the JSON ever grows.
+		// Today's payload is 19 bytes — well under the single-byte cap.
+		return fmt.Errorf("storage_settings JSON length %d > 63; needs 2-byte SCALE prefix encoder", len(inner))
+	}
+	value := make([]byte, 0, 1+len(inner))
+	value = append(value, byte(len(inner)<<2)) // SCALE single-byte compact-length prefix.
+	value = append(value, inner...)
+	return txn.Put(dbi, []byte("storage_settings"), value, 0)
 }
 
 // writeStageCheckpoints writes one StageCheckpoint{BlockNumber: blockNum}

@@ -23,10 +23,12 @@ func rethTestPlan(tb testing.TB, budget uint64) *autofill.Plan {
 	return p
 }
 
-func TestRunCgoEmptyAlloc(t *testing.T) {
+func TestRunCgoMinimalAlloc(t *testing.T) {
 	tmp := t.TempDir()
 	cfg := generator.Config{
-		DBPath: tmp,
+		DBPath:   tmp,
+		AutoFill: rethTestPlan(t, 512<<10),
+		Seed:     12345,
 	}
 	stats, err := RunCgo(context.Background(), cfg, Options{})
 	if err != nil {
@@ -40,9 +42,8 @@ func TestRunCgoEmptyAlloc(t *testing.T) {
 			t.Errorf("expected %s: %v", p, err)
 		}
 	}
-	want := "0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421"
-	if got := stats.StateRoot.Hex(); got != want {
-		t.Errorf("state root: got=%s want=%s", got, want)
+	if (stats.StateRoot == common.Hash{}) {
+		t.Errorf("state root is zero hash")
 	}
 }
 

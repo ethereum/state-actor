@@ -4,6 +4,7 @@ package reth
 
 import (
 	"bytes"
+	"encoding/json"
 	"math/big"
 	"testing"
 
@@ -34,21 +35,25 @@ func TestWriteMetadataAllTables(t *testing.T) {
 			header := &types.Header{
 				Number: big.NewInt(0),
 			}
-			chainID := uint64(1337)
 
-			if err := WriteMetadata(envs, header, chainID, tc.archive); err != nil {
+			if err := WriteMetadata(envs, header, tc.archive); err != nil {
 				t.Fatalf("WriteMetadata: %v", err)
 			}
 
-			// Verify Metadata.storage_v2
+			// Verify Metadata.storage_settings — key matches reth's
+			// STORAGE_SETTINGS const; value is SCALE-prefixed JSON.
+			// 0x4C = (19 << 2) is the SCALE single-byte compact-length
+			// prefix for the 19-byte JSON payload {"storage_v2":true}.
+			// See writeStorageSettings doc comment for the full wire-
+			// format rationale.
 			if err := envs.Mdbx.View(func(txn *mdbx.Txn) error {
-				val, err := txn.Get(envs.MdbxDBIs["Metadata"], []byte("storage_v2"))
+				val, err := txn.Get(envs.MdbxDBIs["Metadata"], []byte("storage_settings"))
 				if err != nil {
 					return err
 				}
-				// Compact bool true = 1-byte 0x01 (1-bit bitflag header).
-				if !bytes.Equal(val, []byte{0x01}) {
-					t.Errorf("Metadata[storage_v2] = %x, want 01", val)
+				want := append([]byte{0x4C}, []byte(`{"storage_v2":true}`)...)
+				if !bytes.Equal(val, want) {
+					t.Errorf("Metadata[storage_settings] = %x, want %x", val, want)
 				}
 				return nil
 			}); err != nil {
@@ -144,5 +149,59 @@ func TestWriteMetadataAllTables(t *testing.T) {
 
 			// NOTE: VersionHistory is intentionally NOT written by WriteMetadata.
 		})
+	}
+}
+
+// TestWriteMetadata_StorageSettingsSCALEWrappedJSON pins the byte-level
+// wire format reth actually reads: SCALE compact-length-prefixed JSON
+// (NOT raw Compact bitflag, NOT raw JSON).
+//
+// Byte 0 is (inner_len << 2) for inner_len ∈ [0, 63] (parity_scale_codec
+// single-byte compact mode). Bytes 1..end are the serde JSON serialization
+// of reth's StorageSettings struct. If reth bumps the wire format this
+// test fails without needing to spin docker.
+func TestWriteMetadata_StorageSettingsSCALEWrappedJSON(t *testing.T) {
+	tmp := t.TempDir()
+	envs, err := OpenEnvs(tmp, true)
+	if err != nil {
+		t.Fatalf("OpenEnvs: %v", err)
+	}
+	defer envs.Close()
+
+	header := &types.Header{Number: big.NewInt(0)}
+	if err := WriteMetadata(envs, header, true); err != nil {
+		t.Fatalf("WriteMetadata: %v", err)
+	}
+
+	if err := envs.Mdbx.View(func(txn *mdbx.Txn) error {
+		val, err := txn.Get(envs.MdbxDBIs["Metadata"], []byte("storage_settings"))
+		if err != nil {
+			return err
+		}
+		if len(val) < 2 {
+			t.Fatalf("Metadata[storage_settings] = %x (%d bytes); want >= 2 (SCALE prefix + JSON)", val, len(val))
+		}
+		// SCALE single-byte mode: low 2 bits == 0, upper 6 bits = length.
+		if val[0]&0b11 != 0 {
+			t.Errorf("SCALE prefix %#x: low 2 bits = %#b, want 0b00 (single-byte mode)", val[0], val[0]&0b11)
+		}
+		innerLen := int(val[0] >> 2)
+		if innerLen != len(val)-1 {
+			t.Errorf("SCALE prefix says inner_len=%d, actual remaining bytes = %d", innerLen, len(val)-1)
+		}
+		// Decode inner JSON via encoding/json — matches what reth's
+		// serde_json::from_slice does after SCALE-decoding the outer Vec<u8>.
+		var got struct {
+			StorageV2 bool `json:"storage_v2"`
+		}
+		if err := json.Unmarshal(val[1:], &got); err != nil {
+			t.Errorf("inner JSON parse failed: %v (bytes = %s)", err, val[1:])
+		}
+		if !got.StorageV2 {
+			t.Errorf("decoded storage_v2 = false, want true")
+		}
+		return nil
+	}); err != nil {
+		t.Errorf("read Metadata[storage_settings]: %v", err)
 	}
 }

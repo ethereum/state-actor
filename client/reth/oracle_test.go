@@ -67,7 +67,7 @@ func TestRethDbStats(t *testing.T) {
 	dd, cleanup := e2e.AcquireDatadir(t, "RETH")
 	defer cleanup()
 
-	cfg := generator.Config{DBPath: dd.HostPath}
+	cfg := generator.Config{DBPath: dd.HostPath, AutoFill: rethTestPlan(t, 512<<10), Seed: 12345}
 	if _, err := RunCgo(context.Background(), cfg, Options{}); err != nil {
 		t.Fatalf("RunCgo: %v", err)
 	}
@@ -83,7 +83,8 @@ func TestRethDbStats(t *testing.T) {
 		t.Fatalf("reth db stats failed:\noutput:\n%s\nerr: %v", out, err)
 	}
 	output := string(out)
-	for _, table := range []string{"PlainAccountState", "HashedAccounts", "Bytecodes"} {
+	// HashedAccounts + Bytecodes are the v2-canonical existence signals.
+	for _, table := range []string{"HashedAccounts", "Bytecodes"} {
 		if !strings.Contains(output, table) {
 			t.Errorf("expected table %q in db stats output, got:\n%s", table, output)
 		}
@@ -124,10 +125,12 @@ func TestRethDbStatsSyntheticEOAs(t *testing.T) {
 		t.Fatalf("reth db stats failed:\noutput:\n%s\nerr: %v", out, err)
 	}
 	output := string(out)
+	// Under v2: PlainAccountState is empty (drop from checks). AccountsHistory
+	// has moved to a RocksDB column family which `reth db stats` does NOT
+	// enumerate as an MDBX table — also drop. HashedAccounts (canonical v2
+	// state) and AccountChangeSets (still MDBX in archive mode) remain.
 	checks := map[string]int{
-		"PlainAccountState": plan.NumEOAs,
 		"HashedAccounts":    plan.NumEOAs,
-		"AccountsHistory":   plan.NumEOAs,
 		"AccountChangeSets": plan.NumEOAs,
 	}
 	for table, minEntries := range checks {
@@ -155,7 +158,7 @@ func TestRethNodeBootEmptyAlloc(t *testing.T) {
 	dd, cleanup := e2e.AcquireDatadir(t, "RETH")
 	defer cleanup()
 
-	cfg := generator.Config{DBPath: dd.HostPath} // empty alloc
+	cfg := generator.Config{DBPath: dd.HostPath, AutoFill: rethTestPlan(t, 512<<10), Seed: 12345}
 	if _, err := RunCgo(context.Background(), cfg, Options{}); err != nil {
 		t.Fatalf("RunCgo: %v", err)
 	}
@@ -246,9 +249,9 @@ func TestE2ESuite(t *testing.T) {
 		TargetSize: e2eBudget,
 		Genesis:    g,
 	}
-	// Spec-driven pre-alloc via examples/full-matrix-spec-feature.yaml exercises
-	// every schema variant (including the spamoor sender). The Spec is
-	// also passed to RunSuitePhases for the Phase 4 erc20 oracle.
+	// Spec-driven pre-alloc via examples/full-matrix-spec-feature.yaml
+	// exercises every schema variant (including the spamoor sender). The
+	// Spec is also passed to RunSuitePhases for the Phase 4 erc20 oracle.
 	specDoc, preAlloc := e2e.LoadCISpec(t, "../../examples/full-matrix-spec-feature.yaml", "reth")
 	cfg.PreAlloc = preAlloc
 	// Deploy EIP-4788/2935/7002/7251 system contracts at their canonical

@@ -176,13 +176,10 @@ func RunCgo(ctx context.Context, cfg generator.Config, opts Options) (*generator
 	}
 
 	if accountsCreated+contractsCreated > 0 {
-		// Wrap state-root computation in an MDBX write txn so per-branch
-		// emissions populate AccountsTrie; without it, reth's payload builder
-		// falls back to a linear HashedAccounts walk per block. cursor.Put
-		// (flag=0) accepts any key order: HashBuilder emissions arrive in
-		// descending-depth order during unwinds, and the variable-length
-		// AccountsTrie key layout means shallow paths sort smaller than
-		// deeper ones — cursor.Append would silently drop shallow rows.
+		// Persist HashBuilder trie-node emissions into AccountsTrie alongside
+		// state-root computation so reth's payload builder finds them on
+		// boot. Keys use the 33-byte PackedStoredNibbles form (reth v2);
+		// cursor.Put is correct regardless of emission order.
 		var root common.Hash
 		err := envs.Mdbx.Update(func(txn *mdbx.Txn) error {
 			cur, cerr := txn.OpenCursor(envs.MdbxDBIs["AccountsTrie"])
@@ -190,18 +187,15 @@ func RunCgo(ctx context.Context, cfg generator.Config, opts Options) (*generator
 				return fmt.Errorf("open AccountsTrie cursor: %w", cerr)
 			}
 			defer cur.Close()
-			// AccountsTrie key uses the VARIABLE-length StoredNibbles
-			// encoding (path.Nibbles[:path.Length], 0..=64 bytes, no
-			// padding, no length suffix). This matches reth's
-			// tables::AccountsTrie Key = StoredNibbles where
-			// Encode::Encoded = ArrayVec<u8, 64> (see
-			// reth/crates/storage/db-api/src/models/mod.rs:121-127).
-			// Using the fixed 65-byte form (path.EncodeKey) would
-			// produce keys reth misreads as 65-NIBBLE paths and the
-			// walker eventually SIGSEGVs at block-time.
 			emit := func(path iReth.StoredNibbles, node iReth.BranchNodeCompact) error {
+				if path.Length == 0 {
+					// Skip root branch — reth's writer never caches it
+					// (provider.rs `if !key.is_empty()`). See
+					// TestNoRootCacheRows for the proof_v2 panic rationale.
+					return nil
+				}
 				var keyBuf, valBuf bytes.Buffer
-				path.EncodeAccountKey(&keyBuf)
+				path.EncodePackedAccountKey(&keyBuf)
 				node.EncodeCompact(&valBuf)
 				return cur.Put(keyBuf.Bytes(), valBuf.Bytes(), 0)
 			}
@@ -224,7 +218,6 @@ func RunCgo(ctx context.Context, cfg generator.Config, opts Options) (*generator
 	}
 
 	gen := genesis.OrDefault(cfg.Genesis)
-	chainID := gen.Config.ChainID.Int64()
 
 	chainspecPath := filepath.Join(cfg.DBPath, "chainspec.json")
 	if err := writeChainSpec(gen, chainspecPath); err != nil {
@@ -237,7 +230,7 @@ func RunCgo(ctx context.Context, cfg generator.Config, opts Options) (*generator
 	}
 	header.Root = stateRoot
 
-	if err := WriteMetadata(envs, header, uint64(chainID), cfg.Archive); err != nil {
+	if err := WriteMetadata(envs, header, cfg.Archive); err != nil {
 		return nil, fmt.Errorf("RunCgo: WriteMetadata: %w", err)
 	}
 

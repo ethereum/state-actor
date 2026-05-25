@@ -95,14 +95,18 @@ func TestWriteStaticFilesGenesis(t *testing.T) {
 
 	// --- verify all expected files exist ---
 	// Data file has NO extension; .off and .conf retain extensions.
+	// Change-based segments additionally have a .csoff sidecar.
 	segments := []struct {
-		name    string
-		columns uint64
+		name        string
+		columns     uint64
+		changeBased bool
 	}{
-		{"headers", 3},
-		{"transactions", 1},
-		{"receipts", 1},
-		{"transaction-senders", 1},
+		{"headers", 3, false},
+		{"transactions", 1, false},
+		{"receipts", 1, false},
+		{"transaction-senders", 1, false},
+		{"account-change-sets", 1, true},
+		{"storage-change-sets", 1, true},
 	}
 
 	for _, seg := range segments {
@@ -114,6 +118,11 @@ func TestWriteStaticFilesGenesis(t *testing.T) {
 		for _, ext := range []string{".off", ".conf"} {
 			if _, err := os.Stat(base + ext); err != nil {
 				t.Errorf("missing %s%s: %v", staticFileName(seg.name), ext, err)
+			}
+		}
+		if seg.changeBased {
+			if _, err := os.Stat(base + ".csoff"); err != nil {
+				t.Errorf("missing %s.csoff: %v", staticFileName(seg.name), err)
 			}
 		}
 	}
@@ -337,7 +346,7 @@ func TestHeaderCompactBytesGenesis(t *testing.T) {
 
 // TestHeaderCompactBytesPragueExtraFields verifies that a Prague-active
 // header (RequestsHash set) emits the Option<HeaderExt> wire-form at the
-// tail per reth-codecs-0.3.1 (lib.rs:302-322 Option<T>::to_compact for
+// tail per reth-codecs-0.3.1 (lib.rs Option<T>::to_compact for
 // the non-specialized branch):
 //
 //   - bit 31 of the LE bitfield (byte 3, bit 7) is set
@@ -350,7 +359,7 @@ func TestHeaderCompactBytesGenesis(t *testing.T) {
 // a custom (non-specialized) Compact-derived struct — specialized Options
 // (Option<B256>, Option<u64>) elsewhere in the parent header skip it.
 // Omitting the prefix mis-aligns reth's decoder and panics in
-// `Compact for [u8;N]::from_compact` at lib.rs:448:20.
+// `Compact for [u8;N]::from_compact` at lib.rs.
 func TestHeaderCompactBytesPragueExtraFields(t *testing.T) {
 	// Build the minimal genesis header from TestHeaderCompactBytesGenesis,
 	// then add the Prague RequestsHash. Compare lengths and byte structure.
@@ -468,11 +477,11 @@ func TestTdCompactBytes(t *testing.T) {
 
 // TestBuildSegmentHeaderBytesHeaders checks that headers SegmentHeader uses tx_range=None.
 func TestBuildSegmentHeaderBytesHeaders(t *testing.T) {
-	b := buildSegmentHeaderBytes(segHeaders)
+	b := buildSegmentHeaderBytes(segHeaders, 0)
 
 	// expected_block_range: start=0 (8 LE), end=499999 (8 LE) = 16 bytes
 	// block_range: Some (0x01) + start=0 (8) + end=0 (8) = 17 bytes
-	// tx_range: None (0x01)  — actually 0x00 for None
+	// tx_range: None (0x00) = 1 byte
 	// segment: 0 (4 LE)
 	// Total = 16 + 17 + 1 + 4 = 38 bytes
 	const wantLen = 38
@@ -495,7 +504,7 @@ func TestBuildSegmentHeaderBytesHeaders(t *testing.T) {
 
 // TestBuildSegmentHeaderBytesTransactions checks that transactions SegmentHeader uses tx_range=Some.
 func TestBuildSegmentHeaderBytesTransactions(t *testing.T) {
-	b := buildSegmentHeaderBytes(segTransactions)
+	b := buildSegmentHeaderBytes(segTransactions, 0)
 
 	// expected_block_range(16) + Some(1)+block_range(16) + Some(1)+tx_range(16) + u32(4)
 	const wantLen = 16 + 17 + 17 + 4
@@ -513,6 +522,175 @@ func TestBuildSegmentHeaderBytesTransactions(t *testing.T) {
 	segDiscr := binary.LittleEndian.Uint32(b[len(b)-4:])
 	if segDiscr != 1 {
 		t.Errorf("segment discriminant = %d, want 1 (Transactions)", segDiscr)
+	}
+}
+
+// TestBuildSegmentHeaderBytesChangesets verifies the 5-field SegmentHeader
+// layout for change-based segments (AccountChangeSets, StorageChangeSets):
+// expected_block_range(16) + Some(block_range)(17) + None(tx_range)(1)
+// + segment_u32(4) + changeset_offsets_len_u64(8) = 46 bytes.
+func TestBuildSegmentHeaderBytesChangesets(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		seg     staticFileSegment
+		wantDis uint32
+	}{
+		{"account-change-sets", segAccountChangeSets, 4},
+		{"storage-change-sets", segStorageChangeSets, 5},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			b := buildSegmentHeaderBytes(tc.seg, 1)
+
+			// expected_block_range(16) + Some(1)+block_range(16) + None(1) + u32(4) + u64(8)
+			const wantLen = 16 + 17 + 1 + 4 + 8
+			if len(b) != wantLen {
+				t.Fatalf("len = %d, want %d", len(b), wantLen)
+			}
+
+			// tx_range presence byte at offset 33 must be 0x00 (None).
+			if got := b[16+1+16]; got != 0x00 {
+				t.Errorf("tx_range byte = %#x, want 0x00 (None) for change-based segment", got)
+			}
+
+			// segment discriminant occupies bytes 34..38.
+			segDiscr := binary.LittleEndian.Uint32(b[34:38])
+			if segDiscr != tc.wantDis {
+				t.Errorf("segment discriminant = %d, want %d", segDiscr, tc.wantDis)
+			}
+
+			// changeset_offsets_len occupies the trailing 8 bytes; we passed 1.
+			csOffLen := binary.LittleEndian.Uint64(b[38:46])
+			if csOffLen != 1 {
+				t.Errorf("changeset_offsets_len = %d, want 1", csOffLen)
+			}
+		})
+	}
+}
+
+// TestWriteStaticFilesChangesetShells verifies the empty bootstrap shell for
+// AccountChangeSets and StorageChangeSets — exactly what reth's persistence
+// service expects to find at boot so it can append block 1 cleanly.
+//
+// Each shell consists of:
+//   - data file: 0 bytes (1 row, empty content — LZ4 of empty = empty)
+//   - .off:      17 bytes ([8, 0×8 (row-0 start), 0×8 (row-0 end = empty)])
+//   - .conf:     5-field SegmentHeader with changeset_offsets_len=1, rows=1,
+//     columns=1, compressor=Some(Lz4), max_row_size=0
+//   - .csoff:    16 bytes (single record [offset=0, num_changes=0])
+func TestWriteStaticFilesChangesetShells(t *testing.T) {
+	tmp := t.TempDir()
+	header := makeGenesisHeader()
+	if err := WriteStaticFiles(tmp, header); err != nil {
+		t.Fatalf("WriteStaticFiles: %v", err)
+	}
+	sfDir := filepath.Join(tmp, staticFilesDir)
+
+	for _, tc := range []struct {
+		segName string
+		segDis  uint32
+	}{
+		{"account-change-sets", 4},
+		{"storage-change-sets", 5},
+	} {
+		t.Run(tc.segName, func(t *testing.T) {
+			base := filepath.Join(sfDir, staticFileName(tc.segName))
+
+			// Data file: 0 bytes (empty content for the single row).
+			dataInfo, err := os.Stat(base)
+			if err != nil {
+				t.Fatalf("data file stat: %v", err)
+			}
+			if dataInfo.Size() != 0 {
+				t.Errorf("data file size = %d, want 0", dataInfo.Size())
+			}
+
+			// .off: 17 bytes. byte 0 = 8 (offset_size). bytes 1..9 = row-0 start = 0.
+			// bytes 9..17 = end-of-row-0 = 0 (empty).
+			offBytes, err := os.ReadFile(base + ".off")
+			if err != nil {
+				t.Fatalf(".off read: %v", err)
+			}
+			if len(offBytes) != 17 {
+				t.Errorf(".off len = %d, want 17", len(offBytes))
+			}
+			if offBytes[0] != 8 {
+				t.Errorf(".off[0] = %d, want 8", offBytes[0])
+			}
+			if got := binary.LittleEndian.Uint64(offBytes[1:9]); got != 0 {
+				t.Errorf(".off row-0 start = %d, want 0", got)
+			}
+			if got := binary.LittleEndian.Uint64(offBytes[9:17]); got != 0 {
+				t.Errorf(".off row-0 end   = %d, want 0", got)
+			}
+
+			// .conf: parse the trailing fixed-size fields.
+			// Tail layout for non-empty compressed segments:
+			//   columns(u64) + rows(u64) + Some(1) + Lz4_variant(u32) + max_row_size(u64)
+			confBytes, err := os.ReadFile(base + ".conf")
+			if err != nil {
+				t.Fatalf(".conf read: %v", err)
+			}
+			const confTailLen = 8 + 8 + 1 + 4 + 8
+			if len(confBytes) < 8+confTailLen {
+				t.Fatalf(".conf too short: %d bytes", len(confBytes))
+			}
+			version := binary.LittleEndian.Uint64(confBytes[:8])
+			if version != nippyJarVersion {
+				t.Errorf("NippyJar version = %d, want %d", version, nippyJarVersion)
+			}
+			tail := confBytes[len(confBytes)-confTailLen:]
+			cols := binary.LittleEndian.Uint64(tail[0:8])
+			rows := binary.LittleEndian.Uint64(tail[8:16])
+			compressorPresence := tail[16]
+			compressorVariant := binary.LittleEndian.Uint32(tail[17:21])
+			maxRowSize := binary.LittleEndian.Uint64(tail[21:29])
+			if cols != 1 {
+				t.Errorf(".conf columns = %d, want 1", cols)
+			}
+			if rows != 1 {
+				t.Errorf(".conf rows = %d, want 1 (the empty block-0 shell)", rows)
+			}
+			if compressorPresence != 0x01 {
+				t.Errorf(".conf compressor presence = %#x, want 0x01 (Some)", compressorPresence)
+			}
+			if compressorVariant != 1 {
+				t.Errorf(".conf compressor variant = %d, want 1 (Lz4)", compressorVariant)
+			}
+			if maxRowSize != 0 {
+				t.Errorf(".conf max_row_size = %d, want 0 (empty content)", maxRowSize)
+			}
+
+			// The bytes between version(8) and the tail are the user_header
+			// (5-field SegmentHeader for change-based segments). Length =
+			// 16 (expected_block_range) + 17 (Some block_range) + 1 (None tx_range)
+			// + 4 (segment u32) + 8 (changeset_offsets_len) = 46.
+			userHeader := confBytes[8 : len(confBytes)-confTailLen]
+			if len(userHeader) != 46 {
+				t.Fatalf("user_header len = %d, want 46", len(userHeader))
+			}
+			segDiscr := binary.LittleEndian.Uint32(userHeader[34:38])
+			if segDiscr != tc.segDis {
+				t.Errorf("segment discriminant = %d, want %d", segDiscr, tc.segDis)
+			}
+			csOffLen := binary.LittleEndian.Uint64(userHeader[38:46])
+			if csOffLen != 1 {
+				t.Errorf("changeset_offsets_len = %d, want 1", csOffLen)
+			}
+
+			// .csoff sidecar: 16 bytes of zeros (single record: offset=0, num_changes=0).
+			csoffBytes, err := os.ReadFile(base + ".csoff")
+			if err != nil {
+				t.Fatalf(".csoff read: %v", err)
+			}
+			if len(csoffBytes) != 16 {
+				t.Errorf(".csoff len = %d, want 16", len(csoffBytes))
+			}
+			for i, b := range csoffBytes {
+				if b != 0 {
+					t.Errorf(".csoff[%d] = %#x, want 0x00", i, b)
+				}
+			}
+		})
 	}
 }
 

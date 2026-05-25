@@ -15,7 +15,7 @@ import (
 )
 
 // Reth MDBX geometry — matches reth's default in
-// crates/storage/db/src/implementation/mdbx/mod.rs:72-240.
+// crates/storage/db/src/implementation/mdbx/mod.rs.
 //
 // Page size: reth uses default_page_size() = OS page size clamped to
 // [4096, 65536]. Passing 0 to mdbx-go is treated as MDBX_MIN_PAGESIZE
@@ -32,7 +32,7 @@ const (
 )
 
 // mdbxDefaultPageSize matches reth's default_page_size() in
-// crates/storage/db/src/implementation/mdbx/mod.rs:139,160.
+// crates/storage/db/src/implementation/mdbx/mod.rs.
 func mdbxDefaultPageSize() int {
 	ps := os.Getpagesize()
 	if ps < 4096 {
@@ -61,7 +61,23 @@ type Envs struct {
 	RocksDB  *grocksdb.DB
 	RocksCFs map[string]*grocksdb.ColumnFamilyHandle
 
+	// historySink batches archive-mode AccountsHistory + StoragesHistory
+	// writes into the RocksDB column families v2 reth reads from. Lazy-
+	// initialised by HistorySink; Close drains + tears it down.
+	historySink *historySink
+
 	closed bool
+}
+
+// HistorySink returns the per-Envs archive-mode history sink, creating it
+// on first call. NOT goroutine-safe — callers serialise puts (the streaming
+// consumer is single-goroutine; the inline writers are called from one
+// MDBX Update closure at a time).
+func (e *Envs) HistorySink() *historySink {
+	if e.historySink == nil {
+		e.historySink = newHistorySink(e)
+	}
+	return e.historySink
 }
 
 // OpenEnvs creates a fresh datadir at dataDir and opens the MDBX env +
@@ -111,20 +127,11 @@ func OpenEnvs(dataDir string, freshDir bool) (*Envs, error) {
 		return nil, fmt.Errorf("mdbx.SetOption(OptMaxDB): %w", err)
 	}
 
-	// MDBX_WRITEMAP + MDBX_SAFE_NOSYNC turn per-txn.Put cost from
-	// O(log N) + periodic O(N) (in-process dirty-page list with a radixsort
-	// at mdbx.c:6897-6951) into kernel-managed O(1) writeback via mmap.
-	// This is what reth's own MDBX env does (reth's mdbx/mod.rs:411 —
-	// inner_env.write_map()). Without these flags, a single Mdbx.Update
-	// with hundreds of millions of Puts (one bloatnet bloated EOA)
-	// thrashes the L2/L3 cache and degrades from ~3 MB/s to <0.3 MB/s.
-	// Durability is owed at Envs.Close — see the explicit Sync there.
-	//
-	// MDBX_NOMEMINIT skips the zero-fill on freshly-allocated pages
-	// (we overwrite them immediately on the bulk-write path). MDBX_LIFORECLAIM
-	// makes free-page reclamation LIFO instead of FIFO — better cache
-	// locality for sequential writes. Both are used in production by Erigon
-	// (where mdbx-go originates) and are safe for our one-shot genesis use.
+	// WriteMap + SafeNoSync mirror reth's own MDBX env (mdbx/mod.rs)
+	// for bulk-write throughput; durability is owed at Envs.Close via the
+	// explicit Sync. NoMemInit skips zero-fill on freshly-allocated pages
+	// (we overwrite them). LifoReclaim improves cache locality for
+	// sequential writes.
 	const envFlags = mdbx.WriteMap | mdbx.SafeNoSync | mdbx.NoMemInit | mdbx.LifoReclaim
 	if err := env.Open(dbDir, envFlags, 0o644); err != nil {
 		env.Close()
@@ -199,13 +206,39 @@ func requireFreshDir(dataDir string) error {
 // MDBX_SAFE_NOSYNC deferred writes are flushed to disk on a clean
 // process exit. force=true requests synchronous fdatasync;
 // nonblock=false waits for completion.
+//
+// On the RocksDB side, FlushCFs forces the per-CF memtables to land as
+// SST files before Close. Bulk writes go through historySink with
+// WAL-disabled, so without this flush reth's first read could see an
+// empty CF whose state lived only in the now-discarded memtable.
 func (e *Envs) Close() error {
 	if e == nil || e.closed {
 		return nil
 	}
 	e.closed = true
 	var firstErr error
+	// Drain the history sink BEFORE FlushCFs — sink.Close moves any
+	// pending batch into the RocksDB memtable; FlushCFs then drains the
+	// memtable to SST files. Reversed order = silent data loss.
+	if e.historySink != nil {
+		if err := e.historySink.Close(); err != nil {
+			firstErr = fmt.Errorf("historySink.Close: %w", err)
+		}
+		e.historySink = nil
+	}
 	if e.RocksDB != nil {
+		flushOpts := grocksdb.NewDefaultFlushOptions()
+		flushOpts.SetWait(true)
+		cfs := make([]*grocksdb.ColumnFamilyHandle, 0, len(e.RocksCFs))
+		for _, cf := range e.RocksCFs {
+			cfs = append(cfs, cf)
+		}
+		if err := e.RocksDB.FlushCFs(cfs, flushOpts); err != nil {
+			if firstErr == nil {
+				firstErr = fmt.Errorf("rocksdb.FlushCFs: %w", err)
+			}
+		}
+		flushOpts.Destroy()
 		for _, cf := range e.RocksCFs {
 			cf.Destroy()
 		}
@@ -213,7 +246,9 @@ func (e *Envs) Close() error {
 	}
 	if e.Mdbx != nil {
 		if err := e.Mdbx.Sync(true, false); err != nil {
-			firstErr = fmt.Errorf("mdbx.Sync: %w", err)
+			if firstErr == nil {
+				firstErr = fmt.Errorf("mdbx.Sync: %w", err)
+			}
 		}
 		e.Mdbx.Close()
 	}
