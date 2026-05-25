@@ -260,7 +260,7 @@ docker run --rm \
 }
 ```
 
-The full template is in `client/nethermind/e2e_test.go`'s `nethermindE2EConfigTemplate`.
+The full template is in `client/nethermind/e2e_test.go`'s `nethermindE2EConfigTemplate`. `Init.BaseDbPath` must equal the datadir; its default is `<datadir>/nethermind_db/<network>/`, which is NOT where state-actor writes — omitting it silently creates an empty DB and `eth_getBlockByNumber("0x0").stateRoot` returns `0x56e81f17…` (empty-trie hash).
 
 **Boot.**
 
