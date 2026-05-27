@@ -163,6 +163,27 @@ func (erc20Template) Expand(ctx Context, e spec.Entity) ([]PreAllocEntity, error
 		}
 		totalAllowances = n
 	}
+
+	// Fallback sizing via approximate_size_bytes. Honors the universal
+	// storage-sizing knob (docs/SPEC.md) only when neither total_owners
+	// nor total_allowances is set; explicit sizing always wins. Slot
+	// budget translates to additional random owners (one slot per
+	// holder); the metadata cost (name + symbol + totalSupply) is
+	// subtracted so the resulting on-disk footprint stays within the
+	// requested budget.
+	if e.ApproximateSizeBytes > 0 {
+		_, hasTotalOwners := e.Parameters["total_owners"]
+		_, hasTotalAllowances := e.Parameters["total_allowances"]
+		if !hasTotalOwners && !hasTotalAllowances {
+			slotsBudget := ctx.Sizer.SlotsForBytes(ctx.ClientName, e.ApproximateSizeBytes)
+			const fixedSlotsOverhead = 3 // name, symbol, totalSupply
+			derived := slotsBudget - fixedSlotsOverhead
+			if derived > totalOwners {
+				totalOwners = derived
+			}
+		}
+	}
+
 	randomOwnerCount := totalOwners - len(owners)
 	randomAllowanceCount := totalAllowances - len(allowances)
 

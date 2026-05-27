@@ -95,6 +95,21 @@ genesis-root invariance gate). Slots are populated with deterministic
 - **Accuracy**: ±25% versus the realised on-disk size, set by the
   global `bytesPerSlot` constant.
 
+### Per-template precedence
+
+When a template defines its own sizing parameter (e.g. `erc20`'s
+`total_owners`, `storage_pattern`'s `final`, `create_preimage_deploys`'s
+`count`), the **explicit template parameter always wins** over
+`approximate_size_bytes`. `approximate_size_bytes` is a fallback that
+applies only when none of the template-specific sizing parameters are
+set. This matches the principle that explicit user input always takes
+precedence over implicit byte budgets.
+
+For `erc20` specifically: if neither `total_owners` nor
+`total_allowances` is set, `approximate_size_bytes` derives the random
+owner count (one slot per holder, minus the three fixed metadata slots:
+name, symbol, totalSupply).
+
 ## Templates
 
 | Template | Required parameters | Optional | Notes |
@@ -133,6 +148,26 @@ genesis-root invariance gate). Slots are populated with deterministic
     # as total_owners.
     total_allowances: 5000000
 ```
+
+`approximate_size_bytes` (set at the entity level, not inside
+`parameters:`) works as a fallback: when neither `total_owners` nor
+`total_allowances` is set, the slot budget is converted to a random
+holder count (one slot per holder, minus three fixed metadata slots).
+The example below produces ~71.4M random `_balances` entries at the
+calibrated 140 B/slot trie cost:
+
+```yaml
+- kind: contract
+  template: erc20
+  approximate_size_bytes: 10_000_000_000      # ~10 GB trie → ~71.4M slots
+  parameters:
+    symbol: BIG
+    name: BigToken
+    decimals: 18
+```
+
+If `total_owners` (or `total_allowances`) is also set, the explicit
+value wins and `approximate_size_bytes` is ignored.
 
 `_totalSupply` is auto-summed from every planted balance (explicit +
 random). Users cannot override it — the ERC-20 conservation invariant

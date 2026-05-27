@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+### Fixed
+- **`erc20` template now honors `approximate_size_bytes`.** Previously
+  the universal entity-level sizing knob was silently ignored on the
+  `erc20` template (only `raw` and `eoa` consumed it), even though
+  [`docs/SPEC.md`](docs/SPEC.md) described it as the cross-template
+  storage-budget control. Now the slot budget falls back to deriving
+  `total_owners` (one slot per random holder, minus the three fixed
+  metadata slots: `_name`, `_symbol`, `_totalSupply`). Explicit
+  `total_owners` / `total_allowances` continue to win — precedence is
+  "explicit > implicit", matching the existing `owners` + `total_owners`
+  composition pattern. Adds four regression tests in
+  `internal/templates/erc20_test.go` pinning the new derivation,
+  equivalence with explicit `total_owners`, explicit-precedence, and
+  the floor against shrinking explicit owners.
+
 ### Breaking
 - **Removed `--accounts`, `--contracts`, `--max-slots`, `--min-slots`,
   `--distribution`, `--code-size` flags.** Synthetic state generation is

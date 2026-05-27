@@ -526,6 +526,149 @@ func TestERC20SynthesizedAllowanceDeterminism(t *testing.T) {
 	}
 }
 
+// TestERC20ApproximateSizeBytesDrivesTotalOwners pins the fallback-sizing
+// behavior: when neither total_owners nor total_allowances is set,
+// approximate_size_bytes derives totalOwners via the Sizer, matching the
+// universal sizing semantics raw/eoa already implement.
+func TestERC20ApproximateSizeBytesDrivesTotalOwners(t *testing.T) {
+	tokenAddr := common.HexToAddress("0x0000000000000000000000000000000000000ab1")
+	// With Sizer.bytesPerSlot=64: 6400 bytes → 100 slots → 100-3 fixed
+	// = 97 random owners + 3 fixed metadata slots = 100 entries total.
+	ent := spec.Entity{
+		Kind:                 spec.KindContract,
+		Template:             "erc20",
+		ApproximateSizeBytes: 6400,
+		Parameters: map[string]any{
+			"symbol": "BIG", "name": "BigToken", "decimals": 18,
+		},
+	}
+	ctx := Context{Seed: 1, Sizer: fixedSizer{bytesPerSlot: 64}, ResolvedAddress: tokenAddr}
+	out, err := erc20Template{}.Expand(ctx, ent)
+	if err != nil {
+		t.Fatalf("Expand: %v", err)
+	}
+	storage := collectMap(out[0].Storage)
+	if len(storage) != 100 {
+		t.Errorf("storage count: got %d, want 100", len(storage))
+	}
+}
+
+// TestERC20ApproximateSizeBytesEquivalentToTotalOwners pins the
+// equivalence: setting only approximate_size_bytes must produce the same
+// storage stream as setting an explicit total_owners equal to the
+// derived value. This is the cross-template invariance gate
+// (truncateForTargetSize's projection math already assumed this).
+func TestERC20ApproximateSizeBytesEquivalentToTotalOwners(t *testing.T) {
+	tokenAddr := common.HexToAddress("0x0000000000000000000000000000000000000ab2")
+	const bytesPerSlot uint64 = 64
+	const targetBytes uint64 = 6400
+	// Derived count: (6400 / 64) - 3 fixed = 100 - 3 = 97.
+	const expectedTotalOwners = 97
+
+	ctx := Context{Seed: 7, Sizer: fixedSizer{bytesPerSlot: bytesPerSlot}, ResolvedAddress: tokenAddr}
+
+	approxEnt := spec.Entity{
+		Kind: spec.KindContract, Template: "erc20",
+		ApproximateSizeBytes: targetBytes,
+		Parameters: map[string]any{
+			"symbol": "X", "name": "X", "decimals": 18,
+		},
+	}
+	explicitEnt := spec.Entity{
+		Kind: spec.KindContract, Template: "erc20",
+		Parameters: map[string]any{
+			"symbol": "X", "name": "X", "decimals": 18,
+			"total_owners": expectedTotalOwners,
+		},
+	}
+
+	approxOut, err := erc20Template{}.Expand(ctx, approxEnt)
+	if err != nil {
+		t.Fatalf("approx Expand: %v", err)
+	}
+	explicitOut, err := erc20Template{}.Expand(ctx, explicitEnt)
+	if err != nil {
+		t.Fatalf("explicit Expand: %v", err)
+	}
+
+	approxStorage := collectMap(approxOut[0].Storage)
+	explicitStorage := collectMap(explicitOut[0].Storage)
+
+	if len(approxStorage) != len(explicitStorage) {
+		t.Fatalf("storage count diverged: approx=%d explicit=%d",
+			len(approxStorage), len(explicitStorage))
+	}
+	for k, v := range approxStorage {
+		if got, ok := explicitStorage[k]; !ok || got != v {
+			t.Errorf("slot %s diverged: approx=%x explicit=%x (present=%v)",
+				k.Hex(), v, got, ok)
+		}
+	}
+}
+
+// TestERC20ApproximateSizeBytesExplicitWins verifies precedence:
+// total_owners (or total_allowances) explicitly set always wins over
+// approximate_size_bytes — matching the documented "explicit > implicit"
+// rule.
+func TestERC20ApproximateSizeBytesExplicitWins(t *testing.T) {
+	tokenAddr := common.HexToAddress("0x0000000000000000000000000000000000000ab3")
+	ent := spec.Entity{
+		Kind: spec.KindContract, Template: "erc20",
+		ApproximateSizeBytes: 1_000_000, // ~15,625 slots at 64 B/slot
+		Parameters: map[string]any{
+			"symbol": "X", "name": "X", "decimals": 18,
+			"total_owners": 5, // explicit — wins
+		},
+	}
+	ctx := Context{Seed: 1, Sizer: fixedSizer{bytesPerSlot: 64}, ResolvedAddress: tokenAddr}
+	out, err := erc20Template{}.Expand(ctx, ent)
+	if err != nil {
+		t.Fatalf("Expand: %v", err)
+	}
+	storage := collectMap(out[0].Storage)
+	// 5 explicit-driven random owners + 3 fixed (name, symbol, totalSupply).
+	if len(storage) != 8 {
+		t.Errorf("storage count: got %d, want 8 (5 random + 3 fixed)", len(storage))
+	}
+}
+
+// TestERC20ApproximateSizeBytesNeverShrinksExplicitOwners verifies the
+// floor: explicit owners always land, even when the derived totalOwners
+// from approximate_size_bytes is smaller than len(owners).
+func TestERC20ApproximateSizeBytesNeverShrinksExplicitOwners(t *testing.T) {
+	tokenAddr := common.HexToAddress("0x0000000000000000000000000000000000000ab4")
+	a := common.HexToAddress("0x1111111111111111111111111111111111111111")
+	b := common.HexToAddress("0x2222222222222222222222222222222222222222")
+	c := common.HexToAddress("0x3333333333333333333333333333333333333333")
+	d := common.HexToAddress("0x4444444444444444444444444444444444444444")
+	// approximate_size_bytes = 256 B → 4 slots → 4-3 fixed = 1 derived owner.
+	// But 4 explicit owners are set; the floor must keep all 4.
+	ent := spec.Entity{
+		Kind: spec.KindContract, Template: "erc20",
+		ApproximateSizeBytes: 256,
+		Parameters: map[string]any{
+			"symbol": "X", "name": "X", "decimals": 18,
+			"owners": []any{
+				map[string]any{"address": a.Hex(), "balance": "100"},
+				map[string]any{"address": b.Hex(), "balance": "200"},
+				map[string]any{"address": c.Hex(), "balance": "300"},
+				map[string]any{"address": d.Hex(), "balance": "400"},
+			},
+		},
+	}
+	ctx := Context{Seed: 1, Sizer: fixedSizer{bytesPerSlot: 64}, ResolvedAddress: tokenAddr}
+	out, err := erc20Template{}.Expand(ctx, ent)
+	if err != nil {
+		t.Fatalf("Expand: %v", err)
+	}
+	storage := collectMap(out[0].Storage)
+	for _, addr := range []common.Address{a, b, c, d} {
+		if _, ok := storage[balanceSlotKey(addr)]; !ok {
+			t.Errorf("explicit owner %s dropped", addr.Hex())
+		}
+	}
+}
+
 func TestERC20RuntimeBytecodePinned(t *testing.T) {
 	// Guards against unintentional changes to the vendored OZ v5.6.1
 	// ERC20 deployed runtime bytecode (internal/templates/erc20_oz_v5.hex).
