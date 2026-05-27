@@ -12,33 +12,37 @@
 # Synthetic-fill flags drive the bulk; this YAML declares only the two
 # specific entities the bloatnet benchmarks expect at fixed addresses.
 #
-# To build the chaindata:
+# To build the chaindata (state-actor's CLI as of PR 75: --target-size
+# drives the mainnet-shaped auto-fill in mainnet 20/10/70 proportions;
+# the previous --accounts/--contracts/--min-slots/--max-slots/
+# --distribution flags were removed):
 #
 #   ./state-actor --client=geth \
 #     --db=/media/jochem/research-disk/tmp/mainnet-shape/geth/chaindata \
 #     --spec=examples/spec-mainnet-shape.yaml \
-#     --accounts=310900000 \
-#     --contracts=26100000 \
-#     --min-slots=14 \
-#     --max-slots=10000 \
-#     --distribution=power-law \
 #     --target-size=220GB \
 #     --fork=osaka \
 #     --chain-id=1337 \
 #     --seed=42 \
 #     --verbose 2>&1 | tee /media/jochem/research-disk/tmp/mainnet-shape/gen.log
 #
-# Expected composition:
-#   accounts (EOAs + contracts) ≈ 337M  → account trie ~56 GiB
-#   storage tries               ≈ 26.1M (synthetic) + 1 (spec bloater)
-#   synthetic slots             ≈ 26.1M × ~42 (power-law α=1.5, min=14)
-#                               = ~1.1B → ~143 GiB
-#   bloater slots               = 153,391,690 → ~20 GiB
-#   total trie                  ≈ 219 GiB  (--target-size=220GB is the cap)
+# Expected composition (with the autofill targeting mainnet 20/10/70):
+#   bloater (storage_pattern)    = 153,391,690 slots → ~20 GiB trie
+#   autofill account/code/storage proportions per
+#   internal/autofill (20/10/70 of the remaining budget).
+#   total trie                  ≈ 220 GiB  (--target-size cap)
 #   on-disk including flat      ≈ 300 GiB
 #
 # Time budget: 2–6 hours; RAM peak ≈ 30 GiB (streamsort cap from PR 75).
 # Disk: needs ~320 GiB free at the --db path.
+#
+# NOTE: truncateForTargetSize currently undercounts non-
+# `approximate_size_bytes` template storage (storage_pattern,
+# create_preimage_deploys, create2_deploys, sequential_eoas). Until that
+# is fixed (see TODO in internal/specbuild/build.go) the spec entities
+# may push the total above --target-size by their actual slot/account
+# count. For the bloater here (153M slots ~ 20 GiB), expect 320-340 GiB
+# on-disk at --target-size=220GB.
 #
 # To boot upstream geth against the produced datadir afterwards:
 #
