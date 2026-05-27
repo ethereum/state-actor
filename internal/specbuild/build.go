@@ -141,6 +141,28 @@ var _ = (*common.Address)(nil)
 // zero, no truncation applies and the result is the cost of every entity.
 // A nil Sizer (or nil/empty Spec) yields 0, deferring the actual error to
 // Build() which validates the inputs.
+//
+// TODO(template-aware-budget): the per-entity cost formula below only
+// reads e.ApproximateSizeBytes. The five repricing templates introduced
+// in PR 76 use template-specific sizing parameters (storage_pattern.final,
+// create_preimage_deploys.count, create2_deploys.salt_count,
+// sequential_eoas.count, erc20.total_owners) that this projection does
+// not see — so an entity that emits millions of slots/accounts is
+// budgeted at one bAcct (~175 B). The downstream effects are:
+//   (1) autofill's headroom = target_size - ProjectedCost overshoots:
+//       the auto-fill adds ~target_size's worth of synthetic state on
+//       top of spec storage that the projection missed (observed in
+//       the 10 GB rehearsal: spec ~12 GB + autofill 20 GB → 38 GB on
+//       disk, vs intended ~20 GB).
+//   (2) truncateForTargetSize fails open: a spec writing 100 GB of
+//       storage_pattern entities with --target-size=50GB silently
+//       produces 100+ GB instead of truncating.
+// Fix shape (separate PR): extend the Template interface with a
+// ProjectCost(opts, entity) (uint64, error) method that each template
+// implements from its own parameter schema. Then ProjectedCost +
+// truncateForTargetSize call tmpl.ProjectCost instead of using this
+// formula. Cross-checked at unit level by a regression asserting
+// ProjectCost == bytes(Expand(...).slots, accounts) for each template.
 func ProjectedCost(s *spec.Spec, opts BuildOptions) uint64 {
 	if s == nil || len(s.Entities) == 0 || opts.Sizer == nil {
 		return 0
