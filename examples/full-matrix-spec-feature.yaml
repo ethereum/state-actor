@@ -230,3 +230,69 @@ entities:
   - kind: eoa
     name: default-nonce-eoa
     balance: "100000000000000000"
+
+  # ── 23-27. PR 76 repricing-benchmark templates ───────────────────────
+  # Toy-scale instances of the five user-visible templates introduced
+  # in PR 76 (storage_pattern, create2_factory, create2_deploys,
+  # create_preimage_deploys, sequential_eoas). Scale stays under the
+  # 500 KB total-fixture budget.
+  #
+  # Coverage layered against the existing unit tests:
+  #   - internal/templates/<template>_test.go pins the iter's (key, value)
+  #     output for each template (correctness of what the iter emits).
+  #   - This fixture exercises the per-client writer path: each of
+  #     geth/besu/nethermind/reth materializes the iter to its on-disk
+  #     trie during TestE2ESuite, and the cross-client-genesis-root
+  #     aggregator asserts all 4 client stateRoots agree. By Merkle
+  #     property, stateRoot agreement → identical trie content → no
+  #     per-client writer divergence.
+
+  # 23. storage_pattern — dense-counter layout. slot 0 = final+1,
+  # slot k = k for k in 1..final. nonce floored to 1 by the template
+  # so EIP-161 doesn't prune the entry.
+  - kind: contract
+    template: storage_pattern
+    name: ci-storage-pattern
+    address: 0x000000000000000000000000000000000000c0de
+    parameters:
+      final: 20
+
+  # 24. create2_factory — Arachnid deterministic-deployment proxy
+  # runtime. Address pinned by the template to the canonical
+  # 0x4e59…956c; required for create2_deploys (#25) to reference it.
+  - kind: contract
+    template: create2_factory
+    name: ci-create2-factory
+    address: 0x4e59b44847b379578588920cA78FbF26c0B4956C
+
+  # 25. create2_deploys — fans out salt_count contracts at
+  # CREATE2-derived addresses. Uses canonical factory above.
+  - kind: contract
+    template: create2_deploys
+    name: ci-create2-deploys
+    parameters:
+      initcode: "0x6001600052602060006000F0"
+      deployed_code: "0x615fff565b"
+      salt_count: 3
+
+  # 26. create_preimage_deploys — fans out `count` contracts at
+  # CREATE-derived addresses (keccak(rlp([sender, nonce]))[12:]).
+  # Sender is a parameter, not the entity's own address.
+  - kind: contract
+    template: create_preimage_deploys
+    name: ci-create-preimage
+    parameters:
+      sender: "0x000000000000000000000000000000000000abcd"
+      start_nonce: 2
+      count: 3
+      runtime: "0x615fff565b"
+
+  # 27. sequential_eoas — fans out `count` plain EOAs at consecutive
+  # addresses starting at the entity's resolved address.
+  - kind: contract
+    template: sequential_eoas
+    name: ci-sequential-eoas
+    address: 0x0000000000000000000000000000000000005000
+    parameters:
+      count: 3
+      balance: "1000000000000000000"
