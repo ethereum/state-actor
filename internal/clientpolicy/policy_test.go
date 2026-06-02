@@ -6,7 +6,7 @@ import (
 )
 
 func TestValidateForClient_RecognizedClients(t *testing.T) {
-	for _, c := range []string{"geth", "nethermind", "besu", "reth"} {
+	for _, c := range []string{"geth", "nethermind", "besu", "reth", "ethrex"} {
 		if err := ValidateForClient(c, FlagValues{}); err != nil {
 			t.Errorf("ValidateForClient(%q, zero FV): unexpected error: %v", c, err)
 		}
@@ -31,7 +31,7 @@ func TestValidateForClient_BinaryTrieGethOnly(t *testing.T) {
 	if err := ValidateForClient("geth", FlagValues{BinaryTrie: true}); err != nil {
 		t.Errorf("geth + --binary-trie should be allowed: %v", err)
 	}
-	for _, c := range []string{"nethermind", "besu", "reth"} {
+	for _, c := range []string{"nethermind", "besu", "reth", "ethrex"} {
 		err := ValidateForClient(c, FlagValues{BinaryTrie: true})
 		if err == nil || !strings.Contains(err.Error(), "EIP-7864") {
 			t.Errorf("%s + --binary-trie should reject with EIP-7864 reason, got %v", c, err)
@@ -44,7 +44,7 @@ func TestValidateForClient_BinaryTrieGethOnly(t *testing.T) {
 // nethermind (Phase 2) and reth (per-batch). Previously reth rejected the
 // flag at parse time; that rejection is gone.
 func TestValidateForClient_TargetSizeAllowed(t *testing.T) {
-	for _, c := range []string{"geth", "nethermind", "besu", "reth"} {
+	for _, c := range []string{"geth", "nethermind", "besu", "reth", "ethrex"} {
 		if err := ValidateForClient(c, FlagValues{TargetSize: "5GB"}); err != nil {
 			t.Errorf("%s + --target-size should be allowed: %v", c, err)
 		}
@@ -69,6 +69,8 @@ func TestValidateForClient_ForkCeiling(t *testing.T) {
 		{"besu", "osaka", true},
 		{"nethermind", "prague", true},
 		{"nethermind", "osaka", true},
+		{"ethrex", "prague", true},
+		{"ethrex", "osaka", true},
 	}
 	for _, tc := range cases {
 		err := ValidateForClient(tc.client, FlagValues{Fork: tc.fork})

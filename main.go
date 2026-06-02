@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/nerolation/state-actor/client/besu"
+	clientethrex "github.com/nerolation/state-actor/client/ethrex"
 	"github.com/nerolation/state-actor/client/geth"
 	"github.com/nerolation/state-actor/client/nethermind"
 	"github.com/nerolation/state-actor/client/reth"
@@ -51,7 +52,7 @@ var (
 
 	groupDepth = flag.Int("group-depth", 8, "Binary trie group depth (1-8, default 8). Controls serialization unit size.")
 
-	client = flag.String("client", "geth", "Target Ethereum client: 'geth' (default), 'nethermind', 'besu', or 'reth'.")
+	client = flag.String("client", "geth", "Target Ethereum client: 'geth' (default), 'nethermind', 'besu', 'reth', or 'ethrex'.")
 
 	archive = flag.Bool("archive", false, "Configure the generated DB for archive-mode operation.\n"+
 		"  reth: writes StoragesHistory + AccountsHistory + StorageChangeSets + AccountChangeSets at genesis.\n"+
@@ -120,6 +121,9 @@ func main() {
 			log.Fatalf("--archive is only supported on geth and reth; got --client=%s. Re-run without --archive.", *client)
 		}
 	}
+
+	// ethrex uses its own fork ceiling (prague per MaxForkForClient).
+	// The chosenFork resolution below handles this uniformly.
 
 	config := generator.Config{
 		DBPath:         *dbPath,
@@ -299,6 +303,13 @@ func main() {
 		stats, err = reth.RunCgo(context.Background(), config, reth.Options{})
 		if err != nil {
 			log.Fatalf("Failed to populate Reth DB: %v", err)
+		}
+
+	case "ethrex":
+		var err error
+		stats, err = clientethrex.Run(context.Background(), config, clientethrex.Options{})
+		if err != nil {
+			log.Fatalf("Failed to populate ethrex DB: %v", err)
 		}
 	}
 

@@ -161,7 +161,7 @@ func SortedForks() []string {
 // corresponding header fields.
 func MaxForkForClient(client string) string {
 	switch client {
-	case "geth", "reth", "besu", "nethermind":
+	case "geth", "reth", "besu", "nethermind", "ethrex":
 		return "osaka"
 	default:
 		return DefaultFork
