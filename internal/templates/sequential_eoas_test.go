@@ -80,4 +80,58 @@ func TestSequentialEOAsValidate(t *testing.T) {
 	if err := tmpl.ValidateParameters(map[string]any{"count": -1}); err == nil {
 		t.Errorf("negative count: expected error")
 	}
+	// balance: omitted is valid (defaults to 1 in Expand).
+	if err := tmpl.ValidateParameters(map[string]any{"count": 1}); err != nil {
+		t.Errorf("omitted balance: rejected when it should default: %v", err)
+	}
+	// balance: "0" is rejected — zero-balance plain EOAs are pruned
+	// by EIP-161, defeating the point of planting them.
+	if err := tmpl.ValidateParameters(map[string]any{"count": 1, "balance": "0"}); err == nil {
+		t.Errorf("balance=0: expected error")
+	}
+	if err := tmpl.ValidateParameters(map[string]any{"count": 1, "balance": "0x0"}); err == nil {
+		t.Errorf("balance=0x0: expected error")
+	}
+	// balance: "1" is the minimum accepted value.
+	if err := tmpl.ValidateParameters(map[string]any{"count": 1, "balance": "1"}); err != nil {
+		t.Errorf("balance=1: rejected: %v", err)
+	}
+}
+
+// TestSequentialEOAsDefaultBalanceIsOne pins the new default: omitting
+// `balance` yields 1 wei per EOA, not 0. Default 0 would let EIP-161
+// prune the planted accounts before the benchmark could reference them.
+func TestSequentialEOAsDefaultBalanceIsOne(t *testing.T) {
+	anchor := common.HexToAddress("0x0000000000000000000000000000000000002000")
+	ent := mkContractEntity("sequential_eoas", map[string]any{"count": 4})
+	out, err := (&sequentialEOAsTemplate{}).Expand(Context{ResolvedAddress: anchor}, ent)
+	if err != nil {
+		t.Fatalf("Expand: %v", err)
+	}
+	if len(out) != 4 {
+		t.Fatalf("count: got %d, want 4", len(out))
+	}
+	for i, pe := range out {
+		if got := pe.Account.Balance.Uint64(); got != 1 {
+			t.Errorf("addr[%d] balance: got %d, want 1 (default)", i, got)
+		}
+	}
+}
+
+// TestSequentialEOAsRejectsZeroBalance pins both the validator and the
+// Expand-time defense-in-depth check: balance="0" surfaces an error
+// from each entry point.
+func TestSequentialEOAsRejectsZeroBalance(t *testing.T) {
+	tmpl := &sequentialEOAsTemplate{}
+	params := map[string]any{"count": 3, "balance": "0"}
+	if err := tmpl.ValidateParameters(params); err == nil {
+		t.Errorf("ValidateParameters(balance=0): expected error, got nil")
+	}
+	// Skip the validator and hit Expand directly to confirm the
+	// secondary check also fires.
+	anchor := common.HexToAddress("0x0000000000000000000000000000000000003000")
+	ent := mkContractEntity("sequential_eoas", params)
+	if _, err := tmpl.Expand(Context{ResolvedAddress: anchor}, ent); err == nil {
+		t.Errorf("Expand(balance=0): expected error, got nil")
+	}
 }

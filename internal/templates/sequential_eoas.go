@@ -20,6 +20,11 @@ func init() {
 // [start, start+count), each funded with `balance`. Anchor address is
 // the entity's resolved address (typically set explicitly via `address:`).
 //
+// `balance` defaults to 1 wei if omitted and MUST be non-zero — a
+// zero-balance plain EOA (no code, nonce 0) would be pruned by
+// EIP-161, leaving no account at the planted addresses for the
+// benchmark to reference.
+//
 // Backs SequentialAddressLayout in execution-specs bloatnet benchmarks:
 // the test code iterates address = start + i for i in 0..N; this template
 // pre-plants matching state at every such address.
@@ -39,8 +44,12 @@ func (sequentialEOAsTemplate) ValidateParameters(params map[string]any) error {
 		return fmt.Errorf("sequential_eoas: %w", err)
 	}
 	if v, has := params["balance"]; has {
-		if _, err := ParseUint256Param(v, "balance"); err != nil {
+		b, err := ParseUint256Param(v, "balance")
+		if err != nil {
 			return fmt.Errorf("sequential_eoas: %w", err)
+		}
+		if b.IsZero() {
+			return fmt.Errorf("sequential_eoas: balance must be > 0 (zero-balance EOAs are pruned by EIP-161)")
 		}
 	}
 	return nil
@@ -61,11 +70,18 @@ func (sequentialEOAsTemplate) Expand(ctx Context, e spec.Entity) ([]PreAllocEnti
 		return nil, fmt.Errorf("sequential_eoas: count=%d exceeds practical limit (2^32)", count)
 	}
 
-	balance := uint256.NewInt(0)
+	// Default 1 wei is the minimum value that keeps a code-less,
+	// nonce-0 EOA off EIP-161's pruning path. Explicit balance=0 is
+	// rejected at ValidateParameters; the same check is repeated here
+	// as defense in depth for callers bypassing the validator.
+	balance := uint256.NewInt(1)
 	if v, has := e.Parameters["balance"]; has {
 		b, err := ParseUint256Param(v, "balance")
 		if err != nil {
 			return nil, fmt.Errorf("sequential_eoas: %w", err)
+		}
+		if b.IsZero() {
+			return nil, fmt.Errorf("sequential_eoas: balance must be > 0 (zero-balance EOAs are pruned by EIP-161)")
 		}
 		balance = b
 	}

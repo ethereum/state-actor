@@ -116,7 +116,7 @@ least one holder has a non-zero balance).
 | Template | Required parameters | Optional | Notes |
 |---|---|---|---|
 | `erc20`  | `symbol`, `name`, `decimals` | `owners`, `allowances`, `total_owners`, `total_allowances` | Vendored OpenZeppelin v5.6.1 ERC20 deployed runtime bytecode (`internal/templates/erc20_oz_v5.hex`, regenerate via `scripts/regen-erc20-bytecode.sh`). `decimals` must equal 18 (OZ v5 base default); use the `raw` template for other decimals. |
-| `sequential_eoas` | `count` | `balance` | One entity → `count` plain EOAs at `[address, address+count)`. Anchor address comes from the entity's resolved address. Backs `SequentialAddressLayout` in bloatnet benchmarks. |
+| `sequential_eoas` | `count` | `balance` | One entity → `count` plain EOAs at `[address, address+count)`. Anchor address comes from the entity's resolved address. `balance` defaults to `1` wei when omitted; explicit `balance: "0"` is rejected (zero-balance plain EOAs are pruned by EIP-161, leaving the planted addresses empty). Backs `SequentialAddressLayout` in bloatnet benchmarks. |
 | `storage_pattern` | `final` | — | Plants `slot 0 = final + 1` (next-free pointer) plus `slot k = k` for `k in 1..final`. Anchor address = entity's resolved address. Entity-level `nonce:` is honored; defaults to 1 (forced ≥ 1 so EIP-161 empty-account pruning doesn't wipe the entry). Backs `test_sload_bloated` / `test_sstore_bloated` `existing_slots=True`. |
 | `create2_factory` | — | — | Plants the 69-byte Arachnid deterministic-deployment proxy runtime. The entity's resolved address MUST equal `0x4e59b44847b379578588920cA78FbF26c0B4956C`. |
 | `create2_deploys` | `initcode`, `salt_count`, `deployed_code` | `salt_start`, `factory` | For each salt in `[salt_start, salt_start+salt_count)`, derives the CREATE2 address and plants `deployed_code` there. `factory` defaults to the canonical Arachnid address. The constructor is never executed — `deployed_code` must be the desired runtime. |
@@ -200,7 +200,11 @@ under `kind: contract`.
   address: 0x0000000000000000000000000000000000001000
   parameters:
     count: 1000000              # required; uint64
-    balance: "1000000000000000000"  # optional; wei, defaults to 0
+    balance: "1000000000000000000"  # optional; wei, defaults to 1.
+                                    # Must be > 0 — a zero-balance plain
+                                    # EOA (no code, nonce 0) would be
+                                    # pruned by EIP-161, leaving no
+                                    # account at the planted address.
 
 # Storage pattern — slot 0 = final + 1, slot k = k for k in 1..final.
 # Anchor address = entity's resolved address. Entity-level nonce/balance
