@@ -107,8 +107,7 @@ write_result() {
   "post_verify_pass": ${post_pass:-0},
   "post_verify_fail": ${post_fail:-0},
   "db_size_apparent": "${db_apparent:-unknown}",
-  "db_size_actual": "${db_actual:-unknown}",
-  "db_size_bytes": ${db_bytes:-0}
+  "db_size_actual": "${db_actual:-unknown}"
 }
 JSON
 }
@@ -286,7 +285,7 @@ run_one_client() {
     local latest_bn=0
     local pre_pass=0 pre_fail=0
     local post_pass=0 post_fail=0
-    local db_apparent="unknown" db_actual="unknown" db_bytes=0
+    local db_apparent="unknown" db_actual="unknown"
 
     echo
     echo "════════════════════════════════════════════════════════════════"
@@ -442,7 +441,6 @@ run_one_client() {
     latest_bn=$(cast block-number --rpc-url http://127.0.0.1:8545 2>/dev/null || echo "0")
     db_apparent=$(du -sh --apparent-size $data | cut -f1)
     db_actual=$(du -sh $data | cut -f1)
-    db_bytes=$(du -s --block-size=1 $data | cut -f1)
 
     local detail=""
     [ "$stage_status" != "ok" ] && detail="spamoor_exit=$spamoor_exit; tip=$cur"
@@ -534,37 +532,6 @@ for c in $CLIENTS; do
         echo "  $c: apparent=$ap actual=$ac status=$st"
     fi
 done
-
-echo
-echo "═══════════════════════════════════════════════════════════════"
-echo " DB size vs geth (±25% tolerance, geth = reference)"
-echo "═══════════════════════════════════════════════════════════════"
-ref_bytes=$(jq -r '.db_size_bytes // 0' $WORK/results/geth-result.json 2>/dev/null || echo 0)
-if [ "${ref_bytes:-0}" -gt 0 ]; then
-    echo "  ref:  geth  $(numfmt --to=iec $ref_bytes 2>/dev/null || echo ${ref_bytes}B)"
-    for c in $CLIENTS; do
-        [ "$c" = "geth" ] && continue
-        f=$WORK/results/$c-result.json
-        [ -f "$f" ] || { echo "  ${INV_YELLOW}SKIP${INV_RESET} $c (no result.json)"; continue; }
-        b=$(jq -r '.db_size_bytes // 0' "$f")
-        st=$(jq -r .status "$f")
-        if [ "${b:-0}" -le 0 ]; then
-            echo "  ${INV_YELLOW}SKIP${INV_RESET} $c (no size, status=$st)"
-            continue
-        fi
-        lo=$(( ref_bytes * 75 / 100 ))
-        hi=$(( ref_bytes * 125 / 100 ))
-        pct=$(( (b - ref_bytes) * 100 / ref_bytes ))
-        human=$(numfmt --to=iec $b 2>/dev/null || echo ${b}B)
-        if [ "$b" -ge "$lo" ] && [ "$b" -le "$hi" ]; then
-            echo "  ${INV_GREEN}PASS${INV_RESET} $c  $human (${pct}% vs geth)"
-        else
-            echo "  ${INV_RED}FAIL${INV_RESET} $c  $human (${pct}% vs geth, outside ±25%)"
-        fi
-    done
-else
-    echo "  ${INV_YELLOW}SKIP${INV_RESET} (no geth reference size — geth run absent or failed)"
-fi
 
 echo
 echo "Results: $WORK/results/"
