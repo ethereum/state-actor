@@ -108,16 +108,23 @@ with SST files, **state-actor MUST write `datadir/metadata.json` containing
 just `serde_json::from_str`s it, so any valid JSON with `schema_version: 2`
 works. This is the OPPOSITE of "do not write metadata.json".
 
-## Boot path (no trie recompute)
+## Boot path
 
-ethrex always calls `add_initial_state(--network genesis)`. It short-circuits
-("nothing to do") when `load_block_header(0)` returns a header whose hash matches
-`genesis.get_block().hash()` (store.rs:2217-2221). That lookup goes
-`canonical_block_hashes[0]` -> `headers[hash]`. The `debug_assert_eq!` on state
-root (store.rs:2236) is only on the None-arm (re-derive) path, which we never
-take because we provide the header + canonical row. So state-actor's only boot
-requirement is a hash-matching genesis header + the canonical row + the
-schema metadata file.
+ethrex always calls `add_initial_state(--network genesis)`. It compares the
+stored `load_block_header(0)` hash against `genesis.get_block().hash()`.
+
+CORRECTION (verified against v15.0.0, supersedes the original spike claim):
+`genesis.get_block()` sets `state_root: self.compute_state_root()`, which builds
+the trie from the sidecar `alloc` on EVERY boot. With state-actor's empty alloc
+that yields `EMPTY_TRIE_HASH`, which does NOT match the real stored root, so the
+match falls to the `Some(_)` arm and returns `IncompatibleChainConfig` — ethrex
+refuses to boot. There is no "no trie recompute" short-circuit; the recompute is
+unconditional.
+
+state-actor therefore boots ethrex with `--skip-genesis-validation`
+(lambdaclass/ethrex#6783), which makes ethrex trust the stored root instead of
+recomputing it. Boot requirements: a stored genesis header + canonical row +
+schema metadata file, AND the skip-validation flag (or a flag-bearing image).
 
 ## Open questions still deferred to e2e (Phase 4)
 
