@@ -30,11 +30,10 @@ import (
 // against, digest-pinned for reproducibility. Override with
 // ETHREX_IMAGE=ghcr.io/lambdaclass/ethrex:<tag> to test a specific release.
 //
-// Tagged release v15.0.0 (ghcr tag 15.0.0).
-//
-// TODO: bump to the first release containing --skip-genesis-validation
-// (lambdaclass/ethrex#6783) and remove the t.Skip in TestE2ESuite. v15.0.0
-// predates the flag, so the boot phase stays skipped until then.
+// Currently tagged release v15.0.0 (ghcr tag 15.0.0). This digest must be
+// bumped to an image that includes --skip-genesis-validation
+// (lambdaclass/ethrex#6783) before the boot phase can pass; that is the only
+// remaining change for the e2e to go green.
 const pinnedEthrexImage = "ghcr.io/lambdaclass/ethrex:15.0.0@sha256:9963bd1fa2ba2085d131752fe58f047ff162bfa1a24b5addee0140f9863abda5"
 
 func ethrexImageRef() string {
@@ -84,12 +83,6 @@ func TestE2ESuite(t *testing.T) {
 	if testing.Short() {
 		t.Skip("e2e suite skipped in short mode")
 	}
-	// Boot needs ethrex's --skip-genesis-validation (lambdaclass/ethrex#6783):
-	// the empty-alloc sidecar makes ethrex recompute EMPTY_TRIE_HASH and reject
-	// the real stored root with IncompatibleChainConfig. To enable: bump
-	// pinnedEthrexImage to the first release that includes #6783 and delete this
-	// skip — the --skip-genesis-validation boot arg is already wired below.
-	t.Skip("blocked on ethrex --skip-genesis-validation (lambdaclass/ethrex#6783); see pinnedEthrexImage")
 
 	const (
 		seed = int64(42)

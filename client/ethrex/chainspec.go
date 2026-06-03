@@ -105,8 +105,8 @@ func buildGenesisJSON(g *genesis.Genesis) ([]byte, error) {
 		// yields EMPTY_TRIE_HASH, which never matches the real stored root, so
 		// `add_initial_state` returns IncompatibleChainConfig and refuses to
 		// boot. ethrex must therefore be launched with --skip-genesis-validation
-		// (lambdaclass/ethrex#6783) to trust the stored root. TestE2ESuite wires
-		// that flag and is skipped until a flag-bearing ethrex image is pinned.
+		// (lambdaclass/ethrex#6783) to trust the stored root; TestE2ESuite wires
+		// that flag into the boot args.
 		"alloc": map[string]any{},
 	}
 	if len(g.ExtraData) > 0 {
