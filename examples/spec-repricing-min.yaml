@@ -5,6 +5,24 @@
 # create2_deploys, create_preimage_deploys) once at small size. Sized
 # to keep the spec layer well under a second.
 #
+# ── Fork relevance ────────────────────────────────────────────────────
+#
+# These benchmarks measure the gas repricing that ships in Glamsterdam
+# (the fork immediately after Amsterdam). The state itself, however,
+# targets the FUSAKA fork — the EVM rules a benchmark replays against
+# are Fusaka's, not Glamsterdam's, because that's the baseline the
+# repricing measures change FROM. State-actor's --fork flag should be
+# `fusaka` (or, today, `osaka` for the current devnets — Fusaka is
+# Amsterdam's predecessor on the post-merge fork ladder) when
+# generating chaindata for these benchmarks.
+#
+# A pre-Amsterdam-specific code pattern (`code_pattern:
+# unique_jumpdest_pre_amsterdam`) is used on the create2_deploys
+# entry below; the per-derived runtime size is EIP-170's pre-Amsterdam
+# 24 KiB cap. Amsterdam (EIP-7907) raises the limit, at which point a
+# sibling `unique_jumpdest_amsterdam` pattern will be added; existing
+# pre-Amsterdam fixtures keep working unchanged.
+#
 # Production-scale fixtures matching execution-specs/tests/benchmark/
 # stateful/stubs/stubs_repricing.json (50 GB / 30 GB / 9.39 GB / 1 GB
 # / 4.23 MB ERC-20s, three 7702-EOAs at 1/10/20 GB, Bittrex's full
@@ -12,11 +30,25 @@
 #
 # To exercise locally:
 #   state-actor --client=geth --db=/tmp/repricing-min \
-#     --spec=examples/spec-repricing-min.yaml
+#     --spec=examples/spec-repricing-min.yaml --fork=osaka
 entities:
   # ── 1. Sequential EOAs at 0x1000+ ─────────────────────────────────────
   # Backs SequentialAddressLayout(starting_address=0x1000, increment=1)
   # in execution-specs bloatnet test_account_access (EXISTING_EOA mode).
+  #
+  # Production-scale minimum: 150_000 accounts. The benchmark spends
+  # ~2000 gas per cold-address access (post-EIP-2929), so 150_000
+  # accounts × 2000 gas = 300 million gas of headroom in the sequential
+  # range. Any benchmark filled above that gas limit walks off the end
+  # of the planted range and starts touching empty addresses, which
+  # changes the measured cost — the result is invalid. If your
+  # benchmark's `gas_benchmark_value` exceeds 300M (per benchmark
+  # iteration), bump `count` proportionally:
+  #
+  #     count >= gas_benchmark_value / 2000
+  #
+  # This smoke fixture uses count=100 only because it's sub-second by
+  # design and not measuring anything real.
   - kind: contract
     name: sequential-eoas-baseline
     template: sequential_eoas
@@ -46,24 +78,29 @@ entities:
     address: 0x4e59b44847b379578588920cA78FbF26c0B4956C
 
   # ── 4. CREATE2 deploys ────────────────────────────────────────────────
-  # 10 CREATE2-derived contracts sharing one runtime. Backs the
-  # diff_to_unique_code_jumpdest_contract case of
+  # 10 CREATE2-derived contracts using the unique-code-jumpdest pattern.
+  # Backs the `diff_to_unique_code_jumpdest_contract` case of
   # test_ether_transfers_onchain_receivers in test_transaction_types.py;
-  # production runs use a much larger salt_count.
+  # production runs use a much larger salt_count (1.5M+).
   #
-  # initcode here is a stand-in for the production initcode — what
-  # actually matters for the benchmarks is that the CREATE2 derivation
-  # is reproducible and that something callable lives at each derived
-  # address. runtime = JUMP(PUSH2(0x5FFF)) + JUMPDEST mirrors the
-  # benchmark's expected runtime for THIS specific case (the unique-
-  # jumpdest CREATE2 receiver path). The Bittrex case below uses a
-  # different runtime — the real Bittrex Controller child bytecode.
+  # `code_pattern: unique_jumpdest_pre_amsterdam` opts into the named
+  # generator (see internal/templates/code_pattern.go). The pattern
+  # owns BOTH the initcode (a constant, used only for CREATE2 address
+  # derivation via keccak256(initcode)) and the per-derived-address
+  # runtime — each derived contract gets a 24 KiB runtime with its own
+  # 20-byte address embedded at bytes 0x2C..0x40, JUMPDEST padding
+  # filling the rest, and PUSH2 0x5FFF; JUMP at the start landing at
+  # the final JUMPDEST.
+  #
+  # `initcode:` and `runtime:` are MUTUALLY EXCLUSIVE with
+  # `code_pattern:` — the pattern owns both. To use a literal runtime
+  # instead, drop `code_pattern:` and supply both `initcode:` and
+  # `runtime:` directly.
   - kind: contract
     name: create2-deploys-baseline
     template: create2_deploys
     parameters:
-      initcode: "0x6001600052602060006000F0"
-      runtime: "0x615fff565b"
+      code_pattern: unique_jumpdest_pre_amsterdam
       salt_count: 10
 
   # ── 5. CREATE-preimage deploys ────────────────────────────────────────

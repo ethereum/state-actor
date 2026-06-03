@@ -119,8 +119,24 @@ least one holder has a non-zero balance).
 | `sequential_eoas` | `count` | `balance` | One entity → `count` plain EOAs at `[address, address+count)`. Anchor address comes from the entity's resolved address. `balance` defaults to `1` wei when omitted; explicit `balance: "0"` is rejected (zero-balance plain EOAs are pruned by EIP-161, leaving the planted addresses empty). Backs `SequentialAddressLayout` in bloatnet benchmarks. |
 | `storage_pattern` | `final` | — | Plants `slot 0 = final + 1` (next-free pointer) plus `slot k = k` for `k in 1..final`. Anchor address = entity's resolved address. Entity-level `nonce:` is honored; defaults to 1 (forced ≥ 1 so EIP-161 empty-account pruning doesn't wipe the entry). Backs `test_sload_bloated` / `test_sstore_bloated` `existing_slots=True`. |
 | `create2_factory` | — | — | Plants the 69-byte Arachnid deterministic-deployment proxy runtime. The deployed address defaults to the canonical Arachnid factory address `0x4e59b44847b379578588920cA78FbF26c0B4956C` when neither `address:` nor `name:` is set; explicit `address:` (or name-derived) values are honored verbatim. The runtime is always the canonical Arachnid bytecode regardless of address. **Invariant**: if any `create2_deploys` entity uses the Arachnid factory (its `factory:` is unset or explicitly set to the Arachnid address), specbuild rejects the spec unless at least one `create2_factory` entity resolves to that address. The check is narrow to Arachnid — custom factories at non-Arachnid addresses are the user's responsibility. |
-| `create2_deploys` | `initcode`, `salt_count`, `runtime` | `salt_start`, `factory`, `storage_init` | For each salt in `[salt_start, salt_start+salt_count)`, derives the CREATE2 address and plants `runtime` there. `factory` defaults to the canonical Arachnid address. The constructor is never executed — `runtime` must be the desired runtime bytecode. `storage_init` is an optional map of slot → value applied identically to every derived contract. |
-| `create_preimage_deploys` | `sender`, `count`, `runtime` | `start_nonce`, `storage_init` | For each nonce in `[start_nonce, start_nonce+count)`, derives `keccak256(rlp([sender, nonce]))[12:]` and plants `runtime` there. `storage_init` is an optional map of slot → value applied identically to every derived contract (e.g. set slot 0 to the controller address on every Bittrex child). Suited to Bittrex-Controller-style descendant chains where every child shares one body. Backs `CreatePreimageLayout` in bloatnet benchmarks (EXISTING_CONTRACT mode of `test_account_access`). |
+| `create2_deploys` | `salt_count`, plus `initcode`+`runtime` OR `code_pattern` | `salt_start`, `factory`, `storage_init` | For each salt in `[salt_start, salt_start+salt_count)`, derives the CREATE2 address and plants the resolved runtime there. Either supply literal `initcode:` + `runtime:` (shared across all derived addresses), OR `code_pattern:` to opt into a named generator (see below). `factory` defaults to the canonical Arachnid address. `storage_init` is an optional map of slot → value applied identically to every derived contract. |
+| `create_preimage_deploys` | `sender`, `count`, plus `runtime` OR `code_pattern` | `start_nonce`, `storage_init` | For each nonce in `[start_nonce, start_nonce+count)`, derives `keccak256(rlp([sender, nonce]))[12:]` and plants the resolved runtime there. Either supply literal `runtime:` (shared) or `code_pattern:` (named generator). `storage_init` is an optional map of slot → value applied identically to every derived contract. Backs `CreatePreimageLayout` in bloatnet benchmarks (EXISTING_CONTRACT mode of `test_account_access`). |
+
+### `code_pattern` — named per-address runtime generators
+
+Both `create2_deploys` and `create_preimage_deploys` accept an
+optional `code_pattern:` parameter that opts into a named generator
+producing per-derived-address byte-unique runtime. `code_pattern:` is
+**mutually exclusive** with literal `runtime:` (and, on
+`create2_deploys`, also with `initcode:`) — the pattern owns both.
+
+| Pattern name | Description |
+|---|---|
+| `unique_jumpdest_pre_amsterdam` | 24 KiB-per-contract runtime matching execution-specs `build_unique_contract_initcode` (Fusaka-era, EIP-170 limit = 0x6000). Entry: `PUSH2 0x5FFF; JUMP`; bytes 0x2C..0x40 hold the derived contract's own 20-byte address; remainder is `JUMPDEST` filler with a valid `JUMPDEST` byte at 0x5FFF where the entry JUMP lands. Backs the `diff_to_unique_code_jumpdest_contract` case in `test_transaction_types.py`. |
+
+Amsterdam (EIP-7907) raises `MAX_CODE_SIZE`, at which point a sibling
+`unique_jumpdest_amsterdam` pattern will be added. Existing
+pre-Amsterdam fixtures stay valid by their explicit name suffix.
 
 Symmetry note: `create2_deploys` and `create_preimage_deploys` are
 twin templates — their only meaningful difference is the

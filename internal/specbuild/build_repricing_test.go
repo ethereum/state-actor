@@ -83,8 +83,12 @@ func TestBuildRepricingMin(t *testing.T) {
 	}
 
 	// CREATE2 deploys (entries 102..112): every derived address should
-	// match crypto.CreateAddress2 from the YAML's initcode + factory.
-	initcode := common.FromHex("0x6001600052602060006000F0")
+	// match crypto.CreateAddress2 from the pattern's vendored initcode.
+	// The YAML's create2_deploys entry uses
+	// `code_pattern: unique_jumpdest_pre_amsterdam`, which owns both
+	// initcode (constant, hashed for CREATE2 derivation) and the
+	// per-derived-address runtime (24 KiB with embedded address).
+	initcode := templates.BuildUniqueJumpdestInitcodePreAmsterdam()
 	initHash := crypto.Keccak256(initcode)
 	for i := 0; i < 10; i++ {
 		var salt [32]byte
@@ -94,6 +98,17 @@ func TestBuildRepricingMin(t *testing.T) {
 		if pre[102+i].Address != want {
 			t.Errorf("create2_deploys[%d] addr: got %s, want %s",
 				i, pre[102+i].Address.Hex(), want.Hex())
+		}
+		// And the planted runtime should be the 24 KiB unique-jumpdest
+		// blob with the derived contract's own address embedded.
+		if len(pre[102+i].Code) != 0x6000 {
+			t.Errorf("create2_deploys[%d] runtime length: got %d, want 0x6000",
+				i, len(pre[102+i].Code))
+		}
+		embedded := common.BytesToAddress(pre[102+i].Code[0x2C:0x40])
+		if embedded != pre[102+i].Address {
+			t.Errorf("create2_deploys[%d] embedded address mismatch: got %s in runtime, want %s (derived)",
+				i, embedded.Hex(), pre[102+i].Address.Hex())
 		}
 	}
 

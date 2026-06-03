@@ -48,28 +48,53 @@ const create2DeploysSaltLimit = uint64(1) << 32
 
 func (create2DeploysTemplate) ValidateParameters(params map[string]any) error {
 	if err := RejectUnknownKeys(params, "create2_deploys", []string{
-		"initcode", "salt_start", "salt_count", "runtime", "factory", "storage_init",
+		"initcode", "salt_start", "salt_count", "runtime", "factory", "storage_init", "code_pattern",
 	}); err != nil {
 		return err
 	}
-	for _, required := range []string{"initcode", "salt_count", "runtime"} {
-		if _, ok := params[required]; !ok {
-			return fmt.Errorf("create2_deploys: missing required parameter %q", required)
+	// salt_count is always required.
+	if _, ok := params["salt_count"]; !ok {
+		return fmt.Errorf("create2_deploys: missing required parameter %q", "salt_count")
+	}
+	// `code_pattern` opts into a named generator (initcode + per-address
+	// runtime). When set, `initcode` and `runtime` are forbidden — the
+	// pattern owns both. When unset, both are required and supplied
+	// verbatim.
+	if v, has := params["code_pattern"]; has {
+		name, ok := v.(string)
+		if !ok {
+			return fmt.Errorf("create2_deploys: code_pattern must be a string (got %T)", v)
 		}
-	}
-	initcode, err := ParseHexBytesParam(params["initcode"], "initcode")
-	if err != nil {
-		return fmt.Errorf("create2_deploys: %w", err)
-	}
-	if len(initcode) == 0 {
-		return fmt.Errorf("create2_deploys: initcode must be non-empty")
-	}
-	runtime, err := ParseHexBytesParam(params["runtime"], "runtime")
-	if err != nil {
-		return fmt.Errorf("create2_deploys: %w", err)
-	}
-	if len(runtime) == 0 {
-		return fmt.Errorf("create2_deploys: runtime must be non-empty (this template does not run the EVM; supply the runtime bytecode directly)")
+		if !IsKnownCodePattern(name) {
+			return fmt.Errorf("create2_deploys: unknown code_pattern %q (known: %q)",
+				name, CodePatternUniqueJumpdestPreAmsterdam)
+		}
+		if _, has := params["initcode"]; has {
+			return fmt.Errorf("create2_deploys: `initcode` is forbidden when `code_pattern` is set (the pattern owns the initcode)")
+		}
+		if _, has := params["runtime"]; has {
+			return fmt.Errorf("create2_deploys: `runtime` is forbidden when `code_pattern` is set (the pattern generates per-address runtime)")
+		}
+	} else {
+		for _, required := range []string{"initcode", "runtime"} {
+			if _, ok := params[required]; !ok {
+				return fmt.Errorf("create2_deploys: missing required parameter %q (or set `code_pattern:`)", required)
+			}
+		}
+		initcode, err := ParseHexBytesParam(params["initcode"], "initcode")
+		if err != nil {
+			return fmt.Errorf("create2_deploys: %w", err)
+		}
+		if len(initcode) == 0 {
+			return fmt.Errorf("create2_deploys: initcode must be non-empty")
+		}
+		runtime, err := ParseHexBytesParam(params["runtime"], "runtime")
+		if err != nil {
+			return fmt.Errorf("create2_deploys: %w", err)
+		}
+		if len(runtime) == 0 {
+			return fmt.Errorf("create2_deploys: runtime must be non-empty (this template does not run the EVM; supply the runtime bytecode directly)")
+		}
 	}
 	saltCount, err := ParseUint64Param(params["salt_count"], "salt_count")
 	if err != nil {
@@ -97,8 +122,6 @@ func (create2DeploysTemplate) ValidateParameters(params map[string]any) error {
 }
 
 func (create2DeploysTemplate) Expand(ctx Context, e spec.Entity) ([]PreAllocEntity, error) {
-	initcode, _ := ParseHexBytesParam(e.Parameters["initcode"], "initcode")
-	runtime, _ := ParseHexBytesParam(e.Parameters["runtime"], "runtime")
 	saltCount, _ := ParseUint64Param(e.Parameters["salt_count"], "salt_count")
 
 	saltStart := uint64(0)
@@ -116,24 +139,52 @@ func (create2DeploysTemplate) Expand(ctx Context, e spec.Entity) ([]PreAllocEnti
 		return nil, fmt.Errorf("create2_deploys: %w", err)
 	}
 
+	// Resolve the initcode + per-derived-address runtime.
+	// Either `code_pattern` (named generator, owns both) or literal
+	// `initcode` + `runtime` parameters supply them; ValidateParameters
+	// enforces the mutex.
+	var initcode []byte
+	// patternName, when non-empty, signals per-address runtime generation
+	// via codePatternRuntimeFor; otherwise sharedRuntime is the literal
+	// `runtime:` parameter and reused across all derived contracts.
+	var patternName string
+	var sharedRuntime []byte
+	if v, has := e.Parameters["code_pattern"]; has {
+		patternName, _ = v.(string)
+		initcode, err = codePatternInitcodeFor(patternName)
+		if err != nil {
+			return nil, fmt.Errorf("create2_deploys: %w", err)
+		}
+	} else {
+		initcode, _ = ParseHexBytesParam(e.Parameters["initcode"], "initcode")
+		sharedRuntime, _ = ParseHexBytesParam(e.Parameters["runtime"], "runtime")
+	}
+
 	if saltCount == 0 {
 		return nil, nil
 	}
 
 	initHash := crypto.Keccak256(initcode)
-	codeHash := crypto.Keccak256Hash(runtime).Bytes()
 	out := make([]PreAllocEntity, 0, saltCount)
 	for k := uint64(0); k < saltCount; k++ {
 		var salt [32]byte
 		binary.BigEndian.PutUint64(salt[24:], saltStart+k)
 		derived := crypto.CreateAddress2(factory, salt, initHash)
+
+		runtime := sharedRuntime
+		if patternName != "" {
+			runtime, err = codePatternRuntimeFor(patternName, derived)
+			if err != nil {
+				return nil, fmt.Errorf("create2_deploys: salt=%d: %w", saltStart+k, err)
+			}
+		}
 		out = append(out, PreAllocEntity{
 			Address: derived,
 			Account: &types.StateAccount{
 				Nonce:    1,
 				Balance:  uint256.NewInt(0),
 				Root:     types.EmptyRootHash,
-				CodeHash: codeHash,
+				CodeHash: crypto.Keccak256Hash(runtime).Bytes(),
 			},
 			Code:    runtime,
 			Storage: MapToSeq(storageInit),
