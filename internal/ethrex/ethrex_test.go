@@ -565,7 +565,7 @@ func TestBuilderOutOfOrder(t *testing.T) {
 }
 
 // TestBuilderMixedKeyLength verifies that keys of differing nibble length are
-// rejected (would otherwise index out of bounds in buildNode).
+// rejected (the spine logic indexes key[depth] and assumes uniform length).
 func TestBuilderMixedKeyLength(t *testing.T) {
 	b := NewBuilder(nil)
 	if err := b.AddLeaf(hexNibbles("0102"), []byte("a")); err != nil {
