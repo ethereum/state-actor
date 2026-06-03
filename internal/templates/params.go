@@ -104,6 +104,85 @@ func ParseUint64Param(v any, label string) (uint64, error) {
 	}
 }
 
+// ParseStorageInitMap decodes the YAML form
+//
+//	storage_init:
+//	  "0x0":  "0xa3c1e324ca1ce40db73ed6026c4a177f099b5770"
+//	  "0x1":  "0x..."
+//
+// into a typed `map[common.Hash]common.Hash`. Each slot key and each
+// value is treated as a 32-byte hash: shorter hex strings are
+// left-padded with zero bytes, longer ones are rejected. Quoted-string
+// form is mandatory because yaml.v3 decodes nested maps as
+// `map[string]any` and our top-level scalar hooks don't apply inside
+// `parameters:`.
+//
+// Two keys that decode to the same canonical hash (e.g. `"0x0"` and
+// `"0x00"`) are rejected as a duplicate, because the user almost
+// certainly meant two distinct slots.
+//
+// Returns `(nil, nil)` when the input is nil or an empty map so the
+// caller can treat "no storage to plant" uniformly.
+func ParseStorageInitMap(v any) (map[common.Hash]common.Hash, error) {
+	if v == nil {
+		return nil, nil
+	}
+	m, ok := v.(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("storage_init must be a map of hex-string slot → hex-string value (got %T)", v)
+	}
+	if len(m) == 0 {
+		return nil, nil
+	}
+	out := make(map[common.Hash]common.Hash, len(m))
+	rawKeys := make(map[common.Hash]string, len(m))
+	for slotStr, valAny := range m {
+		slot, err := parseHashString(slotStr, "storage_init slot")
+		if err != nil {
+			return nil, err
+		}
+		if prev, dup := rawKeys[slot]; dup {
+			return nil, fmt.Errorf("storage_init: keys %q and %q decode to the same slot %s", prev, slotStr, slot.Hex())
+		}
+		rawKeys[slot] = slotStr
+		valStr, ok := valAny.(string)
+		if !ok {
+			return nil, fmt.Errorf("storage_init[%q]: value must be a quoted hex string (got %T)", slotStr, valAny)
+		}
+		val, err := parseHashString(valStr, fmt.Sprintf("storage_init[%q] value", slotStr))
+		if err != nil {
+			return nil, err
+		}
+		out[slot] = val
+	}
+	return out, nil
+}
+
+// parseHashString decodes a hex string into a left-padded 32-byte hash.
+// Accepts an optional 0x/0X prefix; rejects empty, non-hex, and
+// strings whose decoded length exceeds 32 bytes.
+func parseHashString(s, label string) (common.Hash, error) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return common.Hash{}, fmt.Errorf("%s: empty hex string", label)
+	}
+	s = strings.TrimPrefix(s, "0x")
+	s = strings.TrimPrefix(s, "0X")
+	if len(s)%2 != 0 {
+		s = "0" + s
+	}
+	if len(s) > 64 {
+		return common.Hash{}, fmt.Errorf("%s: hex value exceeds 32 bytes (got %d hex chars)", label, len(s))
+	}
+	raw, err := hex.DecodeString(s)
+	if err != nil {
+		return common.Hash{}, fmt.Errorf("%s: decode error: %w", label, err)
+	}
+	var h common.Hash
+	copy(h[common.HashLength-len(raw):], raw)
+	return h, nil
+}
+
 // RejectUnknownKeys errors when params contains a key outside allowed.
 // The template name is interpolated into the error to point users at
 // the right schema docs.

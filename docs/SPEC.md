@@ -119,8 +119,16 @@ least one holder has a non-zero balance).
 | `sequential_eoas` | `count` | `balance` | One entity → `count` plain EOAs at `[address, address+count)`. Anchor address comes from the entity's resolved address. `balance` defaults to `1` wei when omitted; explicit `balance: "0"` is rejected (zero-balance plain EOAs are pruned by EIP-161, leaving the planted addresses empty). Backs `SequentialAddressLayout` in bloatnet benchmarks. |
 | `storage_pattern` | `final` | — | Plants `slot 0 = final + 1` (next-free pointer) plus `slot k = k` for `k in 1..final`. Anchor address = entity's resolved address. Entity-level `nonce:` is honored; defaults to 1 (forced ≥ 1 so EIP-161 empty-account pruning doesn't wipe the entry). Backs `test_sload_bloated` / `test_sstore_bloated` `existing_slots=True`. |
 | `create2_factory` | — | — | Plants the 69-byte Arachnid deterministic-deployment proxy runtime. The entity's resolved address MUST equal `0x4e59b44847b379578588920cA78FbF26c0B4956C`. |
-| `create2_deploys` | `initcode`, `salt_count`, `deployed_code` | `salt_start`, `factory` | For each salt in `[salt_start, salt_start+salt_count)`, derives the CREATE2 address and plants `deployed_code` there. `factory` defaults to the canonical Arachnid address. The constructor is never executed — `deployed_code` must be the desired runtime. |
-| `create_preimage_deploys` | `sender`, `count`, `runtime` | `start_nonce` | For each nonce in `[start_nonce, start_nonce+count)`, derives `keccak256(rlp([sender, nonce]))[12:]` and plants `runtime` there. Suited to Bittrex-Controller-style descendant chains where every child shares one body. Backs `CreatePreimageLayout` in bloatnet benchmarks (EXISTING_CONTRACT mode of `test_account_access`). |
+| `create2_deploys` | `initcode`, `salt_count`, `runtime` | `salt_start`, `factory`, `storage_init` | For each salt in `[salt_start, salt_start+salt_count)`, derives the CREATE2 address and plants `runtime` there. `factory` defaults to the canonical Arachnid address. The constructor is never executed — `runtime` must be the desired runtime bytecode. `storage_init` is an optional map of slot → value applied identically to every derived contract. |
+| `create_preimage_deploys` | `sender`, `count`, `runtime` | `start_nonce`, `storage_init` | For each nonce in `[start_nonce, start_nonce+count)`, derives `keccak256(rlp([sender, nonce]))[12:]` and plants `runtime` there. `storage_init` is an optional map of slot → value applied identically to every derived contract (e.g. set slot 0 to the controller address on every Bittrex child). Suited to Bittrex-Controller-style descendant chains where every child shares one body. Backs `CreatePreimageLayout` in bloatnet benchmarks (EXISTING_CONTRACT mode of `test_account_access`). |
+
+Symmetry note: `create2_deploys` and `create_preimage_deploys` are
+twin templates — their only meaningful difference is the
+address-derivation algorithm (CREATE2 vs CREATE). Every other
+parameter (`runtime`, `storage_init`) behaves identically. If you
+need per-derived-address custom code (e.g. embedding each contract's
+own address in its runtime), that pattern is not in scope for these
+templates today — declare each variant as its own entity.
 
 ### `erc20` parameters in detail
 
@@ -223,25 +231,30 @@ under `kind: contract`.
   address: 0x4e59b44847b379578588920cA78FbF26c0B4956C
 
 # CREATE2 deploys — one entity expands to N CREATE2-derived contracts.
-# Constructor is never executed; `deployed_code` is what lands at every
+# Constructor is never executed; `runtime` is what lands at every
 # derived address. Use the same initcode the chain actually uses so the
-# derivation matches; `deployed_code` may differ from initcode's intended
-# return value if you want a synthetic body.
+# derivation matches; `runtime` may differ from initcode's intended
+# return value if you want a synthetic body. `storage_init` (optional)
+# applies the same slot→value map at every derived address.
 - kind: contract
   template: create2_deploys
   parameters:
     initcode: "0x6080..."       # required; hex bytes (drives CREATE2 derivation)
-    deployed_code: "0x6080..."  # required; hex bytes (planted at every derived addr)
+    runtime: "0x6080..."        # required; hex bytes (planted at every derived addr)
     salt_count: 1000            # required; uint64
     salt_start: 0               # optional; uint64, defaults to 0
     factory: "0x4e59...956c"    # optional; defaults to canonical Arachnid
+    storage_init:               # optional; same map planted on every derived contract
+      "0x0": "0x...padded-32-bytes..."
 
 # CREATE-preimage deploys — Bittrex-style chain. For each nonce in
 # [start_nonce, start_nonce+count), derive crypto.CreateAddress(sender,
 # nonce) and plant `runtime` there. The sender is supplied as a
 # parameter (NOT the entity's address), so the user is free to also
 # declare a separate entity (`template: raw`, etc.) at the sender's
-# address.
+# address. `storage_init` (optional) applies the same slot→value map
+# at every derived address — e.g. set slot 0 = controller address on
+# every Bittrex child.
 - kind: contract
   template: create_preimage_deploys
   parameters:
@@ -249,10 +262,19 @@ under `kind: contract`.
     count: 1500000              # required; uint64
     runtime: "0x6080..."        # required; hex bytes, planted at every derived addr
     start_nonce: 2              # optional; uint64, defaults to 0
+    storage_init:               # optional; same map planted on every derived contract
+      "0x0": "0xa3c1e324ca1ce40db73ed6026c4a177f099b5770"
 ```
 
 Type rules inside `parameters:` mirror the ERC-20 ones — addresses and
 hex-byte fields **must be quoted strings**.
+
+The `storage_init` map deserves its own note: both slot keys and
+values are treated as 32-byte hashes. Shorter hex strings are
+left-padded with zero bytes (so `"0x0"` is slot 0 and `"0xa3c1…5770"`
+becomes a 20-byte address left-padded to a 32-byte slot value). Two
+YAML keys that decode to the same canonical slot (e.g. `"0x0"` and
+`"0x00"`) are rejected as a duplicate at parse time.
 
 Built-in non-template handlers (no `template:` field needed):
 

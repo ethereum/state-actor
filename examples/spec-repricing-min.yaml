@@ -54,14 +54,16 @@ entities:
   # initcode here is a stand-in for the production initcode — what
   # actually matters for the benchmarks is that the CREATE2 derivation
   # is reproducible and that something callable lives at each derived
-  # address. deployed_code = JUMP(PUSH2(0x5FFF)) + JUMPDEST mirrors the
-  # benchmark's expected runtime.
+  # address. runtime = JUMP(PUSH2(0x5FFF)) + JUMPDEST mirrors the
+  # benchmark's expected runtime for THIS specific case (the unique-
+  # jumpdest CREATE2 receiver path). The Bittrex case below uses a
+  # different runtime — the real Bittrex Controller child bytecode.
   - kind: contract
     name: create2-deploys-baseline
     template: create2_deploys
     parameters:
       initcode: "0x6001600052602060006000F0"
-      deployed_code: "0x615fff565b"
+      runtime: "0x615fff565b"
       salt_count: 10
 
   # ── 5. CREATE-preimage deploys ────────────────────────────────────────
@@ -70,6 +72,15 @@ entities:
   # a *parameter*, NOT the entity's `address:` field, so users can
   # declare a separate entity at 0xA3C1...5770 (e.g. with the actual
   # Bittrex Controller bytecode via `template: raw`) without colliding.
+  #
+  # runtime is the real on-mainnet bytecode of a Bittrex Controller
+  # child contract (example at https://etherscan.io/address/
+  # 0xe871313a20df727f5c226258414e4df2df2d9f41). Each child of the
+  # Bittrex Controller carries this runtime AND has slot 0 set to the
+  # parent controller's address — `storage_init` planted that here.
+  # This matches what test_ether_transfers_onchain_receivers expects
+  # for `case_id == "diff_to_contract"` (a clone of the real child's
+  # runtime, with the controller address callable from slot 0).
   - kind: contract
     name: create-preimage-baseline
     template: create_preimage_deploys
@@ -77,4 +88,9 @@ entities:
       sender: "0xA3C1E324CA1CE40DB73ED6026C4A177F099B5770"
       start_nonce: 2
       count: 10
-      runtime: "0x615fff565b"
+      runtime: "0x606060405236156100495763ffffffff7c01000000000000000000000000000000000000000000000000000000006000350416636ea056a98114610052578063c0ee0b8a14610092575b6100505b5b565b005b341561005a57fe5b61007e73ffffffffffffffffffffffffffffffffffffffff60043516602435610104565b604080519115158252519081900360200190f35b341561009a57fe5b604080516020600460443581810135601f810184900484028501840190955284845261005094823573ffffffffffffffffffffffffffffffffffffffff169460248035956064949293919092019181908401838280828437509496506101ef95505050505050565b005b6000805460408051602090810184905281517f3c18d31800000000000000000000000000000000000000000000000000000000815273ffffffffffffffffffffffffffffffffffffffff878116600483015292519290931692633c18d318926024808301939282900301818787803b151561017b57fe5b6102c65a03f1151561018957fe5b5050506040518051905073ffffffffffffffffffffffffffffffffffffffff1660003660006040516020015260405180838380828437820191505092505050602060405180830381856102c65a03f415156101e057fe5b50506040515190505b92915050565b5b5050505600a165627a7a723058204cdd69fdcf3cf6cbee9677fe380fa5f044048aa9e060ec5619a21ca5a5bd4cd10029"
+      storage_init:
+        # Slot 0 on every Bittrex child = the parent controller address,
+        # following the real on-mainnet invariant. The 20-byte address is
+        # left-padded to a 32-byte slot value.
+        "0x0": "0xa3c1e324ca1ce40db73ed6026c4a177f099b5770"

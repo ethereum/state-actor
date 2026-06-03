@@ -46,7 +46,7 @@ const createPreimageNonceLimit = uint64(1) << 32
 
 func (createPreimageDeploysTemplate) ValidateParameters(params map[string]any) error {
 	if err := RejectUnknownKeys(params, "create_preimage_deploys", []string{
-		"sender", "start_nonce", "count", "runtime",
+		"sender", "start_nonce", "count", "runtime", "storage_init",
 	}); err != nil {
 		return err
 	}
@@ -77,6 +77,11 @@ func (createPreimageDeploysTemplate) ValidateParameters(params map[string]any) e
 			return fmt.Errorf("create_preimage_deploys: %w", err)
 		}
 	}
+	if v, has := params["storage_init"]; has {
+		if _, err := ParseStorageInitMap(v); err != nil {
+			return fmt.Errorf("create_preimage_deploys: %w", err)
+		}
+	}
 	return nil
 }
 
@@ -87,6 +92,10 @@ func (createPreimageDeploysTemplate) Expand(ctx Context, e spec.Entity) ([]PreAl
 	startNonce := uint64(0)
 	if v, has := e.Parameters["start_nonce"]; has {
 		startNonce, _ = ParseUint64Param(v, "start_nonce")
+	}
+	storageInit, err := ParseStorageInitMap(e.Parameters["storage_init"])
+	if err != nil {
+		return nil, fmt.Errorf("create_preimage_deploys: %w", err)
 	}
 	if count == 0 {
 		return nil, nil
@@ -103,7 +112,8 @@ func (createPreimageDeploysTemplate) Expand(ctx Context, e spec.Entity) ([]PreAl
 				Root:     types.EmptyRootHash,
 				CodeHash: codeHash,
 			},
-			Code: runtime,
+			Code:    runtime,
+			Storage: MapToSeq(storageInit),
 		})
 	}
 	return out, nil

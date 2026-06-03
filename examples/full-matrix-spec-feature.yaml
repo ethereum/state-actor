@@ -272,7 +272,7 @@ entities:
     name: ci-create2-deploys
     parameters:
       initcode: "0x6001600052602060006000F0"
-      deployed_code: "0x615fff565b"
+      runtime: "0x615fff565b"
       salt_count: 3
 
   # 26. create_preimage_deploys — fans out `count` contracts at

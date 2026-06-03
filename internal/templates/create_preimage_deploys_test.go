@@ -43,6 +43,47 @@ func TestCreatePreimageDeploysExpand(t *testing.T) {
 		if pe.Account.Nonce != 1 {
 			t.Errorf("nonce=%d account nonce: got %d, want 1", 2+i, pe.Account.Nonce)
 		}
+		if pe.Storage != nil {
+			t.Errorf("nonce=%d: Storage must be nil when storage_init is unset (got non-nil iter)", 2+i)
+		}
+	}
+}
+
+// TestCreatePreimageDeploysStorageInit pins that `storage_init` is
+// propagated to every derived contract's Storage iter. The Bittrex
+// example sets slot 0 = controller address on every child.
+func TestCreatePreimageDeploysStorageInit(t *testing.T) {
+	ent := mkContractEntity("create_preimage_deploys", map[string]any{
+		"sender":      bittrexAddrHex,
+		"start_nonce": 2,
+		"count":       3,
+		"runtime":     "0xfe",
+		"storage_init": map[string]any{
+			"0x0": "0xa3c1e324ca1ce40db73ed6026c4a177f099b5770",
+		},
+	})
+	out, err := (&createPreimageDeploysTemplate{}).Expand(Context{}, ent)
+	if err != nil {
+		t.Fatalf("Expand: %v", err)
+	}
+	if len(out) != 3 {
+		t.Fatalf("count: got %d, want 3", len(out))
+	}
+	wantSlot0 := common.HexToHash("0x000000000000000000000000a3c1e324ca1ce40db73ed6026c4a177f099b5770")
+	for i, pe := range out {
+		if pe.Storage == nil {
+			t.Fatalf("derived[%d]: Storage must be non-nil when storage_init is set", i)
+		}
+		pairs := collectPairs(pe.Storage)
+		if len(pairs) != 1 {
+			t.Fatalf("derived[%d]: storage pair count: got %d, want 1", i, len(pairs))
+		}
+		if pairs[0].K != (common.Hash{}) {
+			t.Errorf("derived[%d]: slot key: got %s, want 0x00..00", i, pairs[0].K.Hex())
+		}
+		if pairs[0].V != wantSlot0 {
+			t.Errorf("derived[%d]: slot 0 value: got %s, want %s", i, pairs[0].V.Hex(), wantSlot0.Hex())
+		}
 	}
 }
 
@@ -89,19 +130,35 @@ func TestCreatePreimageDeploysValidate(t *testing.T) {
 		t.Errorf("valid: %v", err)
 	}
 	bad := []map[string]any{
-		{"count": 10, "runtime": "0xfe"},                                                   // missing sender
-		{"sender": bittrexAddrHex, "runtime": "0xfe"},                                      // missing count
-		{"sender": bittrexAddrHex, "count": 10},                                            // missing runtime
-		{"sender": "not-an-address", "count": 10, "runtime": "0xfe"},                       // bad sender
-		{"sender": bittrexAddrHex, "count": 10, "runtime": ""},                             // empty runtime
-		{"sender": bittrexAddrHex, "count": "10", "runtime": "0xfe"},                       // bad count type
-		{"sender": bittrexAddrHex, "count": -1, "runtime": "0xfe"},                         // negative count
-		{"sender": bittrexAddrHex, "count": 10, "runtime": "0xfe", "start_nonce": -1},      // negative start_nonce
-		{"sender": bittrexAddrHex, "count": 10, "runtime": "0xfe", "wat": "x"},             // unknown key
+		{"count": 10, "runtime": "0xfe"},                                              // missing sender
+		{"sender": bittrexAddrHex, "runtime": "0xfe"},                                 // missing count
+		{"sender": bittrexAddrHex, "count": 10},                                       // missing runtime
+		{"sender": "not-an-address", "count": 10, "runtime": "0xfe"},                  // bad sender
+		{"sender": bittrexAddrHex, "count": 10, "runtime": ""},                        // empty runtime
+		{"sender": bittrexAddrHex, "count": "10", "runtime": "0xfe"},                  // bad count type
+		{"sender": bittrexAddrHex, "count": -1, "runtime": "0xfe"},                    // negative count
+		{"sender": bittrexAddrHex, "count": 10, "runtime": "0xfe", "start_nonce": -1}, // negative start_nonce
+		{"sender": bittrexAddrHex, "count": 10, "runtime": "0xfe", "wat": "x"},        // unknown key
+		// storage_init must be a map of hex-string slot → hex-string value.
+		{"sender": bittrexAddrHex, "count": 1, "runtime": "0xfe", "storage_init": "0x0"},
+		{"sender": bittrexAddrHex, "count": 1, "runtime": "0xfe",
+			"storage_init": map[string]any{"0x0": 1}}, // value not a string
+		{"sender": bittrexAddrHex, "count": 1, "runtime": "0xfe",
+			"storage_init": map[string]any{"not-hex": "0x0"}}, // bad slot
 	}
 	for i, p := range bad {
 		if err := tmpl.ValidateParameters(p); err == nil {
 			t.Errorf("bad[%d]: expected error, got nil for %v", i, p)
 		}
+	}
+	// storage_init: well-formed map is accepted.
+	good = map[string]any{
+		"sender": bittrexAddrHex, "count": 1, "runtime": "0xfe",
+		"storage_init": map[string]any{
+			"0x0": "0xa3c1e324ca1ce40db73ed6026c4a177f099b5770",
+		},
+	}
+	if err := tmpl.ValidateParameters(good); err != nil {
+		t.Errorf("storage_init valid: %v", err)
 	}
 }
