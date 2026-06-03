@@ -27,14 +27,11 @@ import (
 )
 
 // pinnedEthrexImage is the upstream ethrex Docker image the e2e suite pins
-// against. Override with ETHREX_IMAGE=ghcr.io/lambdaclass/ethrex:<tag> to
-// test a specific release.
+// against, digest-pinned for reproducibility. Override with
+// ETHREX_IMAGE=ghcr.io/lambdaclass/ethrex:<tag> to test a specific release.
 //
-// NOTE: The exact image tag corresponding to ethrex commit 318ec2888
-// should be confirmed on first CI run — confirm via
-// `docker pull ghcr.io/lambdaclass/ethrex:latest` and check its embedded
-// version matches the pinned commit.
-const pinnedEthrexImage = "ghcr.io/lambdaclass/ethrex:latest"
+// Tagged release v15.0.0 (ghcr tag 15.0.0).
+const pinnedEthrexImage = "ghcr.io/lambdaclass/ethrex:15.0.0@sha256:9963bd1fa2ba2085d131752fe58f047ff162bfa1a24b5addee0140f9863abda5"
 
 func ethrexImageRef() string {
 	if v := os.Getenv("ETHREX_IMAGE"); v != "" {

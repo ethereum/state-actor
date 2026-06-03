@@ -33,11 +33,11 @@
 // state-actor writes a matching genesis header + canonical row, so ethrex
 // never recomputes the state trie at boot.
 //
-// # Pinned commit
+// # Pinned release
 //
-// Tested against ethrex commit 318ec2888944ad38fee66c2ae8b9dccbd8df939f
-// (lambdaclass/ethrex). The golden test in golden_test.go (cgo_ethrex-only)
-// verifies byte-exactness against testdata/genesis_dump.json from that commit.
+// Tested against ethrex release v15.0.0 (lambdaclass/ethrex). The golden test
+// in golden_test.go (cgo_ethrex-only) verifies byte-exactness against
+// testdata/genesis_dump.json, which is byte-identical from v13.0.0 to v15.0.0.
 //
 // # Docker-only
 //

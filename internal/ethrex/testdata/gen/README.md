@@ -5,11 +5,13 @@
 column family as hex-encoded JSON. It must be regenerated whenever the ethrex
 storage schema changes.
 
-## Pinned commit
+## Pinned release
 
 ```
-lambdaclass/ethrex @ 318ec2888944ad38fee66c2ae8b9dccbd8df939f
+lambdaclass/ethrex @ v15.0.0
 ```
+
+The fixture is byte-identical from v13.0.0 (commit 318ec2888) through v15.0.0.
 
 Any ethrex commit that bumps `STORE_SCHEMA_VERSION` or changes the key layout
 of `account_trie_nodes`, `storage_trie_nodes`, `account_codes`, or
@@ -23,7 +25,7 @@ Go codec in `internal/ethrex/`.
    ```sh
    git clone https://github.com/lambdaclass/ethrex
    cd ethrex
-   git checkout 318ec2888944ad38fee66c2ae8b9dccbd8df939f
+   git checkout v15.0.0
    ```
 
 2. Copy the dump harness into ethrex's examples directory:
