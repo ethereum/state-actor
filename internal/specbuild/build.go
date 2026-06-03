@@ -55,6 +55,10 @@ func Build(s *spec.Spec, opts BuildOptions) ([]templates.PreAllocEntity, Diagnos
 
 	entities := truncateForTargetSize(s.Entities, opts, &diag)
 
+	if err := enforceArachnidFactoryRequirement(entities, opts); err != nil {
+		return nil, diag, err
+	}
+
 	// Lower-case hex → first-emitting entity index.
 	seenAddrs := make(map[string]int, len(entities))
 
@@ -215,4 +219,77 @@ func truncateForTargetSize(entities []spec.Entity, opts BuildOptions, diag *Diag
 		running += cost
 	}
 	return entities
+}
+
+// enforceArachnidFactoryRequirement implements the cross-entity invariant
+// for `create2_deploys` ↔ `create2_factory` pairing:
+//
+//	If any `create2_deploys` entity uses the canonical Arachnid factory
+//	(i.e. its `factory:` parameter is unset or explicitly set to
+//	templates.CanonicalCREATE2FactoryAddress), then at least one
+//	`create2_factory` entity MUST resolve to that same address.
+//
+// The check is intentionally narrow — only the Arachnid case is
+// enforced. Users who deploy via a custom factory at a non-Arachnid
+// address take responsibility for declaring (or not declaring) a
+// matching `create2_factory` entity themselves; specbuild won't block
+// them.
+//
+// Caught at parse time so the user fixes the spec before kicking off a
+// multi-hour generation that would otherwise produce a chaindata whose
+// CREATE2-derived contracts call into an empty 0x4e59…956c.
+func enforceArachnidFactoryRequirement(entities []spec.Entity, opts BuildOptions) error {
+	arachnid := templates.CanonicalCREATE2FactoryAddress
+
+	// First pass: does any create2_deploys entry reference the Arachnid
+	// factory (either by default — factory: omitted — or explicitly)?
+	consumerIdx := -1
+	for i, e := range entities {
+		if e.Template != "create2_deploys" {
+			continue
+		}
+		factory := arachnid
+		if v, has := e.Parameters["factory"]; has {
+			parsed, err := templates.ParseAddressParam(v, "factory")
+			if err != nil {
+				// Skip — schema validation in tmpl.ValidateParameters will
+				// surface this with a clearer error than we could here.
+				continue
+			}
+			factory = parsed
+		}
+		if factory == arachnid {
+			consumerIdx = i
+			break
+		}
+	}
+	if consumerIdx == -1 {
+		return nil
+	}
+
+	// Second pass: is there a create2_factory entity that resolves to the
+	// Arachnid address? Mirrors create2_factory.Expand's defaulting:
+	// `address:` unset AND `name:` unset → Arachnid; otherwise honor the
+	// resolved address.
+	for i, e := range entities {
+		if e.Template != "create2_factory" {
+			continue
+		}
+		var addr common.Address
+		if e.Address == nil && e.Name == "" {
+			addr = arachnid
+		} else {
+			addr = ResolveAddress(opts.Seed, e, i)
+		}
+		if addr == arachnid {
+			return nil
+		}
+	}
+
+	return fmt.Errorf(
+		"entities[%d] (template create2_deploys) deploys via the canonical Arachnid factory at %s but no create2_factory entity resolves to that address; add\n"+
+			"  - kind: contract\n"+
+			"    template: create2_factory\n"+
+			"to the spec (the template defaults to %s when neither `address:` nor `name:` is set)",
+		consumerIdx, arachnid.Hex(), arachnid.Hex())
 }

@@ -118,7 +118,7 @@ least one holder has a non-zero balance).
 | `erc20`  | `symbol`, `name`, `decimals` | `owners`, `allowances`, `total_owners`, `total_allowances` | Vendored OpenZeppelin v5.6.1 ERC20 deployed runtime bytecode (`internal/templates/erc20_oz_v5.hex`, regenerate via `scripts/regen-erc20-bytecode.sh`). `decimals` must equal 18 (OZ v5 base default); use the `raw` template for other decimals. |
 | `sequential_eoas` | `count` | `balance` | One entity → `count` plain EOAs at `[address, address+count)`. Anchor address comes from the entity's resolved address. `balance` defaults to `1` wei when omitted; explicit `balance: "0"` is rejected (zero-balance plain EOAs are pruned by EIP-161, leaving the planted addresses empty). Backs `SequentialAddressLayout` in bloatnet benchmarks. |
 | `storage_pattern` | `final` | — | Plants `slot 0 = final + 1` (next-free pointer) plus `slot k = k` for `k in 1..final`. Anchor address = entity's resolved address. Entity-level `nonce:` is honored; defaults to 1 (forced ≥ 1 so EIP-161 empty-account pruning doesn't wipe the entry). Backs `test_sload_bloated` / `test_sstore_bloated` `existing_slots=True`. |
-| `create2_factory` | — | — | Plants the 69-byte Arachnid deterministic-deployment proxy runtime. The entity's resolved address MUST equal `0x4e59b44847b379578588920cA78FbF26c0B4956C`. |
+| `create2_factory` | — | — | Plants the 69-byte Arachnid deterministic-deployment proxy runtime. The deployed address defaults to the canonical Arachnid factory address `0x4e59b44847b379578588920cA78FbF26c0B4956C` when neither `address:` nor `name:` is set; explicit `address:` (or name-derived) values are honored verbatim. The runtime is always the canonical Arachnid bytecode regardless of address. **Invariant**: if any `create2_deploys` entity uses the Arachnid factory (its `factory:` is unset or explicitly set to the Arachnid address), specbuild rejects the spec unless at least one `create2_factory` entity resolves to that address. The check is narrow to Arachnid — custom factories at non-Arachnid addresses are the user's responsibility. |
 | `create2_deploys` | `initcode`, `salt_count`, `runtime` | `salt_start`, `factory`, `storage_init` | For each salt in `[salt_start, salt_start+salt_count)`, derives the CREATE2 address and plants `runtime` there. `factory` defaults to the canonical Arachnid address. The constructor is never executed — `runtime` must be the desired runtime bytecode. `storage_init` is an optional map of slot → value applied identically to every derived contract. |
 | `create_preimage_deploys` | `sender`, `count`, `runtime` | `start_nonce`, `storage_init` | For each nonce in `[start_nonce, start_nonce+count)`, derives `keccak256(rlp([sender, nonce]))[12:]` and plants `runtime` there. `storage_init` is an optional map of slot → value applied identically to every derived contract (e.g. set slot 0 to the controller address on every Bittrex child). Suited to Bittrex-Controller-style descendant chains where every child shares one body. Backs `CreatePreimageLayout` in bloatnet benchmarks (EXISTING_CONTRACT mode of `test_account_access`). |
 
@@ -225,10 +225,13 @@ under `kind: contract`.
     final: 50000000             # required; uint64
 
 # CREATE2 factory — plants the canonical Arachnid factory runtime.
-# Address MUST equal 0x4e59b44847b379578588920cA78FbF26c0B4956C.
+# `address:` defaults to 0x4e59b44847b379578588920cA78FbF26c0B4956C
+# (the canonical Arachnid address) when neither `address:` nor `name:`
+# is set. Explicit non-Arachnid addresses are accepted; the planted
+# runtime is always the canonical Arachnid bytecode.
 - kind: contract
   template: create2_factory
-  address: 0x4e59b44847b379578588920cA78FbF26c0B4956C
+  # address: 0x4e59b44847b379578588920cA78FbF26c0B4956C  # optional
 
 # CREATE2 deploys — one entity expands to N CREATE2-derived contracts.
 # Constructor is never executed; `runtime` is what lands at every

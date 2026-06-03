@@ -30,11 +30,20 @@ var CanonicalCREATE2FactoryCode = common.FromHex(
 )
 
 // create2FactoryTemplate handles `kind: contract, template: create2_factory`.
-// Plants the Arachnid factory runtime at the entity's resolved address
-// (which must equal CanonicalCREATE2FactoryAddress).
+// Plants the canonical Arachnid factory runtime at the entity's resolved
+// address. When neither `address:` nor `name:` is set on the entity,
+// the template defaults the planted address to the canonical Arachnid
+// factory address (CanonicalCREATE2FactoryAddress) — picking the
+// position-derived address ResolveAddress would otherwise return is
+// almost certainly a user mistake for a singleton like this. Explicit
+// `address:` (or `name:`-derived) values are honored verbatim; the
+// runtime stays the canonical Arachnid bytecode regardless.
 //
-// Accepts no parameters. Pair with `create2_deploys` when the spec needs
-// both the factory and contracts deployed through it.
+// Pair with `create2_deploys` when the spec needs both the factory and
+// contracts deployed through it. If a `create2_deploys` entry uses the
+// Arachnid factory (its `factory:` is unset or explicitly set to
+// CanonicalCREATE2FactoryAddress), specbuild.Build enforces that a
+// matching `create2_factory` entity exists at the Arachnid address.
 type create2FactoryTemplate struct{}
 
 func (create2FactoryTemplate) Name() string      { return "create2_factory" }
@@ -48,15 +57,17 @@ func (create2FactoryTemplate) ValidateParameters(params map[string]any) error {
 }
 
 func (create2FactoryTemplate) Expand(ctx Context, e spec.Entity) ([]PreAllocEntity, error) {
-	if ctx.ResolvedAddress != CanonicalCREATE2FactoryAddress {
-		return nil, fmt.Errorf("create2_factory: resolved address %s does not match the canonical Arachnid factory %s; set `address: %s` on the entity",
-			ctx.ResolvedAddress.Hex(),
-			CanonicalCREATE2FactoryAddress.Hex(),
-			CanonicalCREATE2FactoryAddress.Hex())
+	addr := ctx.ResolvedAddress
+	// Default the address to CanonicalCREATE2FactoryAddress when the user
+	// supplied neither `address:` nor `name:`. ResolveAddress would
+	// otherwise hand back a seed-position-derived address, which is
+	// meaningless for a singleton factory deployment.
+	if e.Address == nil && e.Name == "" {
+		addr = CanonicalCREATE2FactoryAddress
 	}
 	code := CanonicalCREATE2FactoryCode
 	pe := PreAllocEntity{
-		Address: ctx.ResolvedAddress,
+		Address: addr,
 		Account: &types.StateAccount{
 			Nonce:    1,
 			Balance:  uint256.NewInt(0),
