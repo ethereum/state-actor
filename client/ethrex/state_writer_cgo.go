@@ -50,7 +50,7 @@ func writeState(
 	seenCodeHash := make(map[common.Hash]struct{})
 
 	// writeCode writes code for a given codeHash if not already seen.
-	// Always writes even for empty code (per SPIKE_FINDINGS).
+	// Always writes even for empty code (ethrex stores the empty-code entry).
 	writeCode := func(codeHash common.Hash, code []byte) error {
 		if _, seen := seenCodeHash[codeHash]; seen {
 			return nil

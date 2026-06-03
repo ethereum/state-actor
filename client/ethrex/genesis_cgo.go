@@ -13,7 +13,7 @@ import (
 
 // writeGenesisBlock persists the genesis block rows to ethrex's RocksDB.
 //
-// Written CFs per SPIKE_FINDINGS.md:
+// Written CFs:
 //   - headers[RLP(hash)]               = rlp.EncodeToBytes(header)
 //   - bodies[RLP(hash)]                = 0xc3c0c0c0 (RLP [[],[],[]])
 //   - block_numbers[RLP(hash)]         = u64-LE(0)

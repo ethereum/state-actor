@@ -16,7 +16,7 @@ var ErrKeysOutOfOrder = errors.New("Builder: keys must be inserted in strictly a
 // NodeSink is called by Builder once for each emitted trie row.
 // pathNibbles is the raw (unprefixed) nibble path to the node; value is the
 // node RLP (for branch/extension/leaf nodes) or the raw leaf value (for
-// full-path leaf rows). See SPIKE_FINDINGS.md "Two rows per leaf".
+// full-path leaf rows). See the "two rows per leaf" model below.
 //
 // For storage tries, the caller prepends the 66-nibble address prefix to
 // pathNibbles before writing to the DB. The Builder itself is keyspace-agnostic.
@@ -55,8 +55,8 @@ type NodeSink func(pathNibbles []byte, value []byte) error
 //     trie with no slots, DO NOT call Root() through a storage-prefix sink — that
 //     would write a bogus (prefix, 0x80) row. Instead the Phase 2 writer must
 //     skip the Builder entirely for empty-storage accounts: emit zero storage
-//     rows and set the account's storage_root = EMPTY_TRIE_HASH directly. See
-//     SPIKE_FINDINGS.md ("Accounts with no storage emit ZERO storage rows").
+//     rows and set the account's storage_root = EMPTY_TRIE_HASH directly
+//     (accounts with no storage emit ZERO storage rows).
 //
 // # Storage prefix
 //

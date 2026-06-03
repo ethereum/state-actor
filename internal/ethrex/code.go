@@ -34,7 +34,7 @@ func ComputeJumpTargets(bytecode []byte) []uint32 {
 //     big-endian integers (one per uint32 target offset).
 //
 // The two RLP encodings are concatenated directly (not wrapped in an outer list).
-// Mirrors ethrex account_codes encoding (SPIKE_FINDINGS.md).
+// Mirrors ethrex account_codes encoding.
 //
 // Golden checks:
 //   - EncodeCode(0x60015b00) = 0x8460015b00 c1 02 (jumpTargets=[2])
