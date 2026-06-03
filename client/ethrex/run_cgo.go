@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 
 	"github.com/ethereum/go-ethereum/common"
 
@@ -51,7 +52,15 @@ func runImpl(ctx context.Context, cfg generator.Config, opts Options) (*generato
 		return nil, errors.New("ethrex: cfg.Genesis must have Config set (use genesis.BuildSynthetic)")
 	}
 
-	db, err := openEthrexDB(cfg.DBPath)
+	// Write the RocksDB + metadata.json into the subdir ethrex resolves for a
+	// custom --network genesis, so a boot at --datadir=<DBPath> finds the store
+	// directly (no reliance on ethrex's datadir migration). See StoreDir.
+	dbDir := StoreDir(cfg.DBPath, g)
+	if err := os.MkdirAll(dbDir, 0o755); err != nil {
+		return nil, fmt.Errorf("ethrex: create datadir %s: %w", dbDir, err)
+	}
+
+	db, err := openEthrexDB(dbDir)
 	if err != nil {
 		return nil, err
 	}
@@ -78,7 +87,9 @@ func runImpl(ctx context.Context, cfg generator.Config, opts Options) (*generato
 		return nil, err
 	}
 
-	if err := WriteStoreMetadata(cfg.DBPath); err != nil {
+	// metadata.json must sit in the effective datadir (next to the RocksDB);
+	// the genesis sidecar stays at the datadir root, where --network points.
+	if err := WriteStoreMetadata(dbDir); err != nil {
 		return nil, err
 	}
 

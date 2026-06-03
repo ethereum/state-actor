@@ -84,8 +84,9 @@ func TestGenesisDumpGolden(t *testing.T) {
 	// Load dump.
 	dump := loadGoldenDump(t)
 
-	// Diff each written CF against the dump.
-	dbPath := cfg.DBPath
+	// Diff each written CF against the dump. The writer nests the store under
+	// chain-<chainid> (see ethrex.StoreDir), so read from there, not cfg.DBPath.
+	dbPath := ethrex.StoreDir(cfg.DBPath, g)
 	for _, cfName := range []string{
 		"account_trie_nodes",
 		"storage_trie_nodes",

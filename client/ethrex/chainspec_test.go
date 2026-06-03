@@ -101,3 +101,30 @@ func TestChainConfigJSON(t *testing.T) {
 		}
 	}
 }
+
+// TestStoreDir locks the on-disk store path to ethrex's effective datadir
+// (<datadir>/chain-<chainid>). Boot correctness depends on this exactly
+// matching ethrex's compute_effective_datadir → datadir_suffix; a mismatch
+// would silently send ethrex to a different (empty) dir or trigger migration.
+func TestStoreDir(t *testing.T) {
+	g, err := genesis.BuildSynthetic("prague", big.NewInt(1337), 0, 0, nil)
+	if err != nil {
+		t.Fatalf("BuildSynthetic: %v", err)
+	}
+	if got, want := ethrex.StoreDir("/data", g), filepath.Join("/data", "chain-1337"); got != want {
+		t.Errorf("StoreDir(1337) = %q, want %q", got, want)
+	}
+
+	g2, err := genesis.BuildSynthetic("prague", big.NewInt(424242), 0, 0, nil)
+	if err != nil {
+		t.Fatalf("BuildSynthetic: %v", err)
+	}
+	if got, want := ethrex.StoreDir("/x", g2), filepath.Join("/x", "chain-424242"); got != want {
+		t.Errorf("StoreDir(424242) = %q, want %q", got, want)
+	}
+
+	// nil genesis falls back to the buildGenesisJSON default chain id (1337).
+	if got, want := ethrex.StoreDir("/data", nil), filepath.Join("/data", "chain-1337"); got != want {
+		t.Errorf("StoreDir(nil) = %q, want %q", got, want)
+	}
+}

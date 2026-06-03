@@ -11,6 +11,20 @@ import (
 	ethrexinternal "github.com/nerolation/state-actor/internal/ethrex"
 )
 
+// StoreDir returns the directory ethrex opens its RocksDB from for a custom
+// --network genesis: <datadir>/chain-<chainid> (ethrex's compute_effective_datadir
+// → datadir_suffix). The writer creates the store here so a boot at
+// --datadir=<datadir> finds it directly, without triggering ethrex's datadir
+// auto-migration (which fs::renames every datadir entry — including the genesis
+// sidecar and JWT — into the subdir). The chain-id default mirrors buildGenesisJSON.
+func StoreDir(datadir string, g *genesis.Genesis) string {
+	chainID := int64(1337)
+	if g != nil && g.Config != nil && g.Config.ChainID != nil {
+		chainID = g.Config.ChainID.Int64()
+	}
+	return filepath.Join(datadir, fmt.Sprintf("chain-%d", chainID))
+}
+
 // GenesisFileName is the filename for the ethrex-bootable genesis JSON
 // written next to the DB so boot scripts can pass --network=<path>.
 const GenesisFileName = "ethrex-genesis.json"
