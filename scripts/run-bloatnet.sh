@@ -13,7 +13,10 @@ export PATH=$HOME/.foundry/bin:/usr/local/go/bin:$PATH
 
 WORK=${WORK:-$HOME/work/bloatnet}
 REPO=${STATE_ACTOR_REPO:-$HOME/state-actor}
-CLIENTS=${CLIENTS:-geth reth nethermind besu}
+CLIENTS=${CLIENTS:-geth reth nethermind besu ethrex}
+# ethrex image must include --skip-genesis-validation (lambdaclass/ethrex#6783).
+# Pin to a digest once a release ships it; :main is the post-merge interim tag.
+ETHREX_IMAGE=${ETHREX_IMAGE:-ghcr.io/lambdaclass/ethrex:main}
 SPEC=$WORK/spec-bloatnet-100gb.yaml
 SEED=${SEED:-42}
 SPAMOOR_PRIVKEY=0x0000000000000000000000000000000000000000000000000000000000000001
@@ -104,7 +107,8 @@ write_result() {
   "post_verify_pass": ${post_pass:-0},
   "post_verify_fail": ${post_fail:-0},
   "db_size_apparent": "${db_apparent:-unknown}",
-  "db_size_actual": "${db_actual:-unknown}"
+  "db_size_actual": "${db_actual:-unknown}",
+  "db_size_bytes": ${db_bytes:-0}
 }
 JSON
 }
@@ -198,6 +202,27 @@ NETH_CFG
                 --datadir /data \
                 --http --http.addr=127.0.0.1 --http.port=8545
             ;;
+        ethrex)
+            # ethrex has no self-mining dev mode usable here, so it is
+            # engine-driven like besu/nethermind — but it REQUIRES JWT on
+            # authrpc (it cannot disable it), so the engine-driver must sign
+            # (see start_engine_driver_if_needed). --skip-genesis-validation
+            # makes ethrex trust the state-actor-written stateRoot instead of
+            # recomputing from the empty-alloc sidecar (lambdaclass/ethrex#6783);
+            # $ETHREX_IMAGE must include that flag.
+            cp "$JWT_HEX" "$data/jwt.hex"
+            docker run -d --name $ct \
+                --network host \
+                -v $data:/data \
+                $ETHREX_IMAGE \
+                --network /data/ethrex-genesis.json \
+                --datadir /data \
+                --skip-genesis-validation \
+                --http.addr 127.0.0.1 --http.port 8545 \
+                --http.api eth,net,web3 \
+                --authrpc.addr 127.0.0.1 --authrpc.port 8551 \
+                --authrpc.jwtsecret /data/jwt.hex
+            ;;
         *)
             echo "unknown client: $client" >&2; return 1 ;;
     esac
@@ -208,15 +233,22 @@ NETH_CFG
 start_engine_driver_if_needed() {
     local client=$1 logdir=$2
     case $client in
-        besu|nethermind) ;;
+        besu|nethermind|ethrex) ;;
         *) return 0 ;;
     esac
     echo "=== starting engine-driver for $client ==="
+    # ethrex enforces JWT on authrpc (besu/nethermind run with it disabled), so
+    # the driver must sign engine calls with the same secret the container
+    # reads at /data/jwt.hex. Requires the companion engine-driver to support
+    # -jwt; if it does not, add JWT signing there before running ethrex.
+    local jwt_arg=""
+    [ "$client" = "ethrex" ] && jwt_arg="-jwt $JWT_HEX"
     nohup $ENGINE_DRIVER \
         -engine http://127.0.0.1:8551 \
         -eth http://127.0.0.1:8545 \
         -fork osaka \
         -block-time 1s \
+        $jwt_arg \
         > $logdir/engine-driver.log 2>&1 &
     local pid=$!
     echo $pid > $logdir/engine-driver.pid
@@ -254,7 +286,7 @@ run_one_client() {
     local latest_bn=0
     local pre_pass=0 pre_fail=0
     local post_pass=0 post_fail=0
-    local db_apparent="unknown" db_actual="unknown"
+    local db_apparent="unknown" db_actual="unknown" db_bytes=0
 
     echo
     echo "════════════════════════════════════════════════════════════════"
@@ -410,6 +442,7 @@ run_one_client() {
     latest_bn=$(cast block-number --rpc-url http://127.0.0.1:8545 2>/dev/null || echo "0")
     db_apparent=$(du -sh --apparent-size $data | cut -f1)
     db_actual=$(du -sh $data | cut -f1)
+    db_bytes=$(du -s --block-size=1 $data | cut -f1)
 
     local detail=""
     [ "$stage_status" != "ok" ] && detail="spamoor_exit=$spamoor_exit; tip=$cur"
@@ -501,6 +534,37 @@ for c in $CLIENTS; do
         echo "  $c: apparent=$ap actual=$ac status=$st"
     fi
 done
+
+echo
+echo "═══════════════════════════════════════════════════════════════"
+echo " DB size vs geth (±25% tolerance, geth = reference)"
+echo "═══════════════════════════════════════════════════════════════"
+ref_bytes=$(jq -r '.db_size_bytes // 0' $WORK/results/geth-result.json 2>/dev/null || echo 0)
+if [ "${ref_bytes:-0}" -gt 0 ]; then
+    echo "  ref:  geth  $(numfmt --to=iec $ref_bytes 2>/dev/null || echo ${ref_bytes}B)"
+    for c in $CLIENTS; do
+        [ "$c" = "geth" ] && continue
+        f=$WORK/results/$c-result.json
+        [ -f "$f" ] || { echo "  ${INV_YELLOW}SKIP${INV_RESET} $c (no result.json)"; continue; }
+        b=$(jq -r '.db_size_bytes // 0' "$f")
+        st=$(jq -r .status "$f")
+        if [ "${b:-0}" -le 0 ]; then
+            echo "  ${INV_YELLOW}SKIP${INV_RESET} $c (no size, status=$st)"
+            continue
+        fi
+        lo=$(( ref_bytes * 75 / 100 ))
+        hi=$(( ref_bytes * 125 / 100 ))
+        pct=$(( (b - ref_bytes) * 100 / ref_bytes ))
+        human=$(numfmt --to=iec $b 2>/dev/null || echo ${b}B)
+        if [ "$b" -ge "$lo" ] && [ "$b" -le "$hi" ]; then
+            echo "  ${INV_GREEN}PASS${INV_RESET} $c  $human (${pct}% vs geth)"
+        else
+            echo "  ${INV_RED}FAIL${INV_RESET} $c  $human (${pct}% vs geth, outside ±25%)"
+        fi
+    done
+else
+    echo "  ${INV_YELLOW}SKIP${INV_RESET} (no geth reference size — geth run absent or failed)"
+fi
 
 echo
 echo "Results: $WORK/results/"
