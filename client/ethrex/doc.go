@@ -45,18 +45,18 @@
 // Dockerfile.ethrex build context. Local builds without the tag compile the
 // stub (run_stub.go) which returns errNotImplemented.
 //
-// # In-memory Builder RAM ceiling
+// # Streaming memory profile
 //
-// internal/ethrex.Builder accumulates all trie leaves in memory before
-// emitting node rows at Root(). For the e2e fixture (hundreds of thousands
-// of accounts) and moderate --target-size this is correct and fast. For a
-// multi-GB --target-size the full leaf set will not fit in RAM; a streaming
-// Builder rewrite would be needed. The byte-exact golden tests guarantee any
-// future streaming rewrite produces identical output.
+// internal/ethrex.Builder is a streaming stack-trie: it holds only the rightmost
+// spine (<= keyLen branch frames) plus the current leaf, so trie construction is
+// O(keyLen) RAM regardless of leaf count. The byte-exact golden tests plus the
+// randomized streaming-vs-recursive differential pin its output.
 //
-// PreAlloc entities with large Storage iterators are also built in-memory
-// (one in-memory Builder per entity). For spec PreAlloc with very large
-// storage (millions of slots per entity), this consumes RAM proportional to
-// the slot count. A future improvement would drain the storage iterator into
-// a temporary streamsort before feeding the Builder.
+// PreAlloc entities with large Storage iterators stream too: Phase 0 drains each
+// entity's Storage through internal/streamingtrie (disk-backed streamsort sort +
+// keccak-ascending replay) into the Builder, so a single huge-storage contract
+// (100M-1B slots) never materializes — mirroring reth's spec_storage_streaming.
+// Phase 2 (GenesisStorage / AutoFill contract storage) is bounded by construction
+// and stays materialized; if GenesisStorage ever carries huge maps it would need
+// the same streaming treatment.
 package ethrex

@@ -16,6 +16,7 @@ import (
 
 	"github.com/nerolation/state-actor/generator"
 	ethrexinternal "github.com/nerolation/state-actor/internal/ethrex"
+	"github.com/nerolation/state-actor/internal/streamingtrie"
 	"github.com/nerolation/state-actor/internal/streamsort"
 )
 
@@ -85,10 +86,13 @@ func writeState(
 	// entities whose storage was built in-memory.
 	preAllocStorageRoots := make(map[common.Hash]common.Hash)
 
-	// Phase 0: handle PreAlloc entities with storage. Build their storage
-	// tries in-memory and record roots. Since internal/ethrex.Builder is
-	// in-memory (accumulates all leaves), large storage sets will consume
-	// RAM proportionally — see doc.go.
+	// Phase 0: handle PreAlloc entities with storage. Each entity's Storage is
+	// a re-iterable streaming iterator (iter.Seq2); draining it through
+	// internal/streamingtrie sorts on disk (streamsort) and replays slots in
+	// keccak-ascending order into the streaming Builder. Peak RAM is bounded by
+	// the streamsort memtable + the O(keyLen) Builder, so a single huge-storage
+	// contract (100M-1B slots) never materializes. Mirrors reth's
+	// spec_storage_streaming_cgo.go.
 	for i := range cfg.PreAlloc {
 		pe := &cfg.PreAlloc[i]
 		if pe.Storage == nil {
@@ -100,40 +104,33 @@ func writeState(
 		addr := pe.Address
 		addrHash := crypto.Keccak256Hash(addr[:])
 
-		type slotKV struct {
-			slotHash common.Hash
-			value    *uint256.Int
-		}
-		var slots []slotKV
-		for key, val := range pe.Storage {
-			slotHash := crypto.Keccak256Hash(key[:])
-			v := new(uint256.Int).SetBytes32(val[:])
-			if v.IsZero() {
-				continue
-			}
-			slots = append(slots, slotKV{slotHash: slotHash, value: v})
-		}
-
-		if len(slots) == 0 {
-			preAllocStorageRoots[addrHash] = emptyTrieHash
-			continue
-		}
-
-		sort.Slice(slots, func(i, j int) bool {
-			return bytes.Compare(slots[i].slotHash[:], slots[j].slotHash[:]) < 0
-		})
-
+		// Storage rows go through the 66-nibble storage prefix. Suppress the
+		// empty-trie sentinel row ([] -> 0x80): streamingtrie always calls
+		// Builder.Root(), which for storage that drains to zero non-zero slots
+		// would otherwise write a bogus (prefix, 0x80) row. The pre-streaming
+		// code wrote zero rows for empty storage; this preserves that exactly
+		// (and the returned root is still emptyTrieHash, as before).
 		prefixedSink := ethrexinternal.PrefixedSink(addrHash, storageTrieNodeSink)
-		sb := ethrexinternal.NewBuilder(prefixedSink)
-		for _, s := range slots {
-			enc := ethrexinternal.EncodeStorageValue(s.value)
-			if err := sb.AddLeaf(ethrexinternal.BytesToNibbles(s.slotHash[:]), enc); err != nil {
-				return common.Hash{}, nil, fmt.Errorf("ethrex: storage leaf (PreAlloc %s): %w", addr.Hex(), err)
+		guardedSink := func(path, value []byte) error {
+			if len(path) == 0 && len(value) == 1 && value[0] == 0x80 {
+				return nil
 			}
+			return prefixedSink(path, value)
+		}
+		hb := ethrexinternal.NewStreamHashBuilder(guardedSink)
+
+		// Stats-only sink: storage rows are emitted by the Builder via
+		// prefixedSink; this only counts slots/bytes. The encoded length here
+		// equals streamingtrie's internal value RLP length, proven byte-identical
+		// by internal/ethrex TestStorageValueEncodingMatchesStreamingtrie.
+		statsSink := func(_, _, value common.Hash) error {
+			enc := ethrexinternal.EncodeStorageValue(new(uint256.Int).SetBytes32(value[:]))
 			stats.StorageSlotsCreated++
 			stats.StorageBytes += uint64(len(enc))
+			return nil
 		}
-		root, err := sb.Root()
+
+		root, err := streamingtrie.StorageRoot(cfg.DBPath, pe.Storage, hb, statsSink)
 		if err != nil {
 			return common.Hash{}, nil, fmt.Errorf("ethrex: storage root (PreAlloc %s): %w", addr.Hex(), err)
 		}
