@@ -149,7 +149,7 @@ jobs:
             env-prefix: ETHREX
             test-tags: 'cgo_ethrex oracle'
             test-pkg: ./client/ethrex/
-            test-run-filter: 'TestEthrexGoldenStateRoot|TestE2ESuite'
+            test-run-filter: 'TestEthrexGoldenStateRoot|TestGenesisDumpGolden|TestE2ESuite'
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/cgo-suite

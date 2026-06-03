@@ -39,7 +39,11 @@ func runImpl(ctx context.Context, cfg generator.Config, opts Options) (*generato
 
 	g := cfg.Genesis
 	if g == nil {
-		g, _ = genesis.BuildSynthetic("osaka", nil, 0, 0, nil)
+		var err error
+		g, err = genesis.BuildSynthetic("osaka", nil, 0, 0, nil)
+		if err != nil {
+			return nil, fmt.Errorf("ethrex: build default genesis: %w", err)
+		}
 	}
 	if g.Config == nil {
 		return nil, errors.New("ethrex: cfg.Genesis must have Config set (use genesis.BuildSynthetic)")
