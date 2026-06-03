@@ -95,7 +95,19 @@ func buildGenesisJSON(g *genesis.Genesis) ([]byte, error) {
 		"difficulty": "0x0",
 		"mixHash":    g.Mixhash.Hex(),
 		"coinbase":   g.Coinbase.Hex(),
-		"alloc":      map[string]any{},
+		// alloc is intentionally empty. state-actor pre-populates the account /
+		// storage trie CFs directly and writes the genesis header (with the real
+		// state root) into the headers CF itself; the sidecar must not carry
+		// accounts or ethrex would attempt to re-initialize them. Per
+		// SPIKE_FINDINGS.md "Boot path (no trie recompute)", ethrex's
+		// add_initial_state short-circuit is a hash lookup
+		// (canonical_block_hashes[0] -> headers[hash]) and the state-root
+		// debug_assert is compiled out in release, so the genesis trie is never
+		// rebuilt from alloc on boot. That an empty-alloc sidecar still boots
+		// against the pre-written header is verified end-to-end ONLY by
+		// TestE2ESuite — an ethrex version that rebuilds/validates the genesis
+		// trie from alloc on boot would break this; re-verify on a version bump.
+		"alloc": map[string]any{},
 	}
 	if len(g.ExtraData) > 0 {
 		genesisDoc["extraData"] = "0x" + bytesToHex(g.ExtraData)

@@ -3,6 +3,7 @@
 package ethrex
 
 import (
+	"bytes"
 	"context"
 	"encoding/binary"
 	"fmt"
@@ -119,7 +120,7 @@ func writeState(
 		}
 
 		sort.Slice(slots, func(i, j int) bool {
-			return string(slots[i].slotHash[:]) < string(slots[j].slotHash[:])
+			return bytes.Compare(slots[i].slotHash[:], slots[j].slotHash[:]) < 0
 		})
 
 		prefixedSink := ethrexinternal.PrefixedSink(addrHash, storageTrieNodeSink)
@@ -238,7 +239,7 @@ func writeState(
 			}
 			if len(kvs) > 0 {
 				sort.Slice(kvs, func(i, j int) bool {
-					return string(kvs[i].slotHash[:]) < string(kvs[j].slotHash[:])
+					return bytes.Compare(kvs[i].slotHash[:], kvs[j].slotHash[:]) < 0
 				})
 				prefixedSink := ethrexinternal.PrefixedSink(addrHash, storageTrieNodeSink)
 				sb := ethrexinternal.NewBuilder(prefixedSink)
@@ -275,7 +276,10 @@ func writeState(
 		}
 		stats.AccountBytes += uint64(len(accountRLP))
 
-		if len(ent.code) == 0 && len(ent.slots) == 0 {
+		// Classify by code + actual storage root: a PreAlloc contract's storage
+		// is built in Phase 0, so ent.slots is empty here even though it has a
+		// non-empty storage trie. storageRoot reflects PreAlloc + locally-built.
+		if len(ent.code) == 0 && storageRoot == emptyTrieHash {
 			stats.AccountsCreated++
 		} else {
 			stats.ContractsCreated++

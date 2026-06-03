@@ -39,6 +39,8 @@ func runImpl(ctx context.Context, cfg generator.Config, opts Options) (*generato
 
 	g := cfg.Genesis
 	if g == nil {
+		// Fork hardcoded to ethrex's MaxForkForClient ("osaka"). Only reached
+		// by tests that omit a genesis; main.go always supplies one.
 		var err error
 		g, err = genesis.BuildSynthetic("osaka", nil, 0, 0, nil)
 		if err != nil {
