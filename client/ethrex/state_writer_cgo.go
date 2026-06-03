@@ -111,13 +111,7 @@ func writeState(
 		// code wrote zero rows for empty storage; this preserves that exactly
 		// (and the returned root is still emptyTrieHash, as before).
 		prefixedSink := ethrexinternal.PrefixedSink(addrHash, storageTrieNodeSink)
-		guardedSink := func(path, value []byte) error {
-			if len(path) == 0 && len(value) == 1 && value[0] == 0x80 {
-				return nil
-			}
-			return prefixedSink(path, value)
-		}
-		hb := ethrexinternal.NewStreamHashBuilder(guardedSink)
+		hb := ethrexinternal.NewStreamHashBuilder(ethrexinternal.SuppressEmptyTrieSentinel(prefixedSink))
 
 		// Stats-only sink: storage rows are emitted by the Builder via
 		// prefixedSink; this only counts slots/bytes. The encoded length here
