@@ -354,8 +354,17 @@ asserting RPC-returned values match the spec's intent.
   exercising every schema feature. Loaded by each per-client
   `TestE2ESuite` and validated by the `cross-client-genesis-root`
   aggregator.
-- `examples/spec-repricing-min.yaml` — minimal smoke fixture exercising
-  each of the five repricing-benchmark templates once at small size.
-  Sized to build in well under a second; production-scale repricing
-  prestate (matching `execution-specs/tests/benchmark/stateful/stubs/stubs_repricing.json`)
-  is a separate fixture.
+- `examples/spec-repricing-smoke.yaml` — sub-second smoke fixture
+  exercising each of the five repricing-benchmark templates once at
+  tiny size. Used by `internal/specbuild/build_repricing_test.go` as
+  the canary that the spec layer, the example file, and the templates
+  stay in sync. **Not a benchmark prestate**.
+- `examples/spec-repricing-min.yaml` — production-minimum repricing
+  fixture sized to drive a 300 M-gas benchmark (150 000 sequential
+  EOAs / 150 000 unique-jumpdest CREATE2 contracts / Bittrex CREATE
+  chain at 150 000 nonces / one reusable `storage_pattern` target).
+  Below this scale, a 300 M-gas iteration walks off the end of the
+  planted range and the measurement is invalid.
+- `examples/spec-repricing-10gb.yaml` — ~10 GB rehearsal prestate
+  (full ERC-20, 1 GB bloated EOA, 1.5 M-nonce Bittrex chain) for
+  end-to-end runs against execution-specs' `fill-stateful` workflow.

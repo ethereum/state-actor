@@ -12,16 +12,19 @@ import (
 	"github.com/nerolation/state-actor/internal/templates"
 )
 
-// TestBuildRepricingMin loads examples/spec-repricing-min.yaml end-to-end
-// (parse → validate → build) and asserts every new template emits the
-// expected addresses. This is the canary that the example file, the
-// docs (docs/SPEC.md), and the five repricing templates stay in sync.
+// TestBuildRepricingSmoke loads examples/spec-repricing-smoke.yaml
+// end-to-end (parse → validate → build) and asserts every new template
+// emits the expected addresses. This is the canary that the example
+// file, the docs (docs/SPEC.md), and the five repricing templates stay
+// in sync.
 //
 // Counts here MUST equal the parameter values in the YAML; updating the
 // example without updating this test (or vice versa) is a deliberate
-// signal that the smoke contract has shifted.
-func TestBuildRepricingMin(t *testing.T) {
-	s, err := spec.ParseFile("../../examples/spec-repricing-min.yaml")
+// signal that the smoke contract has shifted. The "min"-sized
+// production fixture is examples/spec-repricing-min.yaml; this test
+// stays small so it can run in milliseconds.
+func TestBuildRepricingSmoke(t *testing.T) {
+	s, err := spec.ParseFile("../../examples/spec-repricing-smoke.yaml")
 	if err != nil {
 		t.Fatalf("ParseFile: %v", err)
 	}
@@ -124,7 +127,7 @@ func TestBuildRepricingMin(t *testing.T) {
 	}
 }
 
-// TestBuildRepricingMinDeterministic pins the strongest contract the
+// TestBuildRepricingSmokeDeterministic pins the strongest contract the
 // repricing templates must uphold: same YAML + same seed → byte-
 // identical PreAlloc across runs, including every storage slot of the
 // storage_pattern entity. The same guarantee is what makes the
@@ -135,8 +138,8 @@ func TestBuildRepricingMin(t *testing.T) {
 // fan-out paths (sequential_eoas, create2_deploys,
 // create_preimage_deploys) that don't run through any other test's
 // determinism scaffolding.
-func TestBuildRepricingMinDeterministic(t *testing.T) {
-	s, err := spec.ParseFile("../../examples/spec-repricing-min.yaml")
+func TestBuildRepricingSmokeDeterministic(t *testing.T) {
+	s, err := spec.ParseFile("../../examples/spec-repricing-smoke.yaml")
 	if err != nil {
 		t.Fatalf("ParseFile: %v", err)
 	}
@@ -190,15 +193,15 @@ func TestBuildRepricingMinDeterministic(t *testing.T) {
 	}
 }
 
-// TestBuildRepricingMinCrossClient pins that the repricing templates'
+// TestBuildRepricingSmokeCrossClient pins that the repricing templates'
 // emitted addresses are independent of the client name in
 // BuildOptions. This matters because the cross-client-genesis-root
 // invariant assumes that for a given YAML + seed, every client sees
 // the same set of addresses (sizecal calibration only varies the slot
 // counts of approximate_size_bytes-driven entities, none of which are
 // in the repricing example).
-func TestBuildRepricingMinCrossClient(t *testing.T) {
-	s, err := spec.ParseFile("../../examples/spec-repricing-min.yaml")
+func TestBuildRepricingSmokeCrossClient(t *testing.T) {
+	s, err := spec.ParseFile("../../examples/spec-repricing-smoke.yaml")
 	if err != nil {
 		t.Fatalf("ParseFile: %v", err)
 	}
@@ -231,6 +234,75 @@ func TestBuildRepricingMinCrossClient(t *testing.T) {
 			if a != reference[i] {
 				t.Errorf("client=%s entity[%d]: %s, want %s", c, i, a.Hex(), reference[i].Hex())
 			}
+		}
+	}
+}
+
+// TestParseRepricingMin keeps the production-minimum fixture
+// (`examples/spec-repricing-min.yaml`, 150 000 of each fan-out
+// template) parseable and schema-valid in CI. We deliberately do NOT
+// call Build here — the 150 000-entry create2_deploys entry would take
+// minutes and produce ~3.7 GB of code in memory. The smoke fixture
+// (TestBuildRepricingSmoke) is the end-to-end Build canary; this is
+// just the lint canary for the larger sibling.
+func TestParseRepricingMin(t *testing.T) {
+	s, err := spec.ParseFile("../../examples/spec-repricing-min.yaml")
+	if err != nil {
+		t.Fatalf("ParseFile: %v", err)
+	}
+	if _, err := s.Validate(templates.UserVisibleNames()); err != nil {
+		t.Fatalf("Validate: %v", err)
+	}
+	// Cheap sanity: every fan-out count is at least 150 000. If a
+	// future edit drops one below the 300 M-gas headroom threshold
+	// the file's own header lies, so this catches the divergence.
+	const need = uint64(150000)
+	gotCount := func(name string, p map[string]any, key string) uint64 {
+		v, ok := p[key]
+		if !ok {
+			t.Fatalf("entity %q: missing parameter %q", name, key)
+		}
+		switch x := v.(type) {
+		case int:
+			return uint64(x)
+		case int64:
+			return uint64(x)
+		case uint64:
+			return x
+		case float64:
+			return uint64(x)
+		default:
+			t.Fatalf("entity %q: %s has unexpected type %T", name, key, v)
+			return 0
+		}
+	}
+	checked := map[string]bool{
+		"sequential-eoas-300m":         false,
+		"create2-deploys-300m":         false,
+		"bittrex-create-preimage-300m": false,
+	}
+	for _, ent := range s.Entities {
+		switch ent.Name {
+		case "sequential-eoas-300m":
+			if c := gotCount(ent.Name, ent.Parameters, "count"); c < need {
+				t.Errorf("%s count=%d, must be >= %d (300 M-gas headroom)", ent.Name, c, need)
+			}
+			checked[ent.Name] = true
+		case "create2-deploys-300m":
+			if c := gotCount(ent.Name, ent.Parameters, "salt_count"); c < need {
+				t.Errorf("%s salt_count=%d, must be >= %d (300 M-gas headroom)", ent.Name, c, need)
+			}
+			checked[ent.Name] = true
+		case "bittrex-create-preimage-300m":
+			if c := gotCount(ent.Name, ent.Parameters, "count"); c < need {
+				t.Errorf("%s count=%d, must be >= %d (300 M-gas headroom)", ent.Name, c, need)
+			}
+			checked[ent.Name] = true
+		}
+	}
+	for name, ok := range checked {
+		if !ok {
+			t.Errorf("entity %q not found in spec-repricing-min.yaml (rename?)", name)
 		}
 	}
 }
