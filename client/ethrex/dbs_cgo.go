@@ -17,8 +17,22 @@ import (
 // during bulk import.
 const bulkBackgroundJobs = 8
 
-// perCFWriteBufferBytes is the per-CF memtable size during bulk import.
-const perCFWriteBufferBytes = 256 * 1024 * 1024
+// ethrexBlockCacheBytes is the shared LRU block cache, mirroring ethrex's
+// crates/storage/backend/rocksdb.rs (4 GiB, shared across all CFs).
+const ethrexBlockCacheBytes = 4 * 1024 * 1024 * 1024
+
+// ethrexCompressibleCF reports whether a CF uses LZ4 in the real ethrex client.
+// Mirrors `compressible_tables` in ethrex rocksdb.rs: only block-metadata CFs
+// are LZ4; the big state CFs (trie nodes, flat KV, codes) are uncompressed.
+func ethrexCompressibleCF(cfIdx int) bool {
+	switch cfIdx {
+	case cfIdxBlockNumbers, cfIdxHeaders, cfIdxBodies, cfIdxReceiptsV2,
+		cfIdxTransactionLocations, cfIdxFullsyncHeaders:
+		return true
+	default:
+		return false
+	}
+}
 
 // CF index constants into ethrexDB.cfs. Must match Tables order in
 // internal/ethrex/constants.go.
@@ -52,6 +66,8 @@ type ethrexDB struct {
 	path   string
 	dbOpts *grocksdb.Options
 	cfOpts []*grocksdb.Options
+	cache  *grocksdb.Cache                    // shared block cache; freed last
+	bbtos  []*grocksdb.BlockBasedTableOptions // per-CF table options; freed at Close
 }
 
 // openEthrexDB creates a fresh ethrex RocksDB at cfg.DBPath.
@@ -59,10 +75,14 @@ type ethrexDB struct {
 // leave genesis block keys and trie rows inconsistent, making ethrex silently
 // boot off partial state.
 //
-// ethrex uses a plain RocksDB with the bytewise comparator on all CFs.
-// Only the comparator is load-bearing per the spike; no BlobDB, no Bloom
-// filters required (ethrex doesn't use block-based filter on these CFs in
-// the genesis path).
+// Per-CF options (compression, block size, bloom filters, write buffers, blob
+// files, shared 4 GiB block cache) mirror the real ethrex client's
+// crates/storage/backend/rocksdb.rs exactly, so a state-actor-produced DB is
+// byte-representative for benchmarking. The only deliberate deviation is the
+// L0 compaction triggers: ethrex uses 4/20/36, state-actor maxes them to avoid
+// compaction stalls during bulk import — Close() runs CompactRange afterward,
+// which rewrites every SST with these same compression/block/bloom options, so
+// the final on-disk shape matches ethrex regardless.
 func openEthrexDB(dbPath string) (*ethrexDB, error) {
 	// Fresh-dir precondition: a missing or EMPTY directory is fine (callers and
 	// tests routinely `mkdir -p` the datadir first, and t.TempDir() pre-creates
@@ -97,17 +117,77 @@ func openEthrexDB(dbPath string) (*ethrexDB, error) {
 	cfNames = append(cfNames, ethrexinternal.Tables...)
 	cfNames = append(cfNames, "default")
 
+	// Shared 4 GiB LRU block cache across all CFs (ethrex rocksdb.rs).
+	cache := grocksdb.NewLRUCache(ethrexBlockCacheBytes)
+
 	cfOpts := make([]*grocksdb.Options, len(cfNames))
+	bbtos := make([]*grocksdb.BlockBasedTableOptions, len(cfNames))
 	for i := range cfNames {
 		opts := grocksdb.NewDefaultOptions()
-		// No compression — ethrex doesn't configure LZ4 in the genesis store
-		// (default = no compression). Bulk-import tuning matches besu pattern.
-		opts.SetWriteBufferSize(perCFWriteBufferBytes)
-		opts.SetMaxWriteBufferNumber(4)
+
+		// Compression: LZ4 on block-metadata CFs, None on the big state CFs —
+		// exactly ethrex's compressible_tables split.
+		if ethrexCompressibleCF(i) {
+			opts.SetCompression(grocksdb.LZ4Compression)
+		} else {
+			opts.SetCompression(grocksdb.NoCompression)
+		}
+
+		// L0 triggers maxed for bulk import (Close() CompactRange flattens the
+		// LSM with the per-CF options below, so the final shape still matches).
 		opts.SetLevel0FileNumCompactionTrigger(math.MaxInt32)
 		opts.SetLevel0SlowdownWritesTrigger(math.MaxInt32)
 		opts.SetLevel0StopWritesTrigger(math.MaxInt32)
+
+		bbto := grocksdb.NewDefaultBlockBasedTableOptions()
+		bbto.SetBlockCache(cache)
+
+		switch i {
+		case cfIdxHeaders, cfIdxBodies:
+			opts.SetWriteBufferSize(128 << 20)
+			opts.SetMaxWriteBufferNumber(4)
+			opts.SetTargetFileSizeBase(256 << 20)
+			bbto.SetBlockSize(32 << 10)
+		case cfIdxCanonicalBlockHashes, cfIdxBlockNumbers:
+			opts.SetWriteBufferSize(64 << 20)
+			opts.SetMaxWriteBufferNumber(3)
+			opts.SetTargetFileSizeBase(128 << 20)
+			bbto.SetBlockSize(16 << 10)
+			bbto.SetFilterPolicy(grocksdb.NewBloomFilterFull(10))
+		case cfIdxAccountTrieNodes, cfIdxStorageTrieNodes,
+			cfIdxAccountFlatKeyValue, cfIdxStorageFlatKeyValue:
+			opts.SetWriteBufferSize(512 << 20)
+			opts.SetMaxWriteBufferNumber(6)
+			opts.SetMinWriteBufferNumberToMerge(2)
+			opts.SetTargetFileSizeBase(256 << 20)
+			opts.SetMemTablePrefixBloomSizeRatio(0.2)
+			bbto.SetBlockSize(16 << 10)
+			bbto.SetFilterPolicy(grocksdb.NewBloomFilterFull(10))
+		case cfIdxAccountCodes:
+			opts.SetWriteBufferSize(128 << 20)
+			opts.SetMaxWriteBufferNumber(3)
+			opts.SetTargetFileSizeBase(256 << 20)
+			// Bytecodes go to blob files; small ones (delegation indicators)
+			// stay inline. Blobs are LZ4-compressed.
+			opts.EnableBlobFiles(true)
+			opts.SetMinBlobSize(32)
+			opts.SetBlobCompressionType(grocksdb.LZ4Compression)
+			bbto.SetBlockSize(32 << 10)
+		case cfIdxReceiptsV2:
+			opts.SetWriteBufferSize(128 << 20)
+			opts.SetMaxWriteBufferNumber(3)
+			opts.SetTargetFileSizeBase(256 << 20)
+			bbto.SetBlockSize(32 << 10)
+		default:
+			opts.SetWriteBufferSize(64 << 20)
+			opts.SetMaxWriteBufferNumber(3)
+			opts.SetTargetFileSizeBase(128 << 20)
+			bbto.SetBlockSize(16 << 10)
+		}
+
+		opts.SetBlockBasedTableFactory(bbto)
 		cfOpts[i] = opts
+		bbtos[i] = bbto
 	}
 
 	dbOpts := grocksdb.NewDefaultOptions()
@@ -129,6 +209,12 @@ func openEthrexDB(dbPath string) (*ethrexDB, error) {
 		for _, o := range cfOpts {
 			o.Destroy()
 		}
+		for _, b := range bbtos {
+			if b != nil {
+				b.Destroy()
+			}
+		}
+		cache.Destroy()
 		return nil, fmt.Errorf("ethrex: open RocksDB at %s: %w", dbPath, err)
 	}
 
@@ -138,6 +224,8 @@ func openEthrexDB(dbPath string) (*ethrexDB, error) {
 		path:   dbPath,
 		dbOpts: dbOpts,
 		cfOpts: cfOpts,
+		cache:  cache,
+		bbtos:  bbtos,
 	}, nil
 }
 
@@ -183,9 +271,23 @@ func (d *ethrexDB) Close() {
 	}
 	d.cfOpts = nil
 
+	for _, b := range d.bbtos {
+		if b != nil {
+			b.Destroy()
+		}
+	}
+	d.bbtos = nil
+
 	if d.dbOpts != nil {
 		d.dbOpts.Destroy()
 		d.dbOpts = nil
+	}
+
+	// Cache is shared by all CF table factories — free it LAST, after the DB
+	// and all options that reference it are gone.
+	if d.cache != nil {
+		d.cache.Destroy()
+		d.cache = nil
 	}
 }
 
