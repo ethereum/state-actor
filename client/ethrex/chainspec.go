@@ -204,6 +204,8 @@ func buildChainConfigMap(g *genesis.Genesis) map[string]any {
 	if depositAddr == (common.Address{}) {
 		depositAddr = common.HexToAddress(defaultDepositContractAddress)
 	}
+	// .Hex() emits the EIP-55 checksummed (mixed-case) form; ethrex's address
+	// deserializer accepts any case, so this round-trips fine.
 	cfg["depositContractAddress"] = depositAddr.Hex()
 
 	return cfg

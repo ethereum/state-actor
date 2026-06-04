@@ -9,7 +9,7 @@
 //
 // Written CFs at genesis:
 //   - account_trie_nodes: account MPT structural + leaf-NODE-RLP rows
-//   - storage_trie_nodes: per-account storage MPT structural + leaf-NODE rows (address-prefixed)
+//   - storage_trie_nodes: per-account storage MPT structural + leaf-NODE-RLP rows (address-prefixed)
 //   - account_flatkeyvalue: account leaf full-path → account RLP (synced-state layer)
 //   - storage_flatkeyvalue: address-prefixed storage leaf full-path → storage value
 //   - account_codes: code hash → EncodeCode(bytecode)

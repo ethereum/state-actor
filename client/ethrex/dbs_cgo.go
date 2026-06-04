@@ -243,6 +243,7 @@ func (d *ethrexDB) Close() {
 			cfIdxAccountCodes,
 			cfIdxAccountCodeMetadata,
 			cfIdxChainData,
+			cfIdxMiscValues,
 			cfIdxHeaders,
 			cfIdxBodies,
 			cfIdxBlockNumbers,
