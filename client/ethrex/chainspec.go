@@ -194,12 +194,24 @@ func buildChainConfigMap(g *genesis.Genesis) map[string]any {
 
 	cfg["blobSchedule"] = blobSchedule
 
-	if g.Config.DepositContractAddress != (common.Address{}) {
-		cfg["depositContractAddress"] = g.Config.DepositContractAddress.Hex()
+	// depositContractAddress is a MANDATORY field in ethrex's ChainConfig
+	// deserializer (no serde default), so it must always be present in the
+	// sidecar or `ethrex --network <file>` fails to decode the genesis. Use the
+	// genesis value when set; otherwise fall back to the mainnet deposit contract
+	// (which is what ethrex serializes into chain_data by default — see the
+	// golden genesis_dump.json chain config).
+	depositAddr := g.Config.DepositContractAddress
+	if depositAddr == (common.Address{}) {
+		depositAddr = common.HexToAddress(defaultDepositContractAddress)
 	}
+	cfg["depositContractAddress"] = depositAddr.Hex()
 
 	return cfg
 }
+
+// defaultDepositContractAddress is the mainnet beacon deposit contract, used as
+// the sidecar's depositContractAddress when the genesis config leaves it unset.
+const defaultDepositContractAddress = "0x00000000219ab540356cbb839cbe05303d7705fa"
 
 func bytesToHex(b []byte) string {
 	const hexChars = "0123456789abcdef"

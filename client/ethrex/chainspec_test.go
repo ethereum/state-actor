@@ -5,6 +5,7 @@ import (
 	"math/big"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/nerolation/state-actor/client/ethrex"
@@ -99,6 +100,15 @@ func TestChainConfigJSON(t *testing.T) {
 		if _, ok := parsed[field]; !ok {
 			t.Errorf("ChainConfigJSON missing %q", field)
 		}
+	}
+
+	// depositContractAddress is mandatory in ethrex's ChainConfig deserializer
+	// (no serde default); the sidecar must always carry it or `ethrex --network`
+	// fails to decode the genesis. BuildSynthetic leaves it zero, so this must be
+	// the mainnet fallback.
+	got, _ := parsed["depositContractAddress"].(string)
+	if !strings.EqualFold(got, "0x00000000219ab540356cbb839cbe05303d7705fa") {
+		t.Errorf("depositContractAddress: got %v, want mainnet fallback", got)
 	}
 }
 
