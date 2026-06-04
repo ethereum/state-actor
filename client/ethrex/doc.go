@@ -8,8 +8,8 @@
 // reopens.
 //
 // Written CFs at genesis:
-//   - account_trie_nodes: account MPT rows (one per node + one per leaf-full-path)
-//   - storage_trie_nodes: per-account storage MPT rows (address-prefixed)
+//   - account_trie_nodes: account MPT structural + leaf-NODE-RLP rows
+//   - storage_trie_nodes: per-account storage MPT structural + leaf-NODE rows (address-prefixed)
 //   - account_flatkeyvalue: account leaf full-path → account RLP (synced-state layer)
 //   - storage_flatkeyvalue: address-prefixed storage leaf full-path → storage value
 //   - account_codes: code hash → EncodeCode(bytecode)
@@ -23,17 +23,26 @@
 //
 // Empty (but declared) CFs: 8 others (pending_blocks, snap_state, etc.).
 //
-// # Flat-KV (synced-state) layer
+// # Flat-KV (snap-synced-state) layer
 //
 // ethrex serves state reads from the flat-KV CFs once a background generator has
 // swept the trie post-sync; real ethrex genesis leaves them empty. state-actor
 // pre-populates them so the produced DB models a SYNCED node — matching every
 // other client, which all fake a synced flat layer (geth snapshot, reth
-// HashedAccounts/Storages, besu Bonsai flat). Each leaf full-path trie-node row
-// is mirrored verbatim into the matching flat-KV CF (the flat key/value are
-// byte-identical: ethrex apply_prefix == our PrefixedSink, flat value == leaf
-// value), and misc_values["last_written"]=0xff is stamped so ethrex's generator
-// short-circuits on boot rather than clearing and rebuilding the layer.
+// HashedAccounts/Storages, besu Bonsai flat).
+//
+// We model a SNAP-synced node specifically: leaf values live ONLY in the flat-KV
+// CFs, not duplicated as leaf full-path rows in the trie-node CFs. This matches
+// how ethrex itself persists state — apply_trie_updates routes leaf rows
+// (len 65/131) to the flat-KV CF, and the snap-sync bulk builder (trie_from_sorted)
+// writes no leaf full-path rows. The trie-node CFs keep the structural and
+// leaf-NODE-RLP rows, which carry the value for root/proof computation, so the
+// trie is complete; the flat-KV key/value are byte-identical to what a leaf
+// full-path row would be (ethrex apply_prefix == our PrefixedSink, flat value ==
+// leaf value). A genesis-booted node would additionally carry those duplicate
+// leaf rows in the trie-node CFs; a snap-synced node does not, so this layout is
+// both representative and smaller. misc_values["last_written"]=0xff is stamped so
+// ethrex's generator short-circuits on boot rather than rebuilding the layer.
 //
 // Two sidecar files are written next to the DB:
 //   - metadata.json: {"schema_version": 2} — required by ethrex Store::new.

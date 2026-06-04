@@ -88,8 +88,6 @@ func TestGenesisDumpGolden(t *testing.T) {
 	// chain-<chainid> (see ethrex.StoreDir), so read from there, not cfg.DBPath.
 	dbPath := ethrex.StoreDir(cfg.DBPath, g)
 	for _, cfName := range []string{
-		"account_trie_nodes",
-		"storage_trie_nodes",
 		"account_codes",
 		"account_code_metadata",
 		"headers",
@@ -101,10 +99,15 @@ func TestGenesisDumpGolden(t *testing.T) {
 		diffCF(t, dbPath, cfName, wantRows)
 	}
 
-	// Flat-KV: real ethrex genesis leaves these empty (built lazily post-sync),
-	// but state-actor pre-populates them to model a synced node. Each flat-KV row
-	// must byte-match the corresponding leaf full-path row in the trie-node CF
-	// (the rows whose key ends in the leaf-flag nibble 0x10).
+	// Snap-sync layout: the trie-node CFs hold ONLY structural + leaf-NODE-RLP
+	// rows; the leaf full-path rows (keys ending in the leaf-flag nibble 0x10)
+	// live solely in the flat-KV CFs, never duplicated in the trie-node CFs. So
+	// the expected trie-node set is the genesis dump MINUS those leaf rows, and
+	// the flat-KV set is exactly those leaf rows. (The genesis dump itself carries
+	// the leaf rows in the trie-node CFs because it captures a genesis-booted
+	// node; a snap-synced node — which we model — does not.)
+	diffCF(t, dbPath, "account_trie_nodes", nonLeafFullPathRows(dump["account_trie_nodes"]))
+	diffCF(t, dbPath, "storage_trie_nodes", nonLeafFullPathRows(dump["storage_trie_nodes"]))
 	diffCF(t, dbPath, "account_flatkeyvalue", leafFullPathRows(dump["account_trie_nodes"]))
 	diffCF(t, dbPath, "storage_flatkeyvalue", leafFullPathRows(dump["storage_trie_nodes"]))
 
@@ -130,6 +133,18 @@ func leafFullPathRows(rows []dumpRow) []dumpRow {
 	out := make([]dumpRow, 0, len(rows))
 	for _, r := range rows {
 		if len(r.key) > 0 && r.key[len(r.key)-1] == ethrexinternal.LeafFlag {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
+// nonLeafFullPathRows is the complement of leafFullPathRows: the structural and
+// leaf-NODE-RLP rows that remain in the trie-node CFs under the snap-sync layout.
+func nonLeafFullPathRows(rows []dumpRow) []dumpRow {
+	out := make([]dumpRow, 0, len(rows))
+	for _, r := range rows {
+		if !(len(r.key) > 0 && r.key[len(r.key)-1] == ethrexinternal.LeafFlag) {
 			out = append(out, r)
 		}
 	}

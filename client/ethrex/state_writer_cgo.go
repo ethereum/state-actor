@@ -35,15 +35,16 @@ import (
 // is correct for the e2e fixture and moderate --target-size. See doc.go for
 // the ceiling note.
 //
-// Flat-KV: ethrex serves state reads from the flat-KV CFs once a background task
-// has swept the trie post-sync. Real ethrex leaves them empty at genesis; we
-// pre-populate them so the produced DB models a synced node (matching how every
-// other client fakes a synced flat layer). Each leaf full-path row — the only
-// rows whose key ends in the leaf-flag nibble — is mirrored verbatim into the
-// matching flat-KV CF: the flat-KV key/value are byte-identical to the trie-node
-// full-path row (ethrex apply_prefix == our PrefixedSink; flat value == leaf
-// value). writeState then stamps misc_values["last_written"]=0xff so ethrex
-// skips regeneration on boot.
+// Flat-KV / snap-sync layout: ethrex serves state reads from the flat-KV CFs
+// once a background task has swept the trie post-sync. We pre-populate them so
+// the produced DB models a SYNCED node (matching how every other client fakes a
+// synced flat layer). Specifically we model a snap-synced node: each leaf
+// full-path row (the only rows whose key ends in the leaf-flag nibble) is routed
+// ONLY to the flat-KV CF, never duplicated into the trie-node CF — exactly how
+// ethrex's own apply_trie_updates and snap-sync bulk builder persist state. The
+// trie-node CFs keep the structural and leaf-NODE-RLP rows (which carry the value
+// for root/proofs), so the trie is complete. writeState then stamps
+// misc_values["last_written"]=0xff so ethrex skips regeneration on boot.
 func writeState(
 	ctx context.Context,
 	cfg generator.Config,
@@ -87,35 +88,39 @@ func writeState(
 	// isLeafFullPath reports whether a node row is a leaf's full-path row (the
 	// "row 2" the Builder emits as path++rem++[LeafFlag]). These are the only
 	// rows whose key ends in the leaf-flag nibble; branch/extension/leaf-node-RLP
-	// rows and the empty-trie sentinel never do. Such a row's (key, value) is
-	// exactly the flat-KV entry ethrex's generator would write for that leaf.
+	// rows and the empty-trie sentinel never do.
 	isLeafFullPath := func(path []byte) bool {
 		return len(path) > 0 && path[len(path)-1] == ethrexinternal.LeafFlag
 	}
 
-	// accountTrieNodeSink wraps the batchSink into a NodeSink for the account
-	// trie, mirroring each account leaf full-path row into account_flatkeyvalue.
+	// accountTrieNodeSink routes the account trie's emitted rows in the snap-sync
+	// layout: a leaf full-path row goes ONLY to account_flatkeyvalue, never to
+	// account_trie_nodes. This mirrors how ethrex itself persists state — its
+	// apply_trie_updates routes leaf rows (len 65/131) to the flat-KV CF and only
+	// structural/leaf-node rows to the trie-node CF, and its snap-sync bulk
+	// builder (trie_from_sorted) writes no leaf full-path rows either. The leaf
+	// NODE RLP (row 1) still lands in account_trie_nodes and carries the value for
+	// root/proof computation, so the on-disk trie is complete without the
+	// duplicate row-2 entry. A genesis-booted node would carry that duplicate; a
+	// snap-synced node does not — modelling the latter keeps the DB representative
+	// and smaller.
 	accountTrieNodeSink := ethrexinternal.NodeSink(func(path []byte, value []byte) error {
-		if err := accountSink.put(path, value); err != nil {
-			return err
-		}
 		if isLeafFullPath(path) {
 			return accountFkvSink.put(path, value)
 		}
-		return nil
+		return accountSink.put(path, value)
 	})
 
-	// storageTrieNodeSink wraps the batchSink into a NodeSink for storage tries.
-	// Paths arrive already address-prefixed (PrefixedSink), so a mirrored leaf
-	// row is byte-identical to ethrex's apply_prefix(account, slot) flat-KV key.
+	// storageTrieNodeSink routes the storage tries' emitted rows. Paths arrive
+	// already address-prefixed (PrefixedSink), so a leaf full-path row is
+	// byte-identical to ethrex's apply_prefix(account, slot) flat-KV key. Same
+	// snap-sync split: leaf full-path → storage_flatkeyvalue only; structural and
+	// leaf-node rows → storage_trie_nodes.
 	storageTrieNodeSink := ethrexinternal.NodeSink(func(path []byte, value []byte) error {
-		if err := storageSink.put(path, value); err != nil {
-			return err
-		}
 		if isLeafFullPath(path) {
 			return storageFkvSink.put(path, value)
 		}
-		return nil
+		return storageSink.put(path, value)
 	})
 
 	// preAllocStorageRoots maps addrHash → computed storage root for PreAlloc
