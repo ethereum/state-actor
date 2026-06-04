@@ -101,14 +101,39 @@ func TestGenesisDumpGolden(t *testing.T) {
 		diffCF(t, dbPath, cfName, wantRows)
 	}
 
+	// Flat-KV: real ethrex genesis leaves these empty (built lazily post-sync),
+	// but state-actor pre-populates them to model a synced node. Each flat-KV row
+	// must byte-match the corresponding leaf full-path row in the trie-node CF
+	// (the rows whose key ends in the leaf-flag nibble 0x10).
+	diffCF(t, dbPath, "account_flatkeyvalue", leafFullPathRows(dump["account_trie_nodes"]))
+	diffCF(t, dbPath, "storage_flatkeyvalue", leafFullPathRows(dump["storage_trie_nodes"]))
+
+	// misc_values must carry the FKV "fully generated" sentinel so ethrex skips
+	// regeneration on boot.
+	diffCF(t, dbPath, "misc_values", []dumpRow{
+		{key: []byte(ethrexinternal.MiscValuesLastWrittenKey), val: ethrexinternal.FKVLastWrittenComplete},
+	})
+
 	// chain_data needs special handling: the ChainConfig value (key 0x80) is
 	// ethrex's own serialization which we do NOT reproduce byte-for-byte (and
 	// don't need to — ethrex rewrites it from --network on every boot, before
 	// the boot-gate check). We assert the LE block-number keys byte-exact and
 	// that the ChainConfig key holds parseable JSON.
 	diffChainData(t, dbPath, dump["chain_data"])
+}
 
-	_ = ethrexinternal.EmptyCodeHashHex // anchor import
+// leafFullPathRows returns the subset of trie-node rows that are leaf full-path
+// rows: those whose key ends in the leaf-flag nibble (0x10). These rows are
+// byte-identical to the flat-KV entries (same key, same value), so they double
+// as the golden expectation for the flat-KV CFs.
+func leafFullPathRows(rows []dumpRow) []dumpRow {
+	out := make([]dumpRow, 0, len(rows))
+	for _, r := range rows {
+		if len(r.key) > 0 && r.key[len(r.key)-1] == ethrexinternal.LeafFlag {
+			out = append(out, r)
+		}
+	}
+	return out
 }
 
 // diffChainData verifies chain_data: keys 0x01 (EarliestBlockNumber) and 0x04
@@ -217,7 +242,7 @@ func readCFRows(t *testing.T, dbPath, cfName string) map[string]string {
 		defer cfOpts[i].Destroy()
 	}
 
-	db, cfHandles, err := grocksdb.OpenDbColumnFamiliesForReadOnly(dbOpts, dbPath, cfNames, cfOpts, false)
+	db, cfHandles, err := grocksdb.OpenDbForReadOnlyColumnFamilies(dbOpts, dbPath, cfNames, cfOpts, false)
 	if err != nil {
 		t.Fatalf("open DB read-only: %v", err)
 	}

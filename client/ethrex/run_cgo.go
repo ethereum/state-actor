@@ -71,7 +71,14 @@ func runImpl(ctx context.Context, cfg generator.Config, opts Options) (*generato
 	storageSink := newBatchSink(db, cfIdxStorageTrieNodes)
 	defer storageSink.Close()
 
-	stateRoot, stats, err := writeState(ctx, cfg, db, accountSink, storageSink)
+	// Flat-KV sinks: every leaf full-path row also lands in the flat-KV CFs so
+	// the produced DB models a synced node (see writeState + ethrex store.rs).
+	accountFkvSink := newBatchSink(db, cfIdxAccountFlatKeyValue)
+	defer accountFkvSink.Close()
+	storageFkvSink := newBatchSink(db, cfIdxStorageFlatKeyValue)
+	defer storageFkvSink.Close()
+
+	stateRoot, stats, err := writeState(ctx, cfg, db, accountSink, storageSink, accountFkvSink, storageFkvSink)
 	if err != nil {
 		return nil, fmt.Errorf("ethrex: writeState: %w", err)
 	}

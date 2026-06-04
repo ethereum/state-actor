@@ -71,3 +71,21 @@ const EmptyTrieHashHex = "0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc00162
 
 // StoreSchemaVersion is the value written to metadata.json.
 const StoreSchemaVersion = 2
+
+// misc_values keys/values controlling ethrex's flat-key-value (FKV) generator.
+//
+// ethrex builds the flat-KV CFs (account_flatkeyvalue / storage_flatkeyvalue)
+// lazily in a background task after sync, tracking progress in
+// misc_values["last_written"]. On boot the generator reads this marker: an
+// empty value means "not generated" (it clears both FKV CFs and rebuilds from
+// the trie), while the single byte 0xff means "already generated, skip".
+//
+// state-actor pre-populates the FKV CFs at write time so the produced DB models
+// a SYNCED node (every other client fakes a synced flat layer at genesis too).
+// Writing FKVLastWrittenComplete makes ethrex short-circuit on boot instead of
+// clearing and regenerating the layer we just wrote.
+// Source: ethrex store.rs flatkeyvalue_generator + Store::from_backend.
+var (
+	MiscValuesLastWrittenKey = []byte("last_written")
+	FKVLastWrittenComplete   = []byte{0xff}
+)

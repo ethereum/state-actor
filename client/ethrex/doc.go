@@ -10,17 +10,30 @@
 // Written CFs at genesis:
 //   - account_trie_nodes: account MPT rows (one per node + one per leaf-full-path)
 //   - storage_trie_nodes: per-account storage MPT rows (address-prefixed)
+//   - account_flatkeyvalue: account leaf full-path → account RLP (synced-state layer)
+//   - storage_flatkeyvalue: address-prefixed storage leaf full-path → storage value
 //   - account_codes: code hash → EncodeCode(bytecode)
 //   - account_code_metadata: code hash → u64-BE(len(bytecode))
 //   - chain_data: ChainConfig (key 0x80) + block-number sentinels (0x01, 0x04)
+//   - misc_values: "last_written" → 0xff (FKV "fully generated" sentinel)
 //   - headers: RLP(hash) → RLP(BlockHeader)
 //   - bodies: RLP(hash) → 0xc3c0c0c0 (empty genesis body)
 //   - block_numbers: RLP(hash) → u64-LE(0)
 //   - canonical_block_hashes: u64-LE(0) → RLP(hash)  ← boot gate
 //
-// Empty (but declared) CFs:
+// Empty (but declared) CFs: 8 others (pending_blocks, snap_state, etc.).
 //
-//	account_flatkeyvalue, storage_flatkeyvalue, misc_values, and 8 others.
+// # Flat-KV (synced-state) layer
+//
+// ethrex serves state reads from the flat-KV CFs once a background generator has
+// swept the trie post-sync; real ethrex genesis leaves them empty. state-actor
+// pre-populates them so the produced DB models a SYNCED node — matching every
+// other client, which all fake a synced flat layer (geth snapshot, reth
+// HashedAccounts/Storages, besu Bonsai flat). Each leaf full-path trie-node row
+// is mirrored verbatim into the matching flat-KV CF (the flat key/value are
+// byte-identical: ethrex apply_prefix == our PrefixedSink, flat value == leaf
+// value), and misc_values["last_written"]=0xff is stamped so ethrex's generator
+// short-circuits on boot rather than clearing and rebuilding the layer.
 //
 // Two sidecar files are written next to the DB:
 //   - metadata.json: {"schema_version": 2} — required by ethrex Store::new.

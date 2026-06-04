@@ -34,12 +34,24 @@ import (
 // RAM bound: internal/ethrex.Builder accumulates all leaves in memory. This
 // is correct for the e2e fixture and moderate --target-size. See doc.go for
 // the ceiling note.
+//
+// Flat-KV: ethrex serves state reads from the flat-KV CFs once a background task
+// has swept the trie post-sync. Real ethrex leaves them empty at genesis; we
+// pre-populate them so the produced DB models a synced node (matching how every
+// other client fakes a synced flat layer). Each leaf full-path row — the only
+// rows whose key ends in the leaf-flag nibble — is mirrored verbatim into the
+// matching flat-KV CF: the flat-KV key/value are byte-identical to the trie-node
+// full-path row (ethrex apply_prefix == our PrefixedSink; flat value == leaf
+// value). writeState then stamps misc_values["last_written"]=0xff so ethrex
+// skips regeneration on boot.
 func writeState(
 	ctx context.Context,
 	cfg generator.Config,
 	db *ethrexDB,
 	accountSink *batchSink,
 	storageSink *batchSink,
+	accountFkvSink *batchSink,
+	storageFkvSink *batchSink,
 ) (common.Hash, *generator.Stats, error) {
 	stats := &generator.Stats{}
 
@@ -72,14 +84,38 @@ func writeState(
 		return common.Hash{}, nil, err
 	}
 
-	// accountTrieNodeSink wraps the batchSink into a NodeSink for the account trie.
+	// isLeafFullPath reports whether a node row is a leaf's full-path row (the
+	// "row 2" the Builder emits as path++rem++[LeafFlag]). These are the only
+	// rows whose key ends in the leaf-flag nibble; branch/extension/leaf-node-RLP
+	// rows and the empty-trie sentinel never do. Such a row's (key, value) is
+	// exactly the flat-KV entry ethrex's generator would write for that leaf.
+	isLeafFullPath := func(path []byte) bool {
+		return len(path) > 0 && path[len(path)-1] == ethrexinternal.LeafFlag
+	}
+
+	// accountTrieNodeSink wraps the batchSink into a NodeSink for the account
+	// trie, mirroring each account leaf full-path row into account_flatkeyvalue.
 	accountTrieNodeSink := ethrexinternal.NodeSink(func(path []byte, value []byte) error {
-		return accountSink.put(path, value)
+		if err := accountSink.put(path, value); err != nil {
+			return err
+		}
+		if isLeafFullPath(path) {
+			return accountFkvSink.put(path, value)
+		}
+		return nil
 	})
 
 	// storageTrieNodeSink wraps the batchSink into a NodeSink for storage tries.
+	// Paths arrive already address-prefixed (PrefixedSink), so a mirrored leaf
+	// row is byte-identical to ethrex's apply_prefix(account, slot) flat-KV key.
 	storageTrieNodeSink := ethrexinternal.NodeSink(func(path []byte, value []byte) error {
-		return storageSink.put(path, value)
+		if err := storageSink.put(path, value); err != nil {
+			return err
+		}
+		if isLeafFullPath(path) {
+			return storageFkvSink.put(path, value)
+		}
+		return nil
 	})
 
 	// preAllocStorageRoots maps addrHash → computed storage root for PreAlloc
@@ -286,12 +322,24 @@ func writeState(
 		return common.Hash{}, nil, fmt.Errorf("ethrex: account trie root: %w", err)
 	}
 
-	// Flush trie sinks.
+	// Flush trie + flat-KV sinks.
 	if err := accountSink.flushSync(); err != nil {
 		return common.Hash{}, nil, err
 	}
 	if err := storageSink.flushSync(); err != nil {
 		return common.Hash{}, nil, err
+	}
+	if err := accountFkvSink.flushSync(); err != nil {
+		return common.Hash{}, nil, err
+	}
+	if err := storageFkvSink.flushSync(); err != nil {
+		return common.Hash{}, nil, err
+	}
+
+	// Mark the flat-KV layer fully generated so ethrex's background generator
+	// short-circuits on boot instead of clearing + rebuilding the CFs we wrote.
+	if err := db.putSync(cfIdxMiscValues, ethrexinternal.MiscValuesLastWrittenKey, ethrexinternal.FKVLastWrittenComplete); err != nil {
+		return common.Hash{}, nil, fmt.Errorf("ethrex: put misc_values last_written: %w", err)
 	}
 
 	stats.TotalBytes = stats.AccountBytes + stats.StorageBytes + stats.CodeBytes

@@ -238,6 +238,8 @@ func (d *ethrexDB) Close() {
 		for _, idx := range []int{
 			cfIdxAccountTrieNodes,
 			cfIdxStorageTrieNodes,
+			cfIdxAccountFlatKeyValue,
+			cfIdxStorageFlatKeyValue,
 			cfIdxAccountCodes,
 			cfIdxAccountCodeMetadata,
 			cfIdxChainData,
