@@ -57,37 +57,56 @@ After the run, boot the client against the produced datadir &mdash; the per-clie
 git clone https://github.com/nerolation/state-actor.git
 cd state-actor
 go build -o state-actor .            # geth client only (pure Go)
-docker build -f Dockerfile.reth -t state-actor-reth .  # cgo clients
+
+# cgo clients (besu / nethermind / reth) ship as prebuilt images:
+docker pull ghcr.io/ethereum/state-actor-reth:main
 ```
 
-`besu`, `nethermind`, and `reth` need cgo bindings (RocksDB / MDBX). On macOS, build them via Docker; per-client `Dockerfile.<client>` files ship in this repo.
+`besu`, `nethermind`, and `reth` need cgo bindings (RocksDB / MDBX). The published `ghcr.io/ethereum/state-actor-<client>:main` images carry those bindings; pull the one you need (`state-actor-besu`, `state-actor-nethermind`, `state-actor-reth`). To build locally instead, the per-client `Dockerfile.<client>` files ship in this repo.
+
+### Building the Docker images locally (development)
+
+If you're developing on state-actor, build the images yourself from the per-client Dockerfiles instead of pulling the published ones — `docker build` picks up your local working tree:
+
+```bash
+docker build -f Dockerfile            -t state-actor:dev .             # geth (pure Go)
+docker build -f Dockerfile.besu       -t state-actor-besu:dev .        # cgo
+docker build -f Dockerfile.nethermind -t state-actor-nethermind:dev .  # cgo
+docker build -f Dockerfile.reth       -t state-actor-reth:dev .        # cgo
+docker build -f Dockerfile.geth       -t state-actor-geth:dev .        # pure Go
+```
+
+Then run your locally-built tag in place of the `ghcr.io/...:main` image in any recipe below, e.g. `docker run --rm -v /tmp/sa-reth:/data state-actor-reth:dev --client=reth --db=/data --target-size=1GB`. The cgo images build RocksDB from source, so the first build is slow (~15 min); subsequent builds reuse the layer cache. The same Dockerfiles are what CI publishes via `.github/workflows/deploy-docker.yaml`.
 
 ## Usage
 
-### Generate a geth database
+Every client runs the same way: mount an output directory at `/data` and run its `ghcr.io/ethereum/state-actor-<client>:main` image. Substitute `geth` / `reth` / `besu` / `nethermind` for the client and the matching image.
 
-Geth has a pure-Go writer. The path you pass to `--db` must end in `/geth/chaindata` &mdash; geth itself appends that suffix to its `--datadir`.
-
-```bash
-state-actor --client=geth --db=/tmp/sa-geth/geth/chaindata --target-size=1GB
-```
-
-### Generate for reth, besu, or nethermind
+### Generate a database
 
 ```bash
-docker run --rm -v /tmp/sa-reth:/data state-actor-reth \
-  ./state-actor --client=reth --db=/data --target-size=1GB
+docker run --rm -v /tmp/sa-reth:/data ghcr.io/ethereum/state-actor-reth:main \
+  --client=reth --db=/data --target-size=1GB
 ```
 
-Substitute `besu` / `nethermind` for `reth` (and pick the matching Dockerfile). The on-disk layout is documented per client in [`docs/RUNBOOK.md`](docs/RUNBOOK.md).
+For `geth`, the path you pass to `--db` must end in `/geth/chaindata` &mdash; geth itself appends that suffix to its `--datadir`:
+
+```bash
+docker run --rm -v /tmp/sa-geth:/data ghcr.io/ethereum/state-actor-geth:main \
+  --client=geth --db=/data/geth/chaindata --target-size=1GB
+```
+
+The on-disk layout is documented per client in [`docs/RUNBOOK.md`](docs/RUNBOOK.md).
 
 ### Declare concrete entities with a spec
 
-The `--spec` flag points at a YAML file describing exactly which contracts and EOAs to write &mdash; ERC-20 tokens with chosen sizes, EIP-7702 delegating EOAs, raw bytecode contracts, address-mode demonstrations. See [`docs/SPEC.md`](docs/SPEC.md) for the schema; [`examples/README.md`](examples/README.md) is the picker.
+The `--spec` flag points at a YAML file describing exactly which contracts and EOAs to write &mdash; ERC-20 tokens with chosen sizes, EIP-7702 delegating EOAs, raw bytecode contracts, address-mode demonstrations. See [`docs/SPEC.md`](docs/SPEC.md) for the schema; [`examples/README.md`](examples/README.md) is the picker. Mount the spec file into the container alongside the output directory:
 
 ```bash
-state-actor --client=geth --db=/tmp/sa/geth/chaindata \
-  --spec=examples/spec-erc20-mixed-sizes.yaml
+docker run --rm -v /tmp/sa-geth:/data -v "$PWD/examples:/examples:ro" \
+  ghcr.io/ethereum/state-actor-geth:main \
+  --client=geth --db=/data/geth/chaindata \
+  --spec=/examples/spec-erc20-mixed-sizes.yaml
 ```
 
 Without `--target-size`, only the spec entities are written &mdash; no synthetic fill runs on top, so there's no risk of random EOAs colliding with spec-derived addresses.
@@ -97,7 +116,8 @@ Without `--target-size`, only the spec entities are written &mdash; no synthetic
 `--target-size` is an upper bound on the projected trie footprint of the whole generated database. When set, the auto-fill emits mainnet-shaped synthetic state (20 % account-trie / 10 % bytecode / 70 % storage) up to the cap. With `--spec`, the spec entities count first; the auto-fill fills the headroom after their projected cost. If the spec alone would exceed the budget, the spec is truncated to the longest prefix that fits, with a warning on stderr; no auto-fill runs in that case. To generate a spec verbatim with no synthetic fill, omit `--target-size`.
 
 ```bash
-state-actor --client=reth --db=/tmp/sa --target-size=10GB
+docker run --rm -v /tmp/sa-reth:/data ghcr.io/ethereum/state-actor-reth:main \
+  --client=reth --db=/data --target-size=10GB
 ```
 
 Accepted suffixes: `KB`, `MB`, `GB`, `TB` (base-1024). Bare numbers are bytes.
@@ -105,7 +125,8 @@ Accepted suffixes: `KB`, `MB`, `GB`, `TB` (base-1024). Bare numbers are bytes.
 ### Tune the genesis chainspec
 
 ```bash
-state-actor --client=geth --db=/tmp/sa/geth/chaindata \
+docker run --rm -v /tmp/sa-geth:/data ghcr.io/ethereum/state-actor-geth:main \
+  --client=geth --db=/data/geth/chaindata \
   --chain-id=12345 \
   --fork=osaka \
   --gas-limit=60000000 \
@@ -113,7 +134,7 @@ state-actor --client=geth --db=/tmp/sa/geth/chaindata \
   --extra-data=0xdeadbeef
 ```
 
-Run `state-actor --list-forks` for accepted `--fork` values. The default fork is the latest one each `--client` supports (currently `osaka` across all four).
+Run `--list-forks` for accepted `--fork` values. The default fork is the latest one each `--client` supports (currently `osaka` across all four).
 
 ## Boot a client against the generated DB
 

@@ -74,14 +74,12 @@ Reference: `client/reth/oracle_test.go` (`TestE2ESuite`).
 > (`PinnedRethImage` + `PinnedRethRelease`) is the source of truth — the
 > recipe below mirrors the current pin.
 
-**Generate.** Reth uses cgo (MDBX bindings) — build via Docker.
+**Generate.** Reth uses cgo (MDBX bindings) — run the published Docker image (or build `Dockerfile.reth` locally).
 
 ```bash
-docker build -f Dockerfile.reth -t state-actor-reth .
 docker run --rm \
   -v /tmp/sa-reth:/data \
-  state-actor-reth \
-  ./state-actor \
+  ghcr.io/ethereum/state-actor-reth:main \
   --client=reth --db=/data \
   --target-size=100MB \
   --seed=42 \
@@ -142,14 +140,12 @@ Reference: `client/besu/e2e_test.go` (`TestE2ESuite`).
 > `hyperledger/besu:25.11.0`, so should you. See `client/besu/doc.go` for
 > the longer reasoning.
 
-**Generate.** Besu uses cgo (RocksDB JNI bindings on the writer side) — build via Docker.
+**Generate.** Besu uses cgo (RocksDB JNI bindings on the writer side) — run the published Docker image (or build `Dockerfile.besu` locally).
 
 ```bash
-docker build -f Dockerfile.besu -t state-actor-besu .
 docker run --rm \
   -v /tmp/sa-besu:/data \
-  state-actor-besu \
-  ./state-actor \
+  ghcr.io/ethereum/state-actor-besu:main \
   --client=besu --db=/data \
   --target-size=100MB \
   --seed=42 \
@@ -203,14 +199,12 @@ Block-number stays at 0 until a consensus layer drives `engine_forkchoiceUpdated
 
 Reference: `client/nethermind/e2e_test.go` (`TestE2ESuite`).
 
-**Generate.** Nethermind uses cgo (RocksDB) — build via Docker.
+**Generate.** Nethermind uses cgo (RocksDB) — run the published Docker image (or build `Dockerfile.nethermind` locally).
 
 ```bash
-docker build -f Dockerfile.nethermind -t state-actor-nethermind .
 docker run --rm \
   -v /tmp/sa-neth:/data \
-  state-actor-nethermind \
-  ./state-actor \
+  ghcr.io/ethereum/state-actor-nethermind:main \
   --client=nethermind --db=/data \
   --target-size=100MB \
   --seed=42 \
