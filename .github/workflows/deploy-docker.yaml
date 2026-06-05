@@ -1,0 +1,233 @@
+# Deploy - Docker
+#
+# Builds and publishes a separate multi-arch image for every Dockerfile in
+# the repo. One image per client, all under the repo's GHCR namespace:
+#
+#   Dockerfile             → ghcr.io/<owner>/state-actor
+#   Dockerfile.besu        → ghcr.io/<owner>/state-actor-besu
+#   Dockerfile.nethermind  → ghcr.io/<owner>/state-actor-nethermind
+#   Dockerfile.reth        → ghcr.io/<owner>/state-actor-reth
+#   Dockerfile.geth        → ghcr.io/<owner>/state-actor-geth
+#
+# Same release approach as ethpandaops/benchmarkoor's deploy-docker.* workflows:
+# native amd64 + arm64 builds run in parallel on per-arch runners, get pushed
+# under per-arch tags, then `docker buildx imagetools create` stitches them into
+# multi-arch manifests. Action versions are pinned by SHA for reproducibility.
+#
+# Tag strategy (per image):
+#   push to main      → main, main-latest, main-<sha>
+#   tag v*.*.*        → <version>, latest, <version>-<sha>
+# Per-arch build tags (…-amd64 / …-arm64) are implementation detail; consumers
+# pull the multi-arch manifests above.
+#
+# The matrix is the only thing that differs from benchmarkoor (which had one
+# file per image): five Dockerfiles would otherwise mean five near-identical
+# workflow files, so the per-image fan-out lives in a matrix instead.
+
+name: Deploy - Docker
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - 'v*.*.*'
+
+jobs:
+  meta:
+    name: Compute tags and build info
+    runs-on: ubuntu-latest
+    outputs:
+      sha_short: ${{ steps.vars.outputs.sha_short }}
+      tag_prefix: ${{ steps.vars.outputs.tag_prefix }}
+      additional_tags: ${{ steps.vars.outputs.additional_tags }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+
+      - id: vars
+        run: |
+          SHA_SHORT=$(git rev-parse --short HEAD)
+          echo "sha_short=$SHA_SHORT" >> $GITHUB_OUTPUT
+          if [[ "${{ github.ref }}" == refs/tags/v*.*.* ]]; then
+            VERSION_TAG="${GITHUB_REF#refs/tags/}"
+            echo "tag_prefix=$VERSION_TAG" >> $GITHUB_OUTPUT
+            echo "additional_tags=[\"$VERSION_TAG\",\"latest\"]" >> $GITHUB_OUTPUT
+          else
+            echo "tag_prefix=main" >> $GITHUB_OUTPUT
+            echo "additional_tags=[\"main\",\"main-latest\"]" >> $GITHUB_OUTPUT
+          fi
+
+  build_amd64:
+    name: Build amd64 image (${{ matrix.dockerfile }})
+    needs: meta
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { suffix: '',            dockerfile: Dockerfile }
+          - { suffix: '-besu',       dockerfile: Dockerfile.besu }
+          - { suffix: '-nethermind', dockerfile: Dockerfile.nethermind }
+          - { suffix: '-reth',       dockerfile: Dockerfile.reth }
+          - { suffix: '-geth',       dockerfile: Dockerfile.geth }
+    env:
+      GHCR_REPO: ghcr.io/${{ github.repository }}${{ matrix.suffix }}
+      DOCKERFILE: ${{ matrix.dockerfile }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@c47758b77c9736f4b2ef4073d4d51994fabfe349 # v3.7.1
+
+      - name: Log in to GHCR
+        uses: docker/login-action@9780b0c442fbb1117ed29e0efdff1e18412f7567 # v3.3.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build amd64 docker image
+        env:
+          PREFIX: ${{ needs.meta.outputs.tag_prefix }}
+          SHA: ${{ needs.meta.outputs.sha_short }}
+        run: |
+          docker build . --file "$DOCKERFILE" \
+            --tag "${GHCR_REPO}:${PREFIX}-amd64" \
+            --tag "${GHCR_REPO}:${PREFIX}-${SHA}-amd64" \
+            --platform=linux/amd64
+
+      - name: Push amd64 docker images
+        env:
+          PREFIX: ${{ needs.meta.outputs.tag_prefix }}
+          SHA: ${{ needs.meta.outputs.sha_short }}
+        run: |
+          docker push "${GHCR_REPO}:${PREFIX}-amd64"
+          docker push "${GHCR_REPO}:${PREFIX}-${SHA}-amd64"
+
+  build_arm64:
+    name: Build arm64 image (${{ matrix.dockerfile }})
+    needs: meta
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { suffix: '',            dockerfile: Dockerfile }
+          - { suffix: '-besu',       dockerfile: Dockerfile.besu }
+          - { suffix: '-nethermind', dockerfile: Dockerfile.nethermind }
+          - { suffix: '-reth',       dockerfile: Dockerfile.reth }
+          - { suffix: '-geth',       dockerfile: Dockerfile.geth }
+    env:
+      GHCR_REPO: ghcr.io/${{ github.repository }}${{ matrix.suffix }}
+      DOCKERFILE: ${{ matrix.dockerfile }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@c47758b77c9736f4b2ef4073d4d51994fabfe349 # v3.7.1
+
+      - name: Log in to GHCR
+        uses: docker/login-action@9780b0c442fbb1117ed29e0efdff1e18412f7567 # v3.3.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build arm64 docker image
+        env:
+          PREFIX: ${{ needs.meta.outputs.tag_prefix }}
+          SHA: ${{ needs.meta.outputs.sha_short }}
+        run: |
+          docker build . --file "$DOCKERFILE" \
+            --tag "${GHCR_REPO}:${PREFIX}-arm64" \
+            --tag "${GHCR_REPO}:${PREFIX}-${SHA}-arm64" \
+            --platform=linux/arm64
+
+      - name: Push arm64 docker images
+        env:
+          PREFIX: ${{ needs.meta.outputs.tag_prefix }}
+          SHA: ${{ needs.meta.outputs.sha_short }}
+        run: |
+          docker push "${GHCR_REPO}:${PREFIX}-arm64"
+          docker push "${GHCR_REPO}:${PREFIX}-${SHA}-arm64"
+
+  manifest_sha:
+    name: Multi-arch sha manifest (${{ matrix.suffix }})
+    needs: [meta, build_amd64, build_arm64]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      matrix:
+        suffix: ['', '-besu', '-nethermind', '-reth', '-geth']
+    env:
+      GHCR_REPO: ghcr.io/${{ github.repository }}${{ matrix.suffix }}
+    steps:
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@c47758b77c9736f4b2ef4073d4d51994fabfe349 # v3.7.1
+
+      - name: Log in to GHCR
+        uses: docker/login-action@9780b0c442fbb1117ed29e0efdff1e18412f7567 # v3.3.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create multi-arch sha manifest
+        env:
+          PREFIX: ${{ needs.meta.outputs.tag_prefix }}
+          SHA: ${{ needs.meta.outputs.sha_short }}
+        run: |
+          docker buildx imagetools create -t "${GHCR_REPO}:${PREFIX}-${SHA}" \
+            "${GHCR_REPO}:${PREFIX}-${SHA}-amd64" \
+            "${GHCR_REPO}:${PREFIX}-${SHA}-arm64"
+
+  manifest_extra:
+    name: Multi-arch additional manifests (${{ matrix.suffix }} · ${{ matrix.tag }})
+    needs: [meta, build_amd64, build_arm64]
+    if: ${{ needs.meta.outputs.additional_tags != '' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      matrix:
+        suffix: ['', '-besu', '-nethermind', '-reth', '-geth']
+        tag: ${{ fromJSON(needs.meta.outputs.additional_tags) }}
+    env:
+      GHCR_REPO: ghcr.io/${{ github.repository }}${{ matrix.suffix }}
+    steps:
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@c47758b77c9736f4b2ef4073d4d51994fabfe349 # v3.7.1
+
+      - name: Log in to GHCR
+        uses: docker/login-action@9780b0c442fbb1117ed29e0efdff1e18412f7567 # v3.3.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create multi-arch manifest ${{ matrix.tag }}
+        env:
+          PREFIX: ${{ needs.meta.outputs.tag_prefix }}
+          SHA: ${{ needs.meta.outputs.sha_short }}
+          TAG: ${{ matrix.tag }}
+        run: |
+          docker buildx imagetools create -t "${GHCR_REPO}:${TAG}" \
+            "${GHCR_REPO}:${PREFIX}-${SHA}-amd64" \
+            "${GHCR_REPO}:${PREFIX}-${SHA}-arm64"
