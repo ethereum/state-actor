@@ -34,6 +34,8 @@ go run . \
 
 Note the `/geth/chaindata` suffix on `--db`: geth itself appends that path to its `--datadir`, so state-actor must write at exactly that location.
 
+Unlike the other clients, geth does not need an external genesis file at boot — its chain config is persisted inside the Pebble DB (`rawdb.WriteChainConfig`), so the geth boot command below carries no `--genesis`/`--chain` flag. For parity/inspection, state-actor still drops an informational `geth-genesis.json` at the datadir root (e.g. `/tmp/sa-geth/geth-genesis.json`). It is **not** read at boot. Its `alloc` is empty — state is direct-written into the trie, not derived from `alloc` — so `geth init`-ing from it yields the same chain *config* but an empty state, not a copy of the generated DB.
+
 **Boot.** Docker is one option; native geth works equally.
 
 ```bash

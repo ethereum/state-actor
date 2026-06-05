@@ -75,5 +75,13 @@ func Populate(ctx context.Context, cfg generator.Config, opts Options) (*generat
 		return nil, fmt.Errorf("client/geth.Populate: write genesis block: %w", err)
 	}
 
+	// Informational geth-format genesis at the datadir root. Not used at
+	// boot (geth reads its config from the rawdb-persisted ChainConfig
+	// above) — written for parity with the other clients' chainspec
+	// sidecars and for inspection / `geth init` of a same-params node.
+	if _, err := writeGenesisJSON(cfg.DBPath, g); err != nil {
+		return nil, fmt.Errorf("client/geth.Populate: write genesis json: %w", err)
+	}
+
 	return stats, nil
 }
