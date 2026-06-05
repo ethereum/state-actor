@@ -1,5 +1,8 @@
 # Production-minimum repricing-benchmark prestate (300 M-gas headroom).
 #
+# Setup to minimal repricing prestate as of execution-specs
+# commit 6137bb32f9b8eda6194096992cb97b28be06957d
+#
 # Sized to be the smallest fixture that produces *valid* 300 million-gas
 # iterations for every bloatnet repricing benchmark in
 # execution-specs/tests/benchmark/stateful/. Below this scale a single
@@ -115,18 +118,24 @@ entities:
 
   # ── 2. Storage-pattern target (reusable across SLOAD/SSTORE benches) ─
   # Backs the existing_slots=True path of test_sload_bloated and
-  # test_sstore_bloated. One contract, 150 000 populated slots — slot 0
-  # holds the next-free pointer (150000), slot k = k for k in 1..149999.
+  # test_sstore_bloated. One contract, 335545082 populated slots — slot 0
+  # holds the next-free pointer (335545082), slot k = k for k in 1..335545081.
   # Reusable target for any benchmark that needs a cold-SLOAD or
   # cold-SSTORE-set sweep against an already-populated key range.
+  # This creates the 10Gb storage variant
+  # (335545082 * 32 = 10737442624 > 1024*1024*1024*10 = 10737418240)
+  # Note: the actual storage of above is (much) higher as it also
+  # needs to store the key.
+  # This does setup the account in the state used in the repricings.
   - kind: contract
-    name: storage-pattern-300m
+    name: storage-pattern-10gb
     template: storage_pattern
-    address: 0x000000000000000000000000000000000000c0de
+    address: 0x87a6314da5ac8832f6e7a176c8fb133b19f5be04
+    # Private key: 0x4da32d29f6dcffa26e09dc4e102033f2d105de1444fb893493ae703289275e0e
     nonce: 1
     balance: "1000000000000000000"
     parameters:
-      final: 150000
+      final: 335545082
 
   # ── 3. CREATE2 factory ────────────────────────────────────────────────
   # Canonical Arachnid deterministic-deployment proxy. Same address on
