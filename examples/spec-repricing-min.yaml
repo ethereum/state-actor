@@ -17,7 +17,7 @@
 # second schema smoke (used by build_repricing_test.go) use
 # `examples/spec-repricing-smoke.yaml`.
 #
-# ── 300 M-gas headroom math (the reason every count below is 150 000) ─
+# ── 300 M-gas headroom math (why the three count-based knobs are 150 000) ─
 #
 # All four cold-resource benchmarks share the same 2000 gas/access
 # cost floor (post-EIP-2929 cold-address / cold-slot access):
@@ -32,12 +32,17 @@
 #                        bytecode-warm-up doesn't amortize)
 #   * create_preimage_deploys (Bittrex's CREATE chain — cold contract
 #                              access on every planted child)
-#   * storage_pattern   (cold SLOAD on planted slots; 150 000 slots
-#                        keeps the SLOAD benchmark from running out
-#                        of populated keys)
+#   * storage_pattern   (cold SLOAD on planted slots. NOTE: this fixture
+#                        oversizes this ONE knob far past the 150 000
+#                        floor — see entity 2, final = 335 545 082 — so
+#                        it doubles as the 10 GB storage variant. 150 000
+#                        slots is the minimum; extra populated slots only
+#                        add SLOAD/SSTORE headroom, never reduce it.)
 #
-# Bumping the benchmark gas-target above 300 M REQUIRES bumping every
-# count below proportionally:  count >= gas_benchmark_value / 2000
+# Bumping the benchmark gas-target above 300 M REQUIRES bumping each of
+# the three count-based knobs above proportionally:
+#     count >= gas_benchmark_value / 2000
+# storage_pattern already sits far above the floor, so it is unaffected.
 #
 # ── Fork relevance ────────────────────────────────────────────────────
 #
@@ -60,19 +65,27 @@
 #
 #     150 000 sequential_eoas       ≈   33 MB   (account-trie only)
 #     150 000 create2_deploys       ≈ 3.7  GB   (UNIQUE 24 KiB code per
-#                                                 contract — the dominant
-#                                                 cost in this fixture)
+#                                                 contract)
 #     create2_factory               negligible
 #     150 000 create_preimage       ≈   33 MB   (shared 600-B Bittrex
 #                                                 runtime, planted once)
-#     1 storage_pattern @ 150k slots≈   33 MB   (slot trie + flat state)
+#     1 storage_pattern @ 335M slots≈  ~73 GB   (335 545 082 slots ×
+#                                                 ~218 B/slot — the
+#                                                 dominant cost in this
+#                                                 fixture. "10 GB" in the
+#                                                 entity name is the
+#                                                 32-B/slot value-data
+#                                                 size (~10.7 GB); on disk
+#                                                 geth also stores each
+#                                                 key + flat state, ≈218
+#                                                 B/slot → ~73 GB)
 #     prefunded seed EOA            negligible
 #                                   ─────────
-#                                   ≈ 3.8 GB on disk
+#                                   ≈ 77 GB on disk
 #
-# Build time: 5-15 min depending on disk. RAM peak ~8 GiB (streamsort
-# cap is unaffected by entity count; dominated by the 3.7 GB of
-# create2_deploys code).
+# Build time scales with on-disk size: ~30-90 min for ~77 GB depending
+# on disk. RAM peak ~8 GiB (streamsort cap is unaffected by entity
+# count — the 335 M storage slots are streamed, not buffered).
 #
 # ── Run it ────────────────────────────────────────────────────────────
 #
@@ -104,6 +117,7 @@ entities:
   # in execution-specs bloatnet test_account_access (EXISTING_EOA mode).
   # 150 000 entries planted at 0x1000..0x2497F — gives 300 M gas of
   # cold-access headroom at the post-EIP-2929 rate of 2000 gas/access.
+  # Used in repricing test test_account_access, the EXISTING_EOA
   - kind: contract
     name: sequential-eoas-300m
     template: sequential_eoas
@@ -118,20 +132,36 @@ entities:
 
   # ── 2. Storage-pattern target (reusable across SLOAD/SSTORE benches) ─
   # Backs the existing_slots=True path of test_sload_bloated and
-  # test_sstore_bloated. One contract, 335545082 populated slots — slot 0
-  # holds the next-free pointer (335545082), slot k = k for k in 1..335545081.
+  # test_sstore_bloated. One contract, 335 545 083 populated slots —
+  # slot 0 holds the next-free pointer (final + 1 = 335545083), and
+  # slot k = k for k in 1..335545082 (= final).
   # Reusable target for any benchmark that needs a cold-SLOAD or
   # cold-SSTORE-set sweep against an already-populated key range.
-  # This creates the 10Gb storage variant
-  # (335545082 * 32 = 10737442624 > 1024*1024*1024*10 = 10737418240)
-  # Note: the actual storage of above is (much) higher as it also
-  # needs to store the key.
-  # This does setup the account in the state used in the repricings.
+  # This is the 10 GB storage variant: final × 32 B of slot-value data
+  # (335545082 * 32 = 10737442624 > 1024*1024*1024*10 = 10737418240),
+  # i.e. ~10.7 GB of values. Actual on-disk cost is (much) higher
+  # (~73 GB) because geth also stores each key + flat state (~218 B/slot).
+  # This sets up the account used for sload_bloated and sstore_bloated
+  # tests, for the 10gb variant.
+  #
+  # Address ↔ private-key pair (verified — pkey derives the address):
+  #   address: 0x87a6314da5ac8832f6e7a176c8fb133b19f5be04
+  #   pkey:    0x4da32d29f6dcffa26e09dc4e102033f2d105de1444fb893493ae703289275e0e
+  #
+  # The pair matches the canonical upstream `bloated_eoa_10GB` stub in
+  # `execution-specs/tests/benchmark/stateful/stubs/stubs_repricing.json`,
+  # so the same address state-actor plants here also resolves through
+  # `pre.stub_eoa("bloated_eoa_10GB")` during fill-stateful runs — the
+  # storage layout below directly satisfies the EIP-7702 / SLOAD /
+  # SSTORE benchmarks' "existing_slots=True" parametrization.
+  #
+  # State-actor's spec schema has no `private_key` field; the key is
+  # kept in this comment so anyone running fill-stateful or signing
+  # txns FROM this address can copy it without re-deriving.
   - kind: contract
     name: storage-pattern-10gb
     template: storage_pattern
     address: 0x87a6314da5ac8832f6e7a176c8fb133b19f5be04
-    # Private key: 0x4da32d29f6dcffa26e09dc4e102033f2d105de1444fb893493ae703289275e0e
     nonce: 1
     balance: "1000000000000000000"
     parameters:
@@ -177,6 +207,8 @@ entities:
   # 0xe871313a20df727f5c226258414e4df2df2d9f41). Each child carries
   # this runtime AND has slot 0 set to the parent controller address
   # — the real on-mainnet invariant, restored here via `storage_init`.
+  #
+  # Used in repricing test test_account_access, the EXISTING_CONTRACT
   - kind: contract
     name: bittrex-create-preimage-300m
     template: create_preimage_deploys
