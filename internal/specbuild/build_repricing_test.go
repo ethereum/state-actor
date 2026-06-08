@@ -2,6 +2,7 @@ package specbuild
 
 import (
 	"bytes"
+	"math/big"
 	"strings"
 	"testing"
 
@@ -38,8 +39,9 @@ func TestBuildRepricingSmoke(t *testing.T) {
 
 	// sequential_eoas(count=100) + storage_pattern(1) +
 	// create2_factory(1) + create2_deploys(salt_count=10) +
-	// create_preimage_deploys(count=10) = 122.
-	const want = 100 + 1 + 1 + 10 + 10
+	// create_preimage_deploys(count=10) + sequential_pkey_eoas(count=3)
+	// = 125.
+	const want = 100 + 1 + 1 + 10 + 10 + 3
 	if len(pre) != want {
 		t.Fatalf("PreAlloc count: got %d, want %d", len(pre), want)
 	}
@@ -123,6 +125,36 @@ func TestBuildRepricingSmoke(t *testing.T) {
 		if pre[112+i].Address != want {
 			t.Errorf("create_preimage_deploys[%d] addr: got %s, want %s",
 				i, pre[112+i].Address.Hex(), want.Hex())
+		}
+	}
+
+	// Sender pool (entries 122..125): three plain EOAs at addresses
+	// derived from pkeys 0x222…2, 0x222…2+1, 0x222…2+2. The pkey-
+	// derived address is the secp256k1 PubkeyToAddress of the scalar
+	// padded to 32 bytes big-endian. The template enforces nonce=0 +
+	// no code; only the addresses themselves need checking.
+	base := new(big.Int).SetBytes(common.FromHex(
+		"0x2222222222222222222222222222222222222222222222222222222222222222",
+	))
+	for i := 0; i < 3; i++ {
+		var buf [32]byte
+		scalar := new(big.Int).Add(base, big.NewInt(int64(i)))
+		b := scalar.Bytes()
+		copy(buf[32-len(b):], b)
+		priv, err := crypto.ToECDSA(buf[:])
+		if err != nil {
+			t.Fatalf("sender_pool[%d] control derive: %v", i, err)
+		}
+		wantAddr := crypto.PubkeyToAddress(priv.PublicKey)
+		if pre[122+i].Address != wantAddr {
+			t.Errorf("sequential_pkey_eoas[%d] addr: got %s, want %s",
+				i, pre[122+i].Address.Hex(), wantAddr.Hex())
+		}
+		if pre[122+i].Code != nil {
+			t.Errorf("sequential_pkey_eoas[%d] Code: must be nil for plain EOA", i)
+		}
+		if pre[122+i].Account.Nonce != 0 {
+			t.Errorf("sequential_pkey_eoas[%d] nonce: got %d, want 0", i, pre[122+i].Account.Nonce)
 		}
 	}
 }
@@ -280,6 +312,7 @@ func TestParseRepricingMin(t *testing.T) {
 		"sequential-eoas-300m":         false,
 		"create2-deploys-300m":         false,
 		"bittrex-create-preimage-300m": false,
+		"sender-pool-300m":             false,
 	}
 	for _, ent := range s.Entities {
 		switch ent.Name {
@@ -294,6 +327,16 @@ func TestParseRepricingMin(t *testing.T) {
 			}
 			checked[ent.Name] = true
 		case "bittrex-create-preimage-300m":
+			if c := gotCount(ent.Name, ent.Parameters, "count"); c < need {
+				t.Errorf("%s count=%d, must be >= %d (300 M-gas headroom)", ent.Name, c, need)
+			}
+			checked[ent.Name] = true
+		case "sender-pool-300m":
+			// sender_pool scales with iteration COUNT
+			// (one-sender-per-transfer-tx), not gas-per-access.
+			// 30 M-gas / 21 k-intrinsic = ~1428 senders consumed
+			// per fill; 150 000 leaves the same scaling headroom
+			// as the cold-access knobs.
 			if c := gotCount(ent.Name, ent.Parameters, "count"); c < need {
 				t.Errorf("%s count=%d, must be >= %d (300 M-gas headroom)", ent.Name, c, need)
 			}

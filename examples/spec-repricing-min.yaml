@@ -17,7 +17,7 @@
 # second schema smoke (used by build_repricing_test.go) use
 # `examples/spec-repricing-smoke.yaml`.
 #
-# ── 300 M-gas headroom math (why the three count-based knobs are 150 000) ─
+# ── 300 M-gas headroom math (why the four count-based knobs are 150 000) ─
 #
 # All four cold-resource benchmarks share the same 2000 gas/access
 # cost floor (post-EIP-2929 cold-address / cold-slot access):
@@ -39,10 +39,20 @@
 #                        slots is the minimum; extra populated slots only
 #                        add SLOAD/SSTORE headroom, never reduce it.)
 #
+# A fifth knob — sender_pool — is also sized at 150 000 but for a
+# different reason: it pre-funds the SENDER_BASE_KEY-derived EOAs that
+# test_ether_transfers_onchain_receivers signs txns FROM. At 30 M-gas
+# per benchmark iteration and one sender per iteration, 30 M / 21 k ≈
+# 1428 senders are consumed per fill; 150 000 leaves the same scaling
+# headroom as the cold-access knobs.
+#
 # Bumping the benchmark gas-target above 300 M REQUIRES bumping each of
-# the three count-based knobs above proportionally:
+# the four count-based cold-access knobs proportionally:
 #     count >= gas_benchmark_value / 2000
 # storage_pattern already sits far above the floor, so it is unaffected.
+# sender_pool scales as `count >= gas_benchmark_value / 21000` (one
+# sender per intrinsic-cost transfer) — 150 000 covers any reasonable
+# sub-3-G-gas benchmark.
 #
 # ── Fork relevance ────────────────────────────────────────────────────
 #
@@ -64,6 +74,9 @@
 # code is deduplicated by hash):
 #
 #     150 000 sequential_eoas       ≈   33 MB   (account-trie only)
+#     150 000 sender_pool EOAs      ≈   33 MB   (account-trie only;
+#                                                 pkey-derived, NOT
+#                                                 sequential addresses)
 #     150 000 create2_deploys       ≈ 3.7  GB   (UNIQUE 24 KiB code per
 #                                                 contract)
 #     create2_factory               negligible
@@ -194,6 +207,37 @@ entities:
     parameters:
       code_pattern: unique_jumpdest_pre_amsterdam
       salt_count: 150000
+
+  # ── 6. SENDER pool for test_ether_transfers_onchain_receivers ────────
+  # Backs `yield_distinct_sender()` in execution-specs
+  # tests/benchmark/stateful/bloatnet/test_transaction_types.py — the
+  # test constructs senders as `EOA(key=SENDER_BASE_KEY + i)` and
+  # assumes the resulting addresses are pre-funded on-chain. The
+  # production fixture pre-allocates this pool in genesis; we replicate
+  # that here so the minimum fixture can satisfy the same tests.
+  #
+  # SENDER_BASE_KEY (verbatim from execution-specs) is
+  # 0x1111111111111111111111111111111111111111111111111111111111111111;
+  # the first 150 000 keys are funded. Sender #0 derives to
+  # 0x19E7E376E7C213B7E7E7E46cc70A5dD086DAff2A; subsequent senders walk
+  # the secp256k1 scalar field by integer addition.
+  #
+  # Sized at 150 000 to match the production pool's headroom: 30 M-gas
+  # per-iteration benchmarks consume up to 1500 senders per fill;
+  # 150 000 leaves room for the same scaling as the other 300 M-gas
+  # knobs (sequential_eoas / create2_deploys / Bittrex chain) without
+  # being the limiting factor.
+  - kind: contract
+    name: sender-pool-300m
+    template: sequential_pkey_eoas
+    parameters:
+      start_pkey: "0x1111111111111111111111111111111111111111111111111111111111111111"
+      count: 150000
+      # 1 ETH/account. The fill-stateful tx generation pays gas_limit ×
+      # gas_price + value per tx; 1 ETH per sender covers any single
+      # 30 M-gas tx at realistic gas prices with multiple orders of
+      # safety margin.
+      balance: "1000000000000000000"
 
   # ── 5. CREATE-preimage deploys (Bittrex's CREATE chain) ──────────────
   # Bittrex Controller (0xA3C1...5770) is the canonical on-mainnet

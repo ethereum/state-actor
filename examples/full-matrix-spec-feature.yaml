@@ -296,3 +296,15 @@ entities:
     parameters:
       count: 3
       balance: "1000000000000000000"
+
+  # 28. sequential_pkey_eoas — fans out `count` plain EOAs at addresses
+  # derived from successive secp256k1 private keys starting at
+  # `start_pkey`. Unlike sequential_eoas (sequential addresses), the
+  # caller knows the pkey for each planted account.
+  - kind: contract
+    template: sequential_pkey_eoas
+    name: ci-sequential-pkey-eoas
+    parameters:
+      start_pkey: "0x2222222222222222222222222222222222222222222222222222222222222222"
+      count: 3
+      balance: "1000000000000000000"

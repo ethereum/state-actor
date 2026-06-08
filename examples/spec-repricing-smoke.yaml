@@ -1,12 +1,13 @@
 # Sub-second SMOKE fixture for the repricing-benchmark templates.
 #
-# Purpose: exercise each of the five user-visible templates introduced
-# for bloatnet repricing (sequential_eoas, storage_pattern,
-# create2_factory, create2_deploys, create_preimage_deploys) once at
-# tiny size, so internal/specbuild/build_repricing_test.go can run the
-# full parse → validate → build pipeline end-to-end in milliseconds.
-# Used as the canary that the example file, docs/SPEC.md, and the five
-# repricing templates stay in sync.
+# Purpose: exercise each of the six user-visible templates introduced
+# for bloatnet repricing (sequential_eoas, sequential_pkey_eoas,
+# storage_pattern, create2_factory, create2_deploys,
+# create_preimage_deploys) once at tiny size, so
+# internal/specbuild/build_repricing_test.go can run the full parse →
+# validate → build pipeline end-to-end in milliseconds. Used as the
+# canary that the example file, docs/SPEC.md, and the six repricing
+# templates stay in sync.
 #
 # NOT a benchmark prestate. Counts are 1-10 — far below the
 # 150_000-account minimum that a 300 M-gas repricing benchmark
@@ -136,3 +137,20 @@ entities:
         # following the real on-mainnet invariant. The 20-byte address is
         # left-padded to a 32-byte slot value.
         "0x0": "0xa3c1e324ca1ce40db73ed6026c4a177f099b5770"
+
+  # ── 6. Sender pool (pkey-derived EOAs) ──────────────────────────────
+  # Backs `yield_distinct_sender()` in execution-specs
+  # tests/benchmark/stateful/bloatnet/test_transaction_types.py.
+  # Production scale: 150 000 senders to match `gas_benchmark_value /
+  # 21000` headroom; this smoke just exercises the derivation at count=3.
+  #
+  # `0x2222…` is a deliberately-distinct base from the production
+  # spec-repricing-min.yaml's `0x1111…` so a future test that builds
+  # both fixtures back-to-back doesn't see colliding addresses.
+  - kind: contract
+    name: sender-pool-baseline
+    template: sequential_pkey_eoas
+    parameters:
+      start_pkey: "0x2222222222222222222222222222222222222222222222222222222222222222"
+      count: 3
+      balance: "1000000000000000000"
