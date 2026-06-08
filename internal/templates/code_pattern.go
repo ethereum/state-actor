@@ -99,7 +99,7 @@ func BuildUniqueJumpdestRuntimePreAmsterdam(addr common.Address) []byte {
 //     mem[0:32768] with JUMPDEST.
 //  3. PUSH32 entry; PUSH1 0x00; MSTORE — overwrite mem[0:32] with
 //     `PUSH2 0x5FFF; JUMP` followed by JUMPDEST padding.
-//  4. ADDRESS; PUSH32 addr_slot; OR; PUSH1 0x20; MSTORE — overwrite
+//  4. PUSH32 addr_slot; ADDRESS; OR; PUSH1 0x20; MSTORE — overwrite
 //     mem[0x20:0x40] so bytes 0x2C..0x40 hold the contract's address.
 //  5. PUSH2 0x6000; PUSH1 0x00; RETURN — emit the first 0x6000 bytes
 //     of memory as the runtime.
@@ -135,9 +135,14 @@ func BuildUniqueJumpdestInitcodePreAmsterdam() []byte {
 	buf = append(buf, 0x60, 0x00) // PUSH1 0
 	buf = append(buf, 0x52)       // MSTORE
 
-	// 4. ADDRESS; PUSH32 addr_slot; OR; PUSH1 0x20; MSTORE.
+	// 4. PUSH32 addr_slot; ADDRESS; OR; PUSH1 0x20; MSTORE.
 	// addr_slot = JUMPDEST × 12 + STOP × 20 = 0x5B...5B 0x00...00.
-	buf = append(buf, 0x30) // ADDRESS
+	// The OR mixes the 20-byte ADDRESS into the low 20 bytes of the
+	// template (whose low 20 bytes are zero); high 12 bytes carry the
+	// JUMPDEST padding through unchanged. Order matters: push template
+	// FIRST so when ADDRESS pushes (top = address, below = template),
+	// OR consumes both and yields template | (0-padded-address) = the
+	// masked template.
 	buf = append(buf, 0x7F) // PUSH32
 	for range 12 {
 		buf = append(buf, 0x5B)
@@ -145,7 +150,8 @@ func BuildUniqueJumpdestInitcodePreAmsterdam() []byte {
 	for range 20 {
 		buf = append(buf, 0x00)
 	}
-	buf = append(buf, 0x16)       // OR
+	buf = append(buf, 0x30)       // ADDRESS
+	buf = append(buf, 0x17)       // OR
 	buf = append(buf, 0x60, 0x20) // PUSH1 0x20 (offset)
 	buf = append(buf, 0x52)       // MSTORE
 

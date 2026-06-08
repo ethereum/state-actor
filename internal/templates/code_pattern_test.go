@@ -69,13 +69,48 @@ func TestBuildUniqueJumpdestRuntimePreAmsterdamUnique(t *testing.T) {
 	}
 }
 
+// TestBuildUniqueJumpdestInitcodeMatchesEEST pins the keccak256 of the
+// state-actor-emitted initcode to the value EEST's
+// `build_unique_contract_initcode()` produces. State-actor's CREATE2
+// derivation uses keccak256(initcode) as the third CREATE2 input, so
+// the planted contract addresses MUST line up with what
+// execution-specs `yield_distinct_unique_code_jumpdest_receiver()`
+// queries — otherwise tests call empty addresses and benchmark gas
+// drifts by the contract's body cost × iteration count.
+//
+// Pinned value verified against the live EEST snapshot at
+// tests/benchmark/stateful/bloatnet/test_transaction_types.py;
+// regenerate this constant from Python via:
+//
+//   import sys; sys.path.insert(0, 'tests/benchmark/stateful/bloatnet')
+//   from test_transaction_types import JOCHEMNET_UNIQUE_CONTRACT_INITCODE
+//   from Crypto.Hash import keccak
+//   print(keccak.new(digest_bits=256, data=JOCHEMNET_UNIQUE_CONTRACT_INITCODE).hexdigest())
+//
+// If EEST changes the Python initcode shape, update this constant in
+// lockstep — both sides must always agree byte-for-byte.
+func TestBuildUniqueJumpdestInitcodeMatchesEEST(t *testing.T) {
+	const eestInitcodeKeccak = "0xb9cdb9047474294c9743cf3944156c844bf91763de66271493caa07a3de77ec5"
+	ic := BuildUniqueJumpdestInitcodePreAmsterdam()
+	got := crypto.Keccak256Hash(ic).Hex()
+	if got != eestInitcodeKeccak {
+		t.Fatalf(
+			"initcode keccak diverged from EEST: got %s want %s\n"+
+				"  state-actor and execution-specs derive CREATE2 addresses\n"+
+				"  from this initcode; a mismatch means planted contracts\n"+
+				"  live at addresses the tests don't query (empty-account\n"+
+				"  calls during fill-stateful, ~12-gas-per-iteration shortfall\n"+
+				"  in test_ether_transfers_onchain_receivers[*unique_code_jumpdest*]).",
+			got, eestInitcodeKeccak,
+		)
+	}
+}
+
 // TestBuildUniqueJumpdestInitcodePreAmsterdamShape pins minimum
 // invariants on the initcode: non-empty, starts with the seed-JUMPDEST
-// PUSH32 prologue, ends with RETURN(0x6000). Full byte-for-byte fidelity
-// against the Python source is impractical without an EVM simulator;
-// callers that need exact-match validation should use eth_call to
-// execute the initcode and compare the returned runtime against
-// BuildUniqueJumpdestRuntimePreAmsterdam(ADDRESS).
+// PUSH32 prologue, ends with RETURN(0x6000). The EEST-keccak match
+// above is the byte-exact contract; this is the structural sanity
+// check kept around as fast-fail when the layout shifts.
 func TestBuildUniqueJumpdestInitcodePreAmsterdamShape(t *testing.T) {
 	ic := BuildUniqueJumpdestInitcodePreAmsterdam()
 	if len(ic) == 0 {
