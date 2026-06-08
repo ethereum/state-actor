@@ -17,7 +17,7 @@
 # second schema smoke (used by build_repricing_test.go) use
 # `examples/spec-repricing-smoke.yaml`.
 #
-# ── 300 M-gas headroom math (why the four count-based knobs are 150 000) ─
+# ── 300 M-gas headroom math (why the three count-based knobs are 150 000) ─
 #
 # All four cold-resource benchmarks share the same 2000 gas/access
 # cost floor (post-EIP-2929 cold-address / cold-slot access):
@@ -39,20 +39,10 @@
 #                        slots is the minimum; extra populated slots only
 #                        add SLOAD/SSTORE headroom, never reduce it.)
 #
-# A fifth knob — sender_pool — is also sized at 150 000 but for a
-# different reason: it pre-funds the SENDER_BASE_KEY-derived EOAs that
-# test_ether_transfers_onchain_receivers signs txns FROM. At 30 M-gas
-# per benchmark iteration and one sender per iteration, 30 M / 21 k ≈
-# 1428 senders are consumed per fill; 150 000 leaves the same scaling
-# headroom as the cold-access knobs.
-#
 # Bumping the benchmark gas-target above 300 M REQUIRES bumping each of
-# the four count-based cold-access knobs proportionally:
+# the three count-based knobs above proportionally:
 #     count >= gas_benchmark_value / 2000
 # storage_pattern already sits far above the floor, so it is unaffected.
-# sender_pool scales as `count >= gas_benchmark_value / 21000` (one
-# sender per intrinsic-cost transfer) — 150 000 covers any reasonable
-# sub-3-G-gas benchmark.
 #
 # ── Fork relevance ────────────────────────────────────────────────────
 #
@@ -74,9 +64,6 @@
 # code is deduplicated by hash):
 #
 #     150 000 sequential_eoas       ≈   33 MB   (account-trie only)
-#     150 000 sender_pool EOAs      ≈   33 MB   (account-trie only;
-#                                                 pkey-derived, NOT
-#                                                 sequential addresses)
 #     150 000 create2_deploys       ≈ 3.7  GB   (UNIQUE 24 KiB code per
 #                                                 contract)
 #     create2_factory               negligible
@@ -108,7 +95,16 @@
 #     --fork=osaka \
 #     --chain-id=1337 \
 #     --seed=42 \
+#     --gas-limit=85000000 \
 #     --verbose
+#
+# `--gas-limit=85000000` (85 M) is required for filling on Amsterdam:
+# EIP-7954 raises max contract code size to 32 KiB and EIP-8037 routes
+# code-deposit through state-gas at 1530/byte, so a max-size
+# JumpLoopGenerator deploy needs ~50.3 M state-gas. Tx.gas_limit
+# encodes RegularGas = min(gas_limit, 16.78 M MaxTxGas) and StateGas
+# = gas_limit - 16.78 M; the deploy tx therefore needs gas_limit
+# ≥ 67 M, which only fits in a block that's at least that large.
 #
 # All four `--client={geth,besu,nethermind,reth}` backends should
 # produce the same genesis state root for the same --seed (this is
