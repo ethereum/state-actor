@@ -30,11 +30,10 @@ import (
 // against, digest-pinned for reproducibility. Override with
 // ETHREX_IMAGE=ghcr.io/lambdaclass/ethrex:<tag> to test a specific release.
 //
-// Currently tagged release v15.0.0 (ghcr tag 15.0.0). This digest must be
-// bumped to an image that includes --skip-genesis-validation
-// (lambdaclass/ethrex#6783) before the boot phase can pass; that is the only
-// remaining change for the e2e to go green.
-const pinnedEthrexImage = "ghcr.io/lambdaclass/ethrex:15.0.0@sha256:9963bd1fa2ba2085d131752fe58f047ff162bfa1a24b5addee0140f9863abda5"
+// Tagged release v16.0.0-rc.2 (ghcr tag 16.0.0-rc.2), the first release >15.0.0
+// to include --skip-genesis-validation (lambdaclass/ethrex#6783, merged
+// 2026-06-04; this image built 2026-06-08), which the boot phase requires.
+const pinnedEthrexImage = "ghcr.io/lambdaclass/ethrex:16.0.0-rc.2@sha256:1873c36dcda955df9e5209b56e6fe47db67fb26abf00506de7695ba4683a1c5a"
 
 func ethrexImageRef() string {
 	if v := os.Getenv("ETHREX_IMAGE"); v != "" {
