@@ -7,6 +7,7 @@ import (
 	"math"
 	"os"
 	"runtime"
+	"sync"
 
 	"github.com/linxGnu/grocksdb"
 
@@ -231,10 +232,21 @@ func openEthrexDB(dbPath string) (*ethrexDB, error) {
 
 // Close flushes, compacts, and releases all open grocksdb resources.
 // Runs a CompactRange on the written CFs before closing so the LSM tree is
-// flat when ethrex opens the DB.
+// flat when ethrex opens the DB. The CFs are independent, so the compactions
+// run concurrently — RocksDB schedules them onto the shared background-job
+// pool (max_background_jobs), turning a serial CF-by-CF wait into a parallel
+// one. This is the dominant cost at large DB sizes, where the bulk write
+// phase is I/O/compaction-bound rather than CPU-bound.
 func (d *ethrexDB) Close() {
 	if d.db != nil {
 		emptyRange := grocksdb.Range{Start: nil, Limit: nil}
+		// exclusive=false lets these per-CF manual compactions overlap instead
+		// of serializing on RocksDB's exclusive-manual-compaction lock; the
+		// shared CompactRangeOptions is read-only during compaction so it is
+		// safe to use from all goroutines.
+		cro := grocksdb.NewCompactRangeOptions()
+		cro.SetExclusiveManualCompaction(false)
+		var wg sync.WaitGroup
 		for _, idx := range []int{
 			cfIdxAccountTrieNodes,
 			cfIdxStorageTrieNodes,
@@ -250,9 +262,15 @@ func (d *ethrexDB) Close() {
 			cfIdxCanonicalBlockHashes,
 		} {
 			if idx < len(d.cfs) && d.cfs[idx] != nil {
-				d.db.CompactRangeCF(d.cfs[idx], emptyRange)
+				wg.Add(1)
+				go func(cf *grocksdb.ColumnFamilyHandle) {
+					defer wg.Done()
+					d.db.CompactRangeCFOpt(cf, emptyRange, cro)
+				}(d.cfs[idx])
 			}
 		}
+		wg.Wait()
+		cro.Destroy()
 	}
 
 	for _, h := range d.cfs {
