@@ -17,7 +17,6 @@ import (
 
 	"github.com/nerolation/state-actor/generator"
 	ethrexinternal "github.com/nerolation/state-actor/internal/ethrex"
-	"github.com/nerolation/state-actor/internal/streamingtrie"
 	"github.com/nerolation/state-actor/internal/streamsort"
 )
 
@@ -117,70 +116,23 @@ func writeState(
 		return accountSink.put(path, value)
 	})
 
-	// storageTrieNodeSink routes the storage tries' emitted rows. Paths arrive
-	// already address-prefixed (PrefixedSink), so a leaf full-path row is
-	// byte-identical to ethrex's apply_prefix(account, slot) flat-KV key. Same
-	// snap-sync split: leaf full-path → storage_flatkeyvalue only; structural and
-	// leaf-node rows → storage_trie_nodes.
-	storageTrieNodeSink := ethrexinternal.NodeSink(func(path []byte, value []byte) error {
-		if isLeafFullPath(path) {
-			return storageFkvSink.put(path, value)
-		}
-		return storageSink.put(path, value)
-	})
+	// Storage tries route their emitted rows with the same snap-sync split as
+	// the account trie (leaf full-path → storage_flatkeyvalue only; structural
+	// and leaf-node rows → storage_trie_nodes). Phase 0 applies this split in
+	// its per-worker sinks; Phase 2 applies it inline when replaying buffered
+	// rows / building big-account storage (see below).
 
 	// preAllocStorageRoots maps addrHash → computed storage root for PreAlloc
 	// entities whose storage was built in-memory.
 	preAllocStorageRoots := make(map[common.Hash]common.Hash)
 
-	// Phase 0: handle PreAlloc entities with storage. Each entity's Storage is
-	// a re-iterable streaming iterator (iter.Seq2); draining it through
-	// internal/streamingtrie sorts on disk (streamsort) and replays slots in
-	// keccak-ascending order into the streaming Builder. Peak RAM is bounded by
-	// the streamsort memtable + the O(keyLen) Builder, so a single huge-storage
-	// contract (100M-1B slots) never materializes. Mirrors reth's
-	// spec_storage_streaming_cgo.go.
-	for i := range cfg.PreAlloc {
-		pe := &cfg.PreAlloc[i]
-		if pe.Storage == nil {
-			continue
-		}
-		if ctx.Err() != nil {
-			return common.Hash{}, nil, ctx.Err()
-		}
-		addr := pe.Address
-		addrHash := crypto.Keccak256Hash(addr[:])
-
-		// Storage rows go through the 66-nibble storage prefix. Suppress the
-		// empty-trie sentinel row ([] -> 0x80): streamingtrie always calls
-		// Builder.Root(), which for storage that drains to zero non-zero slots
-		// would otherwise write a bogus (prefix, 0x80) row. The pre-streaming
-		// code wrote zero rows for empty storage; this preserves that exactly
-		// (and the returned root is still emptyTrieHash, as before).
-		prefixedSink := ethrexinternal.PrefixedSink(addrHash, storageTrieNodeSink)
-		hb := ethrexinternal.NewStreamHashBuilder(ethrexinternal.SuppressEmptyTrieSentinel(prefixedSink))
-
-		// Stats-only sink: storage rows are emitted by the Builder via
-		// prefixedSink; this only counts slots/bytes. The encoded length here
-		// equals streamingtrie's internal value RLP length, proven byte-identical
-		// by internal/ethrex TestStorageValueEncodingMatchesStreamingtrie.
-		statsSink := func(_, _, value common.Hash) error {
-			enc := ethrexinternal.EncodeStorageValue(new(uint256.Int).SetBytes32(value[:]))
-			stats.StorageSlotsCreated++
-			stats.StorageBytes += uint64(len(enc))
-			return nil
-		}
-
-		root, err := streamingtrie.StorageRoot(cfg.DBPath, pe.Storage, hb, statsSink)
-		if err != nil {
-			return common.Hash{}, nil, fmt.Errorf("ethrex: storage root (PreAlloc %s): %w", addr.Hex(), err)
-		}
-		preAllocStorageRoots[addrHash] = root
-
-		// Splice root into the GenesisAccounts entry (same pointer as Phase 1 needs).
-		if acc, ok := cfg.GenesisAccounts[addr]; ok && acc != nil {
-			acc.Root = root
-		}
+	// Phase 0: drain PreAlloc entity storage tries in parallel. Each worker owns
+	// its own per-worker batchSinks (storage_trie_nodes + storage_flatkeyvalue)
+	// so concurrent RocksDB writes are safe — each entity's addrHash prefix
+	// gives it a disjoint keyspace. Roots are content-addressed so worker
+	// completion order does not affect the final state root.
+	if err := runPhase0Storage(ctx, cfg, db, preAllocStorageRoots, stats); err != nil {
+		return common.Hash{}, nil, err
 	}
 
 	// Phase 1: queue all entities into a streamsort keyed by addrHash.
