@@ -78,7 +78,17 @@ func runImpl(ctx context.Context, cfg generator.Config, opts Options) (*generato
 	storageFkvSink := newBatchSink(db, cfIdxStorageFlatKeyValue)
 	defer storageFkvSink.Close()
 
-	stateRoot, stats, err := writeState(ctx, cfg, db, accountSink, storageSink, accountFkvSink, storageFkvSink)
+	// Bytecode sinks: route account_codes + account_code_metadata through the
+	// same batched, WAL-disabled path as the trie/flat-KV writes instead of
+	// per-key db.put (which keeps the WAL on). Codes are ~10% of a
+	// mainnet-shaped fill, so this avoids WAL writes + per-call WriteOptions
+	// churn on a non-trivial slice of the import.
+	codeSink := newBatchSink(db, cfIdxAccountCodes)
+	defer codeSink.Close()
+	codeMetaSink := newBatchSink(db, cfIdxAccountCodeMetadata)
+	defer codeMetaSink.Close()
+
+	stateRoot, stats, err := writeState(ctx, cfg, db, accountSink, storageSink, accountFkvSink, storageFkvSink, codeSink, codeMetaSink)
 	if err != nil {
 		return nil, fmt.Errorf("ethrex: writeState: %w", err)
 	}
