@@ -135,6 +135,60 @@ func TestNonArachnidFactoryNotChecked(t *testing.T) {
 	}
 }
 
+// TestArachnidFactoryRequiredWithExplicitFactoryParam pins the EXPLICIT
+// branch of enforceArachnidFactoryRequirement: `factory:` set verbatim
+// to the Arachnid address (not defaulted) must still demand a
+// create2_factory entity. The pre-existing tests only covered the
+// factory:-unset default branch; a regression in the explicit-parse
+// branch would let an explicitly-Arachnid spec build chaindata whose
+// CREATE2 deploys call into an empty 0x4e59…956C.
+func TestArachnidFactoryRequiredWithExplicitFactoryParam(t *testing.T) {
+	s := &spec.Spec{Entities: []spec.Entity{
+		{
+			Kind:     spec.KindContract,
+			Template: "create2_deploys",
+			Parameters: map[string]any{
+				"initcode":   "0xfe",
+				"runtime":    "0x00",
+				"salt_count": 1,
+				"factory":    templates.CanonicalCREATE2FactoryAddress.Hex(),
+			},
+		},
+	}}
+	_, _, err := Build(s, defaultOpts)
+	if err == nil {
+		t.Fatalf("expected error: explicit factory == Arachnid with no create2_factory entity")
+	}
+	if !strings.Contains(err.Error(), templates.CanonicalCREATE2FactoryAddress.Hex()) {
+		t.Errorf("error must mention the Arachnid address; got: %v", err)
+	}
+}
+
+// TestArachnidFactoryExplicitFactoryParamSatisfied pins the positive
+// direction of the explicit branch: same spec plus a defaulted
+// create2_factory entity builds cleanly.
+func TestArachnidFactoryExplicitFactoryParamSatisfied(t *testing.T) {
+	s := &spec.Spec{Entities: []spec.Entity{
+		{
+			Kind:     spec.KindContract,
+			Template: "create2_factory",
+		},
+		{
+			Kind:     spec.KindContract,
+			Template: "create2_deploys",
+			Parameters: map[string]any{
+				"initcode":   "0xfe",
+				"runtime":    "0x00",
+				"salt_count": 1,
+				"factory":    templates.CanonicalCREATE2FactoryAddress.Hex(),
+			},
+		},
+	}}
+	if _, _, err := Build(s, defaultOpts); err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+}
+
 // TestArachnidFactoryNoConsumers pins that having a create2_factory
 // entity without any create2_deploys consumer is fine — the invariant
 // only fires when a consumer exists.

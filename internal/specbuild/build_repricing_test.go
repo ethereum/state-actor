@@ -310,12 +310,24 @@ func TestParseRepricingMin(t *testing.T) {
 	}
 	checked := map[string]bool{
 		"sequential-eoas-300m":         false,
+		"storage-pattern-10gb":         false,
 		"create2-deploys-300m":         false,
 		"bittrex-create-preimage-300m": false,
 		"sender-pool-300m":             false,
 	}
 	for _, ent := range s.Entities {
 		switch ent.Name {
+		case "storage-pattern-10gb":
+			// storage_pattern is the cold-SLOAD/SSTORE knob; 150 000
+			// populated slots is the same 300 M-gas / 2000 gas-per-access
+			// floor as the other knobs. The fixture deliberately
+			// oversizes it (the 10 GB variant), but the floor is what
+			// benchmark validity requires — below it a 300 M-gas
+			// iteration walks off the planted slot range.
+			if c := gotCount(ent.Name, ent.Parameters, "final"); c < need {
+				t.Errorf("%s final=%d, must be >= %d (300 M-gas headroom)", ent.Name, c, need)
+			}
+			checked[ent.Name] = true
 		case "sequential-eoas-300m":
 			if c := gotCount(ent.Name, ent.Parameters, "count"); c < need {
 				t.Errorf("%s count=%d, must be >= %d (300 M-gas headroom)", ent.Name, c, need)
