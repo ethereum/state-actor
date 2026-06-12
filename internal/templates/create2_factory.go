@@ -63,6 +63,11 @@ const TemplateNameCreate2Factory = "create2_factory"
 func (create2FactoryTemplate) Name() string      { return TemplateNameCreate2Factory }
 func (create2FactoryTemplate) UserVisible() bool { return true }
 
+// HonoredEntityFields: the factory is a fixed singleton (canonical
+// runtime, nonce 1, balance 0); only `address:`/`name:` anchoring —
+// which is universal and not represented in the set — has any effect.
+func (create2FactoryTemplate) HonoredEntityFields() EntityFieldSet { return EntityFieldSet{} }
+
 func (create2FactoryTemplate) ValidateParameters(params map[string]any) error {
 	if len(params) > 0 {
 		return fmt.Errorf("create2_factory: does not accept parameters (got %d keys)", len(params))

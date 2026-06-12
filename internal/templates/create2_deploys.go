@@ -53,6 +53,15 @@ const TemplateNameCreate2Deploys = "create2_deploys"
 func (create2DeploysTemplate) Name() string      { return TemplateNameCreate2Deploys }
 func (create2DeploysTemplate) UserVisible() bool { return true }
 
+// HonoredEntityFields: derived contracts are fully described by the
+// parameters (nonce 1, balance 0, code from runtime/code_pattern);
+// entity-level fields would silently not apply, so they are rejected.
+func (create2DeploysTemplate) HonoredEntityFields() EntityFieldSet {
+	return EntityFieldSet{
+		ApproximateSizeBytes: EntityFieldSupport{Alternative: "parameters.salt_count"},
+	}
+}
+
 // create2DeploysParams is the typed result of parseCreate2DeploysParams.
 type create2DeploysParams struct {
 	saltStart   uint64

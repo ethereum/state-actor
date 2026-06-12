@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/holiman/uint256"
 
 	"github.com/nerolation/state-actor/internal/sizecal"
 	"github.com/nerolation/state-actor/internal/spec"
@@ -39,6 +40,62 @@ func parseSpec(t *testing.T, src string) *spec.Spec {
 		t.Fatalf("parse: %v", err)
 	}
 	return s
+}
+
+// TestBuildRejectsIgnoredEntityFields pins the C1 fix: entity-level
+// `balance:` on a template that only reads parameters.balance used to be
+// SILENTLY ignored — Build returned 1-wei accounts with zero warnings
+// (demonstrated against the unfixed tree), so a 150k-sender pool the
+// spec said was funded came out holding 1 wei each, discovered only when
+// the benchmark's first value-bearing transaction failed. Build now
+// rejects the entity outright, naming the parameters-level alternative.
+func TestBuildRejectsIgnoredEntityFields(t *testing.T) {
+	anchor := spec.HexAddress(common.HexToAddress("0x0000000000000000000000000000000000001000"))
+	bal := spec.BigIntDecimal{V: uint256.NewInt(5_000_000_000_000_000_000)}
+	s := &spec.Spec{Entities: []spec.Entity{{
+		Kind:       spec.KindContract,
+		Template:   "sequential_eoas",
+		Address:    &anchor,
+		Balance:    &bal,
+		Parameters: map[string]any{"count": 3},
+	}}}
+	pre, diag, err := Build(s, defaultOpts)
+	if err == nil {
+		got := "no entities"
+		if len(pre) > 0 {
+			got = fmt.Sprintf("%d entities, first balance=%s", len(pre), pre[0].Account.Balance)
+		}
+		t.Fatalf("expected error for ignored entity-level balance; got nil (%s, %d warnings)", got, len(diag.Warnings))
+	}
+	for _, want := range []string{"entity-level", "parameters.balance"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error must contain %q; got: %v", want, err)
+		}
+	}
+}
+
+// TestBuildAllowsHonoredEntityFields is the control for the C1 fix:
+// storage_pattern honors entity-level nonce/balance (the shipped
+// repricing fixtures rely on exactly this shape), so it must keep
+// building — and the values must actually land in the account.
+func TestBuildAllowsHonoredEntityFields(t *testing.T) {
+	anchor := spec.HexAddress(common.HexToAddress("0x0000000000000000000000000000000000004000"))
+	bal := spec.BigIntDecimal{V: uint256.NewInt(7)}
+	s := &spec.Spec{Entities: []spec.Entity{{
+		Kind:       spec.KindContract,
+		Template:   "storage_pattern",
+		Address:    &anchor,
+		Nonce:      1,
+		Balance:    &bal,
+		Parameters: map[string]any{"final": 5},
+	}}}
+	pre, _, err := Build(s, defaultOpts)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if len(pre) != 1 || pre[0].Account.Nonce != 1 || pre[0].Account.Balance.Uint64() != 7 {
+		t.Fatalf("storage_pattern entity-level fields not honored: %+v", pre[0].Account)
+	}
 }
 
 func TestBuildStory1(t *testing.T) {

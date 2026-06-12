@@ -60,6 +60,15 @@ const TemplateNameSequentialPkeyEOAs = "sequential_pkey_eoas"
 func (sequentialPkeyEOAsTemplate) Name() string      { return TemplateNameSequentialPkeyEOAs }
 func (sequentialPkeyEOAsTemplate) UserVisible() bool { return true }
 
+func (sequentialPkeyEOAsTemplate) HonoredEntityFields() EntityFieldSet {
+	return EntityFieldSet{
+		Balance:              EntityFieldSupport{Alternative: "parameters.balance"},
+		Nonce:                EntityFieldSupport{}, // derived EOAs are always nonce 0
+		Code:                 EntityFieldSupport{}, // plain EOAs carry no code
+		ApproximateSizeBytes: EntityFieldSupport{Alternative: "parameters.count"},
+	}
+}
+
 // sequentialPkeyEOAsParams is the typed result of
 // parseSequentialPkeyEOAsParams.
 type sequentialPkeyEOAsParams struct {

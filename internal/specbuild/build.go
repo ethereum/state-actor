@@ -68,6 +68,14 @@ func Build(s *spec.Spec, opts BuildOptions) ([]templates.PreAllocEntity, Diagnos
 			return nil, diag, fmt.Errorf("entities[%d]: %w", i, err)
 		}
 
+		// Reject entity-level fields (balance/nonce/code/
+		// approximate_size_bytes) the template declares it ignores —
+		// user-declared state must never silently disappear from the
+		// generated prestate.
+		if err := templates.CheckEntityFields(tmpl, e); err != nil {
+			return nil, diag, fmt.Errorf("entities[%d]: %w", i, err)
+		}
+
 		// Defense in depth for programmatic callers bypassing spec.Validate.
 		if err := tmpl.ValidateParameters(e.Parameters); err != nil {
 			return nil, diag, fmt.Errorf("entities[%d]: %w", i, err)

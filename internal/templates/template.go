@@ -1,6 +1,7 @@
 package templates
 
 import (
+	"fmt"
 	"iter"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -77,6 +78,75 @@ type Template interface {
 	// surface as user errors early. Implementations should reject typos.
 	ValidateParameters(params map[string]any) error
 
+	// HonoredEntityFields declares which entity-level fields (balance,
+	// nonce, code, approximate_size_bytes) Expand reads.
+	// specbuild.Build rejects a spec entity that sets a field its
+	// template ignores, so user-declared state never silently
+	// disappears from the generated prestate.
+	HonoredEntityFields() EntityFieldSet
+
 	// Expand turns one spec entity into 1..N PreAllocEntity records.
 	Expand(ctx Context, e spec.Entity) ([]PreAllocEntity, error)
+}
+
+// EntityFieldSupport describes a template's handling of one entity-level
+// YAML field.
+type EntityFieldSupport struct {
+	// Honored reports whether Expand reads the field.
+	Honored bool
+	// Alternative, for ignored fields, names the parameters-level
+	// replacement to suggest in the rejection error (e.g.
+	// "parameters.balance"). Empty means there is no replacement; the
+	// user must delete the field.
+	Alternative string
+}
+
+// EntityFieldSet declares which entity-level fields a template honors.
+// The zero value means "ignored, no alternative" for every field.
+// `address:` and `name:` are deliberately not represented: address
+// anchoring and stable spec ordering are universal concerns resolved by
+// internal/specbuild before Expand runs.
+type EntityFieldSet struct {
+	Balance              EntityFieldSupport
+	Nonce                EntityFieldSupport
+	Code                 EntityFieldSupport
+	ApproximateSizeBytes EntityFieldSupport
+}
+
+// AllEntityFieldsHonored is the declaration for templates (eoa, raw)
+// that honor every entity-level field.
+func AllEntityFieldsHonored() EntityFieldSet {
+	h := EntityFieldSupport{Honored: true}
+	return EntityFieldSet{Balance: h, Nonce: h, Code: h, ApproximateSizeBytes: h}
+}
+
+// CheckEntityFields returns an error when e sets an entity-level field
+// that t declares ignored. nonce: 0, empty code:, and
+// approximate_size_bytes: 0 are indistinguishable from "unset" (Go zero
+// values) and are never flagged; balance is a pointer, so an explicit
+// `balance: "0"` on an ignoring template IS rejected.
+func CheckEntityFields(t Template, e spec.Entity) error {
+	h := t.HonoredEntityFields()
+	checks := []struct {
+		set   bool
+		field string
+		sup   EntityFieldSupport
+	}{
+		{e.Balance != nil, "balance", h.Balance},
+		{e.Nonce != 0, "nonce", h.Nonce},
+		{len(e.Code) > 0, "code", h.Code},
+		{e.ApproximateSizeBytes != 0, "approximate_size_bytes", h.ApproximateSizeBytes},
+	}
+	for _, c := range checks {
+		if !c.set || c.sup.Honored {
+			continue
+		}
+		if c.sup.Alternative != "" {
+			return fmt.Errorf("%s: entity-level `%s:` is ignored by this template — use %s instead",
+				t.Name(), c.field, c.sup.Alternative)
+		}
+		return fmt.Errorf("%s: entity-level `%s:` is ignored by this template — remove it",
+			t.Name(), c.field)
+	}
+	return nil
 }

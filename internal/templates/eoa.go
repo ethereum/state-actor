@@ -24,6 +24,8 @@ const TemplateNameEOA = "eoa"
 func (eoaTemplate) Name() string      { return TemplateNameEOA }
 func (eoaTemplate) UserVisible() bool { return false }
 
+func (eoaTemplate) HonoredEntityFields() EntityFieldSet { return AllEntityFieldsHonored() }
+
 func (eoaTemplate) ValidateParameters(params map[string]any) error {
 	if len(params) > 0 {
 		return errEOAParameters

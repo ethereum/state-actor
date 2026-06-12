@@ -36,6 +36,15 @@ const TemplateNameSequentialEOAs = "sequential_eoas"
 func (sequentialEOAsTemplate) Name() string      { return TemplateNameSequentialEOAs }
 func (sequentialEOAsTemplate) UserVisible() bool { return true }
 
+func (sequentialEOAsTemplate) HonoredEntityFields() EntityFieldSet {
+	return EntityFieldSet{
+		Balance:              EntityFieldSupport{Alternative: "parameters.balance"},
+		Nonce:                EntityFieldSupport{}, // derived EOAs are always nonce 0
+		Code:                 EntityFieldSupport{}, // plain EOAs carry no code
+		ApproximateSizeBytes: EntityFieldSupport{Alternative: "parameters.count"},
+	}
+}
+
 // sequentialEOAsParams is the typed result of parseSequentialEOAsParams.
 type sequentialEOAsParams struct {
 	count   uint64       // in [1, 2^32]

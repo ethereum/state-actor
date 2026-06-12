@@ -48,6 +48,15 @@ const TemplateNameCreatePreimageDeploys = "create_preimage_deploys"
 func (createPreimageDeploysTemplate) Name() string      { return TemplateNameCreatePreimageDeploys }
 func (createPreimageDeploysTemplate) UserVisible() bool { return true }
 
+// HonoredEntityFields: derived contracts are fully described by the
+// parameters (nonce 1, balance 0, code from runtime/code_pattern);
+// entity-level fields would silently not apply, so they are rejected.
+func (createPreimageDeploysTemplate) HonoredEntityFields() EntityFieldSet {
+	return EntityFieldSet{
+		ApproximateSizeBytes: EntityFieldSupport{Alternative: "parameters.count"},
+	}
+}
+
 // createPreimageDeploysParams is the typed result of
 // parseCreatePreimageDeploysParams.
 type createPreimageDeploysParams struct {

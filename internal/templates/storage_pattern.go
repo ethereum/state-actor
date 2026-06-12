@@ -39,6 +39,16 @@ const TemplateNameStoragePattern = "storage_pattern"
 func (storagePatternTemplate) Name() string      { return TemplateNameStoragePattern }
 func (storagePatternTemplate) UserVisible() bool { return true }
 
+func (storagePatternTemplate) HonoredEntityFields() EntityFieldSet {
+	h := EntityFieldSupport{Honored: true}
+	return EntityFieldSet{
+		Balance:              h,
+		Nonce:                h, // floored to 1 in Expand (EIP-161)
+		Code:                 EntityFieldSupport{}, // deliberately code-less so the address stays 7702-delegatable
+		ApproximateSizeBytes: EntityFieldSupport{Alternative: "parameters.final"},
+	}
+}
+
 // storagePatternParams is the typed result of parseStoragePatternParams.
 type storagePatternParams struct {
 	final uint64 // in [0, 2^32]; final=0 stays legal (emits only slot 0 = 1)

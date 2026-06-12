@@ -27,6 +27,8 @@ const TemplateNameRaw = "raw"
 func (rawTemplate) Name() string      { return TemplateNameRaw }
 func (rawTemplate) UserVisible() bool { return false }
 
+func (rawTemplate) HonoredEntityFields() EntityFieldSet { return AllEntityFieldsHonored() }
+
 func (rawTemplate) ValidateParameters(params map[string]any) error {
 	if len(params) > 0 {
 		return fmt.Errorf("raw template does not accept parameters (got %d keys)", len(params))
