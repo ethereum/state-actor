@@ -106,6 +106,53 @@ func TestBuildUniqueJumpdestInitcodeMatchesEEST(t *testing.T) {
 	}
 }
 
+// TestCreate2DeploysPatternAddressesMatchEEST pins two DERIVED ADDRESSES
+// (not just the initcode hash) to literals computed outside go-ethereum.
+// Tuple: factory = canonical Arachnid (the default), salts 0 and 1
+// (big-endian in the low 8 bytes of the 32-byte salt), initcode =
+// unique_jumpdest_pre_amsterdam pattern. EEST's
+// yield_distinct_unique_code_jumpdest_receiver() must resolve to these
+// same addresses or the benchmark calls empty accounts.
+//
+// The initcode keccak is EEST-pinned above; this test additionally pins
+// the salt int → bytes32 encoding convention, the last repo-internal
+// link in the derivation chain. Regenerate from an execution-specs
+// checkout:
+//
+//	import sys; sys.path.insert(0, 'tests/benchmark/stateful/bloatnet')
+//	from test_transaction_types import JOCHEMNET_UNIQUE_CONTRACT_INITCODE
+//	from ethereum_test_tools import compute_create2_address
+//	print(compute_create2_address(0x4e59b44847b379578588920cA78FbF26c0B4956C, 0,
+//	      JOCHEMNET_UNIQUE_CONTRACT_INITCODE))
+//
+// Fallback derivation (used to produce these pins; two independent
+// keccak implementations — pycryptodome and eth_hash — agree):
+//
+//	keccak256(0xff ++ 4e59…956c ++ uint256(salt) ++
+//	          b9cdb9047474294c9743cf3944156c844bf91763de66271493caa07a3de77ec5)[12:]
+func TestCreate2DeploysPatternAddressesMatchEEST(t *testing.T) {
+	ent := mkContractEntity("create2_deploys", map[string]any{
+		"code_pattern": CodePatternUniqueJumpdestPreAmsterdam,
+		"salt_count":   2,
+	})
+	out, err := (&create2DeploysTemplate{}).Expand(Context{}, ent)
+	if err != nil {
+		t.Fatalf("Expand: %v", err)
+	}
+	if len(out) != 2 {
+		t.Fatalf("count: got %d, want 2", len(out))
+	}
+	want := []common.Address{
+		common.HexToAddress("0xEC9B57721DeaF87D94C5aB94E3c919c60b42aAd8"), // salt 0
+		common.HexToAddress("0x59B3D48aEA1b74c1BD4850f471aD067A8c3bc5Aa"), // salt 1
+	}
+	for i := range want {
+		if out[i].Address != want[i] {
+			t.Errorf("salt=%d: got %s, want EEST-derived %s", i, out[i].Address.Hex(), want[i].Hex())
+		}
+	}
+}
+
 // TestBuildUniqueJumpdestInitcodePreAmsterdamShape pins minimum
 // invariants on the initcode: non-empty, starts with the seed-JUMPDEST
 // PUSH32 prologue, ends with RETURN(0x6000). The EEST-keccak match

@@ -112,3 +112,33 @@ func TestCREATE2FactoryValidate(t *testing.T) {
 		t.Errorf("any param: expected error")
 	}
 }
+
+// TestCanonicalCREATE2FactoryCodeKeccakPin pins CanonicalCREATE2FactoryCode
+// to the keccak256 of the on-chain Arachnid deterministic-deployment proxy
+// runtime, so an accidental edit to the vendored constant cannot slip by:
+// every other test compares the constant only against itself, and a broken
+// factory body means run-time CREATE2 deploy transactions call into garbage.
+//
+// The pinned hash was derived OUTSIDE go-ethereum, with two independent
+// keccak implementations that agree:
+//
+//	python3 -c "from Crypto.Hash import keccak; print('0x'+keccak.new(
+//	    digest_bits=256, data=bytes.fromhex('<runtime hex>')).hexdigest())"
+//	python3 -c "from eth_hash.auto import keccak; print('0x'+keccak(
+//	    bytes.fromhex('<runtime hex>')).hex())"
+//
+// and can be cross-checked against any chain (the same bytes live at the
+// same address everywhere):
+//
+//	cast code 0x4e59b44847b379578588920cA78FbF26c0B4956C --rpc-url <mainnet>
+func TestCanonicalCREATE2FactoryCodeKeccakPin(t *testing.T) {
+	const wantLen = 69
+	const wantKeccak = "0x2fa86add0aed31f33a762c9d88e807c475bd51d0f52bd0955754b2608f7e4989"
+	if len(CanonicalCREATE2FactoryCode) != wantLen {
+		t.Fatalf("length: got %d, want %d", len(CanonicalCREATE2FactoryCode), wantLen)
+	}
+	if got := crypto.Keccak256Hash(CanonicalCREATE2FactoryCode).Hex(); got != wantKeccak {
+		t.Fatalf("keccak256(CanonicalCREATE2FactoryCode) = %s, want %s (vendored Arachnid runtime was modified?)",
+			got, wantKeccak)
+	}
+}

@@ -63,6 +63,31 @@ func TestCREATE2DeploysCustomFactory(t *testing.T) {
 	if len(out) != 1 {
 		t.Fatalf("count: %d", len(out))
 	}
+
+	// Pin the actual derivation: keccak256(0xff ++ factory ++ salt ++
+	// keccak256(initcode))[12:] with the NON-Arachnid factory. Before this
+	// assertion existed, an Expand that ignored `factory:` entirely passed
+	// this test (only len(out) was checked).
+	beef := common.HexToAddress("0x000000000000000000000000000000000000beef")
+	initBytes, _ := ParseHexBytesParam("0xfe", "initcode")
+	var salt [32]byte // salt_start defaults to 0
+	want := crypto.CreateAddress2(beef, salt, crypto.Keccak256(initBytes))
+	if out[0].Address != want {
+		t.Errorf("derived: got %s, want %s", out[0].Address.Hex(), want.Hex())
+	}
+	// The custom factory MUST change the derivation — the factory address
+	// is a CREATE2 input.
+	arachnidDerived := crypto.CreateAddress2(CanonicalCREATE2FactoryAddress, salt, crypto.Keccak256(initBytes))
+	if out[0].Address == arachnidDerived {
+		t.Errorf("factory parameter ignored: custom-factory derivation equals Arachnid derivation %s",
+			arachnidDerived.Hex())
+	}
+	// Externally derived literal: keccak256(0xff ++ 0x…beef ++ 0^32 ++
+	// keccak256(0xfe))[12:], computed twice outside go-ethereum
+	// (pycryptodome and eth_hash agree).
+	if ext := common.HexToAddress("0x08F2C0A9c0fcB20B1a7Aa2f85F5E0321683d085a"); out[0].Address != ext {
+		t.Errorf("derived: got %s, want externally-derived %s", out[0].Address.Hex(), ext.Hex())
+	}
 }
 
 func TestCREATE2DeploysZeroSaltCount(t *testing.T) {
