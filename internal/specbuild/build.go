@@ -147,10 +147,11 @@ var _ = (*common.Address)(nil)
 // Build() which validates the inputs.
 //
 // TODO(template-aware-budget): the per-entity cost formula below only
-// reads e.ApproximateSizeBytes. The five repricing templates introduced
+// reads e.ApproximateSizeBytes. The six repricing templates introduced
 // in PR 76 use template-specific sizing parameters (storage_pattern.final,
 // create_preimage_deploys.count, create2_deploys.salt_count,
-// sequential_eoas.count, erc20.total_owners) that this projection does
+// sequential_eoas.count, sequential_pkey_eoas.count — plus the
+// pre-existing erc20.total_owners path) that this projection does
 // not see — so an entity that emits millions of slots/accounts is
 // budgeted at one bAcct (~175 B). The downstream effects are:
 //   (1) autofill's headroom = target_size - ProjectedCost overshoots:

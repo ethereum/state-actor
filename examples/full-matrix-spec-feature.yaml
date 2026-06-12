@@ -231,11 +231,11 @@ entities:
     name: default-nonce-eoa
     balance: "100000000000000000"
 
-  # ── 23-27. PR 76 repricing-benchmark templates ───────────────────────
-  # Toy-scale instances of the five user-visible templates introduced
+  # ── 23-28. PR 76 repricing-benchmark templates ───────────────────────
+  # Toy-scale instances of the six user-visible templates introduced
   # in PR 76 (storage_pattern, create2_factory, create2_deploys,
-  # create_preimage_deploys, sequential_eoas). Scale stays under the
-  # 500 KB total-fixture budget.
+  # create_preimage_deploys, sequential_eoas, sequential_pkey_eoas).
+  # Scale stays under the 500 KB total-fixture budget.
   #
   # Coverage layered against the existing unit tests:
   #   - internal/templates/<template>_test.go pins the iter's (key, value)

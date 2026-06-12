@@ -142,10 +142,14 @@ pre-Amsterdam fixtures stay valid by their explicit name suffix.
 Symmetry note: `create2_deploys` and `create_preimage_deploys` are
 twin templates — their only meaningful difference is the
 address-derivation algorithm (CREATE2 vs CREATE). Every other
-parameter (`runtime`, `storage_init`) behaves identically. If you
-need per-derived-address custom code (e.g. embedding each contract's
-own address in its runtime), that pattern is not in scope for these
-templates today — declare each variant as its own entity.
+parameter (`runtime`, `storage_init`, `code_pattern`) behaves
+identically. If you need per-derived-address custom code (e.g.
+embedding each contract's own address in its runtime), use a named
+`code_pattern:` (see above) — the built-in
+`unique_jumpdest_pre_amsterdam` covers the bloatnet unique-code
+layout, and new address-aware shapes are added as named patterns
+alongside it. Arbitrary address-aware initcode (EVM simulation) stays
+out of scope until a benchmark needs it.
 
 ### `erc20` parameters in detail
 
@@ -212,7 +216,7 @@ top-level entity fields.
 
 ### Repricing-benchmark templates in detail
 
-These five templates were added to drive prestate for the bloatnet
+These six templates were added to drive prestate for the bloatnet
 benchmarks under `execution-specs/tests/benchmark/stateful/`. All have
 `UserVisible() == true` and dispatch via the YAML `template:` field
 under `kind: contract`.
@@ -356,7 +360,7 @@ asserting RPC-returned values match the spec's intent.
   `TestE2ESuite` and validated by the `cross-client-genesis-root`
   aggregator.
 - `examples/spec-repricing-smoke.yaml` — sub-second smoke fixture
-  exercising each of the five repricing-benchmark templates once at
+  exercising each of the six repricing-benchmark templates once at
   tiny size. Used by `internal/specbuild/build_repricing_test.go` as
   the canary that the spec layer, the example file, and the templates
   stay in sync. **Not a benchmark prestate**.

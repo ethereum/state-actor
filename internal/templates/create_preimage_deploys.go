@@ -18,7 +18,8 @@ func init() {
 // `kind: contract, template: create_preimage_deploys`. For each nonce
 // in [start_nonce, start_nonce+count) it derives the CREATE address
 // (keccak256(rlp([sender, nonce]))[12:] via crypto.CreateAddress) and
-// plants `runtime` there with nonce=1, balance=0, no storage.
+// plants the derived contract's code there with nonce=1, balance=0,
+// and the optional `storage_init` storage.
 //
 // The CREATE deployer is supplied via the required `sender:` parameter
 // — NOT the entity's own resolved address. That keeps the user free to
@@ -33,10 +34,11 @@ func init() {
 // so a single shared `runtime` (the case for Bittrex Controller's
 // 1.5M children — all share the same body) becomes the prestate.
 //
-// `runtime` must be supplied verbatim (no EVM simulation). For
-// initcodes whose deployed bytecode is sender/nonce-dependent (rare),
-// the user must precompute the per-address code and use multiple
-// entities instead of one big batch.
+// Two mutually exclusive code modes (ValidateParameters enforces the
+// mutex): literal mode supplies `runtime` verbatim (no EVM simulation;
+// shared by every derived contract), and pattern mode names a built-in
+// `code_pattern:` generator producing a per-derived-address-unique
+// runtime (see code_pattern.go).
 type createPreimageDeploysTemplate struct{}
 
 func (createPreimageDeploysTemplate) Name() string      { return "create_preimage_deploys" }

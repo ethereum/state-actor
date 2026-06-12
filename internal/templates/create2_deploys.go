@@ -26,14 +26,17 @@ func init() {
 // still be named or anchored to a deterministic anchor address via
 // `name:` / `address:` if the user wants reproducible spec ordering.
 //
-// `initcode` is required only to derive the CREATE2 address; the
-// constructor is never executed. `runtime` is mandatory and supplied
-// verbatim — the template does not run the EVM. To populate the
-// derived address with the code an ADDRESS-dependent constructor would
-// have emitted, the user must precompute the per-address runtime and
-// declare multiple entities instead of one batch (or use the
-// `create_preimage_deploys` template if CREATE-style derivation
-// suffices).
+// Two mutually exclusive code modes (ValidateParameters enforces the
+// mutex):
+//
+//   - literal mode: `initcode` (hashed for the CREATE2 derivation only;
+//     the constructor is never executed) plus `runtime` (supplied
+//     verbatim and shared by every derived contract — the template does
+//     not run the EVM).
+//   - pattern mode: `code_pattern:` names a built-in generator that owns
+//     BOTH the constant initcode and a per-derived-address-unique
+//     runtime (e.g. the ADDRESS-dependent unique-jumpdest layout; see
+//     code_pattern.go).
 //
 // Symmetric with `create_preimage_deploys`: the only difference between
 // the two templates is the address-derivation algorithm; all other

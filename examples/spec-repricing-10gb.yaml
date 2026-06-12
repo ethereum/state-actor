@@ -26,17 +26,19 @@
 # ~70-78 B/slot on top of the 140 B/slot trie cost = ~218 B/slot total):
 #   10 GB ERC-20 storage   ≈ 45.9M owners → ~10 GB on disk
 #   1.5 GB bloated EOA      ≈ 7.6M slots   → ~1.5 GB on disk
-#   Bittrex 1.5M CREATE chain (contracts)  → ~260 MB account-trie + ~150 MB code
+#   Bittrex 1.5M CREATE chain (contracts)  → ~260 MB account-trie (code
+#                                            deduplicates to one shared 5-byte stub)
 #   synthetic fill                          → capped by --target-size
 #   total on disk                          ≈ 20 GB
 #
 # NOTE on the ERC-20: we use `total_owners` to drive storage size, NOT
-# `approximate_size_bytes`. The erc20 template currently ignores
-# approximate_size_bytes — a pre-PR-76 gap (introduced in PR 75 alongside
-# the owners/allowances knobs) that will be fixed in a follow-up PR. The
-# canonical conversion is `total_owners = approximate_size_bytes /
-# bytes_per_slot` (140 B/slot trie-only, or ~218 B/slot if you want
-# 'on disk'); the value below targets 10 GB on disk.
+# `approximate_size_bytes`. The erc20 template honors
+# approximate_size_bytes only as a fallback when neither total_owners
+# nor total_allowances is set; the explicit knob is used here because
+# the benchmark needs an exact owner count. The canonical conversion is
+# `total_owners = approximate_size_bytes / bytes_per_slot` (140 B/slot
+# trie-only, or ~218 B/slot if you want 'on disk'); the value below
+# targets 10 GB on disk.
 #
 # Time budget: 10-30 min depending on disk. RAM peak ~30 GiB (streamsort
 # cap, same as spec-mainnet-shape.yaml).
@@ -52,8 +54,9 @@ entities:
   # Canonical Hardhat/Anvil dev key #0 — address derives from private key
   # 0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80.
   # Pin via `fill-stateful --rpc-seed-key=0xac0974…ff80` for reproducible
-  # runs. Balance is 1M ETH = 10^24 wei (0x33b2e3c91efc989409c0000) so
-  # transient seed-key drains across many fill iterations stay safe.
+  # runs. Balance is 999 999 999 ETH (≈10^27 wei =
+  # 0x33b2e3c91efc989409c0000) so transient seed-key drains across many
+  # fill iterations stay safe.
   - kind: eoa
     name: fill-stateful-seed
     address: 0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266
@@ -96,8 +99,11 @@ entities:
   # test_account_access. Full production scale (1.5M nonces) since the
   # account-trie cost is only ~260 MB and this is the one chance to
   # exercise the template at its real size before the 300 GB run.
-  # `runtime = JUMP(PUSH2(0x5FFF)) + JUMPDEST` — same body the smoke
-  # fixture uses; callable by the benchmark's setup transactions.
+  # `runtime: 0x615fff565b` (PUSH2 0x5FFF; JUMP; JUMPDEST) is a minimal
+  # 5-byte placeholder — NOT the 545-byte Bittrex child body the smoke
+  # and min fixtures plant. Calling it hits an out-of-range jump; that
+  # is fine here because the EXISTING_CONTRACT account-access benchmarks
+  # only touch the account, they never execute it.
   - kind: contract
     name: bittrex-create-preimage
     template: create_preimage_deploys
