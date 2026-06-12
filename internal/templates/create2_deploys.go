@@ -147,6 +147,16 @@ func parseCreate2DeploysParams(params map[string]any) (create2DeploysParams, err
 		return pp, fmt.Errorf("create2_deploys: salt_count=%d exceeds practical limit (2^32)", saltCount)
 	}
 	pp.saltCount = saltCount
+	// Pattern runtimes are byte-unique per derived address and stay
+	// resident for the whole run; cap the estimate at a size no build
+	// host survives. (saltCount <= 2^32 and runtime sizes are small, so
+	// the product cannot overflow uint64.)
+	if pp.patternName != "" {
+		if est := saltCount * CodePatternRuntimeSize(pp.patternName); est > patternResidentCodeCapBytes {
+			return pp, fmt.Errorf("create2_deploys: code_pattern %q with salt_count=%d would materialize ≈%.0f GiB of unique runtime code in memory (cap %d GiB); split into multiple entities or reduce salt_count",
+				pp.patternName, saltCount, float64(est)/float64(1<<30), patternResidentCodeCapBytes>>30)
+		}
+	}
 	if v, has := params["salt_start"]; has {
 		s, err := ParseUint64Param(v, "salt_start")
 		if err != nil {

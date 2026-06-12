@@ -60,6 +60,8 @@ func Build(s *spec.Spec, opts BuildOptions) ([]templates.PreAllocEntity, Diagnos
 		return nil, diag, err
 	}
 
+	appendPatternResidentCodeWarnings(entities, &diag)
+
 	// Lower-case hex → first-emitting entity index.
 	seenAddrs := make(map[string]int, len(entities))
 
@@ -229,6 +231,49 @@ func truncateForTargetSize(entities []spec.Entity, opts BuildOptions, diag *Diag
 		running += cost
 	}
 	return entities
+}
+
+// patternResidentWarnBytes: above this estimated unique-code residency
+// we warn. Unique per-address pattern code is fully materialized by
+// Expand and retained in generator.Config.GenesisCode for the whole run
+// (only Storage streams), measured at ≈24.6 KB resident per derived
+// contract. The shipped spec-repricing-min.yaml (150 000 × 24 576 B
+// ≈ 3.4 GiB) warns BY DESIGN: that is the heads-up a laptop user needs
+// and costs the bench host one log line.
+const patternResidentWarnBytes uint64 = 2 << 30 // 2 GiB
+
+// appendPatternResidentCodeWarnings warns per entity whose code_pattern
+// fan-out is estimated to hold more than patternResidentWarnBytes of
+// byte-unique runtime in memory. Shared-runtime (literal `runtime:`)
+// entities alias one backing array and are exempt. Hard failure above
+// templates' 64 GiB cap happens in parameter validation; this is the
+// softer advisory tier. True code streaming is a tracked follow-up.
+func appendPatternResidentCodeWarnings(entities []spec.Entity, diag *Diagnostics) {
+	for i, e := range entities {
+		var knob string
+		switch e.Template {
+		case templates.TemplateNameCreate2Deploys:
+			knob = "salt_count"
+		case templates.TemplateNameCreatePreimageDeploys:
+			knob = "count"
+		default:
+			continue
+		}
+		pat, ok := e.Parameters["code_pattern"].(string)
+		if !ok || templates.CodePatternRuntimeSize(pat) == 0 {
+			continue
+		}
+		n, err := templates.ParseUint64Param(e.Parameters[knob], knob)
+		if err != nil {
+			continue // schema validation reports this with a better message
+		}
+		if est := n * templates.CodePatternRuntimeSize(pat); est > patternResidentWarnBytes {
+			diag.Warnings = append(diag.Warnings, fmt.Sprintf(
+				"entities[%d] (template %s): code_pattern %q materializes %d unique %d-byte runtimes ≈ %.1f GiB held in memory for the entire run (per-address code is not streamed, unlike storage); ensure the build host has the RAM headroom or lower %s (true code streaming is a tracked follow-up)",
+				i, e.Template, pat, n, templates.CodePatternRuntimeSize(pat),
+				float64(est)/float64(1<<30), knob))
+		}
+	}
 }
 
 // warnTargetSizeBlindEntities appends ONE diagnostics warning when

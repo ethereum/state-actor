@@ -2,6 +2,7 @@ package templates
 
 import (
 	"bytes"
+	"strings"
 	"testing"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -298,6 +299,52 @@ func TestCreatePreimageDeploysCodePattern(t *testing.T) {
 		if embedded != pe.Address {
 			t.Errorf("derived[%d]: embedded address %s != derived %s",
 				i, embedded.Hex(), pe.Address.Hex())
+		}
+	}
+}
+
+// TestPatternResidentCodeCap pins the I5 hard cap: pattern-mode
+// runtimes are byte-unique per derived address and stay resident for
+// the whole run (~24.6 KB measured per contract), so a single entity
+// above 64 GiB estimated residency is rejected at validate time.
+// Production scale (1.5M ≈ 34.3 GiB) must pass. Validation-only — the
+// counts here are never expanded.
+func TestPatternResidentCodeCap(t *testing.T) {
+	if got := CodePatternRuntimeSize(CodePatternUniqueJumpdestPreAmsterdam); got != 24576 {
+		t.Fatalf("CodePatternRuntimeSize(pattern) = %d, want 24576", got)
+	}
+	if got := CodePatternRuntimeSize("bogus"); got != 0 {
+		t.Fatalf("CodePatternRuntimeSize(bogus) = %d, want 0", got)
+	}
+	// floor(64 GiB / 24576) = 2_796_202 fits; +1 exceeds.
+	cases := []struct {
+		count   uint64
+		wantErr bool
+	}{
+		{1_500_000, false},
+		{2_796_202, false},
+		{2_796_203, true},
+	}
+	c2 := &create2DeploysTemplate{}
+	cp := &createPreimageDeploysTemplate{}
+	for _, c := range cases {
+		err := c2.ValidateParameters(map[string]any{
+			"code_pattern": CodePatternUniqueJumpdestPreAmsterdam,
+			"salt_count":   c.count,
+		})
+		if (err != nil) != c.wantErr {
+			t.Errorf("create2_deploys salt_count=%d: err=%v, wantErr=%v", c.count, err, c.wantErr)
+		}
+		if c.wantErr && err != nil && !strings.Contains(err.Error(), "GiB") {
+			t.Errorf("create2_deploys salt_count=%d: error should quote GiB estimate, got %v", c.count, err)
+		}
+		err = cp.ValidateParameters(map[string]any{
+			"code_pattern": CodePatternUniqueJumpdestPreAmsterdam,
+			"sender":       bittrexAddrHex,
+			"count":        c.count,
+		})
+		if (err != nil) != c.wantErr {
+			t.Errorf("create_preimage_deploys count=%d: err=%v, wantErr=%v", c.count, err, c.wantErr)
 		}
 	}
 }

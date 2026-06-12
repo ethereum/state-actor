@@ -129,6 +129,16 @@ func parseCreatePreimageDeploysParams(params map[string]any) (createPreimageDepl
 		return pp, fmt.Errorf("create_preimage_deploys: count=%d exceeds practical limit (2^32)", count)
 	}
 	pp.count = count
+	// Pattern runtimes are byte-unique per derived address and stay
+	// resident for the whole run; cap the estimate at a size no build
+	// host survives. (count <= 2^32 and runtime sizes are small, so the
+	// product cannot overflow uint64.)
+	if pp.patternName != "" {
+		if est := count * CodePatternRuntimeSize(pp.patternName); est > patternResidentCodeCapBytes {
+			return pp, fmt.Errorf("create_preimage_deploys: code_pattern %q with count=%d would materialize ≈%.0f GiB of unique runtime code in memory (cap %d GiB); split into multiple entities or reduce count",
+				pp.patternName, count, float64(est)/float64(1<<30), patternResidentCodeCapBytes>>30)
+		}
+	}
 	if v, has := params["start_nonce"]; has {
 		n, err := ParseUint64Param(v, "start_nonce")
 		if err != nil {

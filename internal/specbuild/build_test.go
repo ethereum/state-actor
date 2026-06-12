@@ -42,6 +42,54 @@ func parseSpec(t *testing.T, src string) *spec.Spec {
 	return s
 }
 
+// TestPatternResidentCodeWarnings pins the I5 advisory tier: above
+// 2 GiB estimated unique-runtime residency a per-entity diagnostics
+// warning fires. Calls the helper directly (no Build, no Expand) so the
+// boundary counts stay instant. Measured basis: ≈24.6 KB resident per
+// pattern contract; the shipped min fixture (150k ≈ 3.4 GiB) warns BY
+// DESIGN, the smoke fixture stays silent (see TestBuildRepricingSmoke).
+func TestPatternResidentCodeWarnings(t *testing.T) {
+	mk := func(template string, params map[string]any) spec.Entity {
+		return spec.Entity{Kind: spec.KindContract, Template: template, Parameters: params}
+	}
+	cases := []struct {
+		name     string
+		entity   spec.Entity
+		wantWarn bool
+		contains string
+	}{
+		{"just under 2 GiB", mk("create2_deploys", map[string]any{
+			"code_pattern": "unique_jumpdest_pre_amsterdam", "salt_count": 87381,
+		}), false, ""},
+		{"just over 2 GiB", mk("create2_deploys", map[string]any{
+			"code_pattern": "unique_jumpdest_pre_amsterdam", "salt_count": 87382,
+		}), true, "2.0 GiB"},
+		{"min-fixture scale", mk("create2_deploys", map[string]any{
+			"code_pattern": "unique_jumpdest_pre_amsterdam", "salt_count": 150000,
+		}), true, "3.4 GiB"},
+		{"preimage pattern over threshold", mk("create_preimage_deploys", map[string]any{
+			"code_pattern": "unique_jumpdest_pre_amsterdam", "sender": "0x000000000000000000000000000000000000beef", "count": 150000,
+		}), true, "3.4 GiB"},
+		{"shared runtime is exempt", mk("create_preimage_deploys", map[string]any{
+			"runtime": "0x00", "sender": "0x000000000000000000000000000000000000beef", "count": 1000000,
+		}), false, ""},
+		{"garbage count deferred to schema validation", mk("create2_deploys", map[string]any{
+			"code_pattern": "unique_jumpdest_pre_amsterdam", "salt_count": "lots",
+		}), false, ""},
+	}
+	for _, c := range cases {
+		var diag Diagnostics
+		appendPatternResidentCodeWarnings([]spec.Entity{c.entity}, &diag)
+		if got := len(diag.Warnings) > 0; got != c.wantWarn {
+			t.Errorf("%s: warned=%v, want %v (%v)", c.name, got, c.wantWarn, diag.Warnings)
+			continue
+		}
+		if c.wantWarn && !strings.Contains(diag.Warnings[0], c.contains) {
+			t.Errorf("%s: warning should contain %q; got: %s", c.name, c.contains, diag.Warnings[0])
+		}
+	}
+}
+
 // TestBuildWarnsTargetSizeBlindTemplates pins the I4 fix: --target-size
 // budgets entities at ~bytesPerAccount via e.ApproximateSizeBytes only,
 // so a storage_pattern entity expanding 1001 slots (~140 KB real trie

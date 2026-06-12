@@ -32,9 +32,15 @@ func TestBuildRepricingSmoke(t *testing.T) {
 	if _, err := s.Validate(templates.UserVisibleNames()); err != nil {
 		t.Fatalf("Validate: %v", err)
 	}
-	pre, _, err := Build(s, defaultOpts)
+	pre, diag, err := Build(s, defaultOpts)
 	if err != nil {
 		t.Fatalf("Build: %v", err)
+	}
+	// The smoke fixture is the golden path: it must stay free of every
+	// diagnostics warning (target-size blindness, resident pattern
+	// code, truncation) so a warning regression here is loud.
+	if len(diag.Warnings) != 0 {
+		t.Errorf("smoke fixture must build warning-free; got %v", diag.Warnings)
 	}
 
 	// sequential_eoas(count=100) + storage_pattern(1) +

@@ -84,8 +84,11 @@
 #                                   ≈ 77 GB on disk
 #
 # Build time scales with on-disk size: ~30-90 min for ~77 GB depending
-# on disk. RAM peak ~8 GiB (streamsort cap is unaffected by entity
-# count — the 335 M storage slots are streamed, not buffered).
+# on disk. RAM: the 335 M storage slots are streamed (not buffered),
+# but the 150 000 unique-jumpdest CREATE2 runtimes are NOT — per-address
+# pattern code stays resident for the whole run, ≈3.7 GB at this scale
+# (state-actor prints a warning to that effect; true code streaming is
+# a tracked follow-up). Budget ≈8 GiB streaming overhead + that 3.7 GB.
 #
 # ── Run it ────────────────────────────────────────────────────────────
 #

@@ -42,6 +42,27 @@ func IsKnownCodePattern(name string) bool {
 	return false
 }
 
+// CodePatternRuntimeSize returns the per-derived-contract runtime size
+// in bytes for a known pattern name; 0 for unknown names. Used to
+// estimate resident memory: pattern runtimes are byte-unique per
+// derived address, so the full count × size set stays reachable (via
+// generator.Config.GenesisCode) for the entire run.
+func CodePatternRuntimeSize(name string) uint64 {
+	switch name {
+	case CodePatternUniqueJumpdestPreAmsterdam:
+		return preAmsterdamMaxCodeSize
+	}
+	return 0
+}
+
+// patternResidentCodeCapBytes hard-caps the estimated unique-runtime
+// residency of a single pattern-mode entity. 64 GiB clears the
+// production 1.5M-contract scale (≈34.3 GiB) with headroom but cannot
+// fit beside streamsort/trie overheads even on a 128 GB build host.
+// True per-entity code streaming is a tracked follow-up; until then the
+// cap turns an un-runnable build into a validate-time error.
+const patternResidentCodeCapBytes = uint64(64) << 30 // 64 GiB
+
 // BuildUniqueJumpdestRuntimePreAmsterdam returns the 24576-byte runtime
 // for one derived contract under the unique-jumpdest pattern.
 //
