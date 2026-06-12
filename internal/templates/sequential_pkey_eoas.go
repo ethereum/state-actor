@@ -54,7 +54,10 @@ func init() {
 // derivations error out (no silent wrap to 0).
 type sequentialPkeyEOAsTemplate struct{}
 
-func (sequentialPkeyEOAsTemplate) Name() string      { return "sequential_pkey_eoas" }
+// TemplateNameSequentialPkeyEOAs is the registry key for this template.
+const TemplateNameSequentialPkeyEOAs = "sequential_pkey_eoas"
+
+func (sequentialPkeyEOAsTemplate) Name() string      { return TemplateNameSequentialPkeyEOAs }
 func (sequentialPkeyEOAsTemplate) UserVisible() bool { return true }
 
 func (sequentialPkeyEOAsTemplate) ValidateParameters(params map[string]any) error {

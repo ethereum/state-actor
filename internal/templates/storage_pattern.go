@@ -33,7 +33,10 @@ func init() {
 // those tests assume the target's storage matches this exact layout.
 type storagePatternTemplate struct{}
 
-func (storagePatternTemplate) Name() string      { return "storage_pattern" }
+// TemplateNameStoragePattern is the registry key for this template.
+const TemplateNameStoragePattern = "storage_pattern"
+
+func (storagePatternTemplate) Name() string      { return TemplateNameStoragePattern }
 func (storagePatternTemplate) UserVisible() bool { return true }
 
 func (storagePatternTemplate) ValidateParameters(params map[string]any) error {

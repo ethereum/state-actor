@@ -113,6 +113,27 @@ func TestCREATE2FactoryValidate(t *testing.T) {
 	}
 }
 
+// TestEffectiveCreate2FactoryAddress pins the shared defaulting rule both
+// create2FactoryTemplate.Expand and specbuild's Arachnid-pairing
+// enforcement delegate to: neither `address:` nor `name:` → canonical
+// Arachnid; anything explicit → the resolved address verbatim.
+func TestEffectiveCreate2FactoryAddress(t *testing.T) {
+	resolved := common.HexToAddress("0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef")
+
+	if got := EffectiveCreate2FactoryAddress(spec.Entity{}, resolved); got != CanonicalCREATE2FactoryAddress {
+		t.Errorf("defaulted: got %s, want canonical %s", got.Hex(), CanonicalCREATE2FactoryAddress.Hex())
+	}
+
+	custom := spec.HexAddress(common.HexToAddress("0x000000000000000000000000000000000000beef"))
+	if got := EffectiveCreate2FactoryAddress(spec.Entity{Address: &custom}, resolved); got != resolved {
+		t.Errorf("explicit address: got %s, want resolved %s", got.Hex(), resolved.Hex())
+	}
+
+	if got := EffectiveCreate2FactoryAddress(spec.Entity{Name: "named-factory"}, resolved); got != resolved {
+		t.Errorf("named: got %s, want resolved %s", got.Hex(), resolved.Hex())
+	}
+}
+
 // TestCanonicalCREATE2FactoryCodeKeccakPin pins CanonicalCREATE2FactoryCode
 // to the keccak256 of the on-chain Arachnid deterministic-deployment proxy
 // runtime, so an accidental edit to the vendored constant cannot slip by:

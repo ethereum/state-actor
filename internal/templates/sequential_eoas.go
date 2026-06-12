@@ -30,7 +30,10 @@ func init() {
 // pre-plants matching state at every such address.
 type sequentialEOAsTemplate struct{}
 
-func (sequentialEOAsTemplate) Name() string      { return "sequential_eoas" }
+// TemplateNameSequentialEOAs is the registry key for this template.
+const TemplateNameSequentialEOAs = "sequential_eoas"
+
+func (sequentialEOAsTemplate) Name() string      { return TemplateNameSequentialEOAs }
 func (sequentialEOAsTemplate) UserVisible() bool { return true }
 
 func (sequentialEOAsTemplate) ValidateParameters(params map[string]any) error {

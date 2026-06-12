@@ -44,7 +44,12 @@ func init() {
 // identically.
 type create2DeploysTemplate struct{}
 
-func (create2DeploysTemplate) Name() string      { return "create2_deploys" }
+// TemplateNameCreate2Deploys is the registry key for this template.
+// specbuild's Arachnid-pairing enforcement matches entities against it;
+// Name() returns this constant so the two can never drift.
+const TemplateNameCreate2Deploys = "create2_deploys"
+
+func (create2DeploysTemplate) Name() string      { return TemplateNameCreate2Deploys }
 func (create2DeploysTemplate) UserVisible() bool { return true }
 
 const create2DeploysSaltLimit = uint64(1) << 32

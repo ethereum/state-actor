@@ -41,7 +41,10 @@ func init() {
 // runtime (see code_pattern.go).
 type createPreimageDeploysTemplate struct{}
 
-func (createPreimageDeploysTemplate) Name() string      { return "create_preimage_deploys" }
+// TemplateNameCreatePreimageDeploys is the registry key for this template.
+const TemplateNameCreatePreimageDeploys = "create_preimage_deploys"
+
+func (createPreimageDeploysTemplate) Name() string      { return TemplateNameCreatePreimageDeploys }
 func (createPreimageDeploysTemplate) UserVisible() bool { return true }
 
 const createPreimageNonceLimit = uint64(1) << 32

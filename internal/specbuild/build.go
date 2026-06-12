@@ -107,7 +107,7 @@ func Build(s *spec.Spec, opts BuildOptions) ([]templates.PreAllocEntity, Diagnos
 func pickTemplate(e spec.Entity) (templates.Template, error) {
 	switch e.Kind {
 	case spec.KindEOA:
-		t, ok := templates.Lookup("eoa")
+		t, ok := templates.Lookup(templates.TemplateNameEOA)
 		if !ok {
 			return nil, fmt.Errorf("registry missing required eoa template")
 		}
@@ -121,7 +121,7 @@ func pickTemplate(e spec.Entity) (templates.Template, error) {
 			return t, nil
 		}
 		if len(e.Code) > 0 {
-			t, ok := templates.Lookup("raw")
+			t, ok := templates.Lookup(templates.TemplateNameRaw)
 			if !ok {
 				return nil, fmt.Errorf("registry missing required raw template")
 			}
@@ -246,7 +246,7 @@ func enforceArachnidFactoryRequirement(entities []spec.Entity, opts BuildOptions
 	// factory (either by default — factory: omitted — or explicitly)?
 	consumerIdx := -1
 	for i, e := range entities {
-		if e.Template != "create2_deploys" {
+		if e.Template != templates.TemplateNameCreate2Deploys {
 			continue
 		}
 		factory := arachnid
@@ -269,20 +269,14 @@ func enforceArachnidFactoryRequirement(entities []spec.Entity, opts BuildOptions
 	}
 
 	// Second pass: is there a create2_factory entity that resolves to the
-	// Arachnid address? Mirrors create2_factory.Expand's defaulting:
-	// `address:` unset AND `name:` unset → Arachnid; otherwise honor the
-	// resolved address.
+	// Arachnid address? Uses the template's own defaulting rule
+	// (templates.EffectiveCreate2FactoryAddress) so this pass can never
+	// drift from create2_factory.Expand.
 	for i, e := range entities {
-		if e.Template != "create2_factory" {
+		if e.Template != templates.TemplateNameCreate2Factory {
 			continue
 		}
-		var addr common.Address
-		if e.Address == nil && e.Name == "" {
-			addr = arachnid
-		} else {
-			addr = ResolveAddress(opts.Seed, e, i)
-		}
-		if addr == arachnid {
+		if templates.EffectiveCreate2FactoryAddress(e, ResolveAddress(opts.Seed, e, i)) == arachnid {
 			return nil
 		}
 	}
