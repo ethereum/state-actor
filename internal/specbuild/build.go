@@ -53,6 +53,7 @@ func Build(s *spec.Spec, opts BuildOptions) ([]templates.PreAllocEntity, Diagnos
 		return nil, diag, fmt.Errorf("Build: BuildOptions.Sizer is required")
 	}
 
+	warnTargetSizeBlindEntities(s.Entities, opts, &diag)
 	entities := truncateForTargetSize(s.Entities, opts, &diag)
 
 	if err := enforceArachnidFactoryRequirement(entities, opts); err != nil {
@@ -228,6 +229,40 @@ func truncateForTargetSize(entities []spec.Entity, opts BuildOptions, diag *Diag
 		running += cost
 	}
 	return entities
+}
+
+// warnTargetSizeBlindEntities appends ONE diagnostics warning when
+// opts.TargetSize > 0 and the spec contains entities whose on-disk
+// footprint is derived from template parameters the size projection
+// cannot see: the template ignores approximate_size_bytes AND takes
+// parameters. (Parameterless templates such as create2_factory emit a
+// single fixed-size account, which the projection prices correctly.
+// erc20 with explicit total_owners is a residual gap — see
+// TODO(template-aware-budget) on ProjectedCost.)
+//
+// Runs against the PRE-truncation entity list because
+// truncateForTargetSize is exactly the walk that fails open here.
+func warnTargetSizeBlindEntities(entities []spec.Entity, opts BuildOptions, diag *Diagnostics) {
+	if opts.TargetSize == 0 {
+		return
+	}
+	var blind []string
+	for i, e := range entities {
+		tmpl, err := pickTemplate(e)
+		if err != nil {
+			continue // the per-entity loop surfaces this as a hard error
+		}
+		if tmpl.HonoredEntityFields().ApproximateSizeBytes.Honored || len(e.Parameters) == 0 {
+			continue
+		}
+		blind = append(blind, fmt.Sprintf("entities[%d] (template %s)", i, tmpl.Name()))
+	}
+	if len(blind) == 0 {
+		return
+	}
+	diag.Warnings = append(diag.Warnings, fmt.Sprintf(
+		"--target-size %d B: the following entities derive their size from template parameters the size projection cannot see: %s; --target-size can neither budget nor truncate their output, and the auto-fill top-up may overshoot the target",
+		opts.TargetSize, strings.Join(blind, ", ")))
 }
 
 // enforceArachnidFactoryRequirement implements the cross-entity invariant

@@ -42,6 +42,94 @@ func parseSpec(t *testing.T, src string) *spec.Spec {
 	return s
 }
 
+// TestBuildWarnsTargetSizeBlindTemplates pins the I4 fix: --target-size
+// budgets entities at ~bytesPerAccount via e.ApproximateSizeBytes only,
+// so a storage_pattern entity expanding 1001 slots (~140 KB real trie
+// cost) sailed under a 1000-byte TargetSize with ZERO warnings
+// (demonstrated against the unfixed tree) — truncateForTargetSize fails
+// open and the autofill top-up then overshoots. Build now emits exactly
+// ONE diagnostics warning naming every cost-blind entity. (The real fix
+// — a per-template ProjectCost — stays the TODO(template-aware-budget)
+// follow-up; this is the user-facing tripwire.)
+func TestBuildWarnsTargetSizeBlindTemplates(t *testing.T) {
+	mkStoragePattern := func(addr string) spec.Entity {
+		a := spec.HexAddress(common.HexToAddress(addr))
+		return spec.Entity{
+			Kind:       spec.KindContract,
+			Template:   "storage_pattern",
+			Address:    &a,
+			Parameters: map[string]any{"final": 1000},
+		}
+	}
+	countBlindWarnings := func(diag Diagnostics) int {
+		n := 0
+		for _, w := range diag.Warnings {
+			if strings.Contains(w, "size projection cannot see") {
+				n++
+			}
+		}
+		return n
+	}
+
+	// TargetSize > 0 (well above the ~175 B projected cost, far below the
+	// ~140 KB real cost) → exactly one warning naming the template.
+	opts := defaultOpts
+	opts.TargetSize = 1000
+	s := &spec.Spec{Entities: []spec.Entity{mkStoragePattern("0x0000000000000000000000000000000000005000")}}
+	pre, diag, err := Build(s, opts)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if len(pre) != 1 {
+		t.Fatalf("entity count: got %d, want 1 (must build, not truncate)", len(pre))
+	}
+	if n := countBlindWarnings(diag); n != 1 {
+		t.Fatalf("blind-template warnings: got %d, want 1 (warnings: %v)", n, diag.Warnings)
+	}
+	if !strings.Contains(diag.Warnings[0], "storage_pattern") {
+		t.Errorf("warning must name the template; got: %s", diag.Warnings[0])
+	}
+
+	// TargetSize == 0 → no warning.
+	_, diag, err = Build(s, defaultOpts)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if n := countBlindWarnings(diag); n != 0 {
+		t.Errorf("TargetSize=0: got %d blind warnings, want 0 (%v)", n, diag.Warnings)
+	}
+
+	// Two blind entities → still exactly ONE warning, listing both anchors.
+	s2 := &spec.Spec{Entities: []spec.Entity{
+		mkStoragePattern("0x0000000000000000000000000000000000005000"),
+		mkStoragePattern("0x0000000000000000000000000000000000006000"),
+	}}
+	_, diag, err = Build(s2, opts)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if n := countBlindWarnings(diag); n != 1 {
+		t.Errorf("two blind entities: got %d warnings, want 1 (%v)", n, diag.Warnings)
+	}
+	if len(diag.Warnings) > 0 && (!strings.Contains(diag.Warnings[0], "entities[0]") || !strings.Contains(diag.Warnings[0], "entities[1]")) {
+		t.Errorf("warning must list both anchors; got: %s", diag.Warnings[0])
+	}
+
+	// Parameterless template (create2_factory: one fixed account the
+	// projection prices correctly) → no warning.
+	s3 := &spec.Spec{Entities: []spec.Entity{{
+		Kind:     spec.KindContract,
+		Template: "create2_factory",
+	}}}
+	_, diag, err = Build(s3, opts)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if n := countBlindWarnings(diag); n != 0 {
+		t.Errorf("create2_factory-only: got %d blind warnings, want 0 (%v)", n, diag.Warnings)
+	}
+}
+
 // TestBuildRejectsIgnoredEntityFields pins the C1 fix: entity-level
 // `balance:` on a template that only reads parameters.balance used to be
 // SILENTLY ignored — Build returned 1-wei accounts with zero warnings
