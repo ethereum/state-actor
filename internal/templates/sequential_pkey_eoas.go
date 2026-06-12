@@ -60,69 +60,87 @@ const TemplateNameSequentialPkeyEOAs = "sequential_pkey_eoas"
 func (sequentialPkeyEOAsTemplate) Name() string      { return TemplateNameSequentialPkeyEOAs }
 func (sequentialPkeyEOAsTemplate) UserVisible() bool { return true }
 
-func (sequentialPkeyEOAsTemplate) ValidateParameters(params map[string]any) error {
+// sequentialPkeyEOAsParams is the typed result of
+// parseSequentialPkeyEOAsParams.
+type sequentialPkeyEOAsParams struct {
+	startPkey *big.Int     // 32-byte scalar in [1, secp256k1Order)
+	count     uint64       // in [1, 2^32]
+	balance   *uint256.Int // never nil, never zero; defaults to 1 wei
+}
+
+// parseSequentialPkeyEOAsParams is the single validation+parse boundary
+// for this template. ValidateParameters and Expand both call it, so a
+// parameter set that validates is — by construction — the same one that
+// expands; no check can drift between the two entry points.
+func parseSequentialPkeyEOAsParams(params map[string]any) (sequentialPkeyEOAsParams, error) {
+	var pp sequentialPkeyEOAsParams
 	if err := RejectUnknownKeys(params, "sequential_pkey_eoas", []string{
 		"start_pkey", "count", "balance",
 	}); err != nil {
-		return err
+		return pp, err
 	}
 	for _, required := range []string{"start_pkey", "count"} {
 		if _, ok := params[required]; !ok {
-			return fmt.Errorf("sequential_pkey_eoas: missing required parameter %q", required)
+			return pp, fmt.Errorf("sequential_pkey_eoas: missing required parameter %q", required)
 		}
 	}
 	pkeyBytes, err := ParseHexBytesParam(params["start_pkey"], "start_pkey")
 	if err != nil {
-		return fmt.Errorf("sequential_pkey_eoas: %w", err)
+		return pp, fmt.Errorf("sequential_pkey_eoas: %w", err)
 	}
 	if len(pkeyBytes) != 32 {
-		return fmt.Errorf("sequential_pkey_eoas: start_pkey must be exactly 32 bytes (got %d)", len(pkeyBytes))
+		return pp, fmt.Errorf("sequential_pkey_eoas: start_pkey must be exactly 32 bytes (got %d)", len(pkeyBytes))
 	}
 	startInt := new(big.Int).SetBytes(pkeyBytes)
 	if startInt.Sign() == 0 {
-		return fmt.Errorf("sequential_pkey_eoas: start_pkey must be a non-zero secp256k1 scalar")
+		return pp, fmt.Errorf("sequential_pkey_eoas: start_pkey must be a non-zero secp256k1 scalar")
 	}
 	if startInt.Cmp(secp256k1Order) >= 0 {
-		return fmt.Errorf("sequential_pkey_eoas: start_pkey >= secp256k1 curve order")
+		return pp, fmt.Errorf("sequential_pkey_eoas: start_pkey >= secp256k1 curve order")
 	}
-	if _, err := ParseUint64Param(params["count"], "count"); err != nil {
-		return fmt.Errorf("sequential_pkey_eoas: %w", err)
+	pp.startPkey = startInt
+	count, err := ParseUint64Param(params["count"], "count")
+	if err != nil {
+		return pp, fmt.Errorf("sequential_pkey_eoas: %w", err)
 	}
-	if v, has := params["balance"]; has {
-		b, err := ParseUint256Param(v, "balance")
-		if err != nil {
-			return fmt.Errorf("sequential_pkey_eoas: %w", err)
-		}
-		if b.IsZero() {
-			return fmt.Errorf("sequential_pkey_eoas: balance must be > 0 (zero-balance EOAs are pruned by EIP-161)")
-		}
-	}
-	return nil
-}
-
-func (sequentialPkeyEOAsTemplate) Expand(ctx Context, e spec.Entity) ([]PreAllocEntity, error) {
-	pkeyBytes, _ := ParseHexBytesParam(e.Parameters["start_pkey"], "start_pkey")
-	count, _ := ParseUint64Param(e.Parameters["count"], "count")
 	if count == 0 {
-		return nil, nil
+		return pp, fmt.Errorf("sequential_pkey_eoas: count must be >= 1 (count=0 emits nothing; delete the entity instead)")
 	}
 	// Practical ceiling: 2^32 keys × ~218 B/account already eclipses
 	// any production fixture; treat larger as a typo.
-	if count > 1<<32 {
-		return nil, fmt.Errorf("sequential_pkey_eoas: count=%d exceeds practical limit (2^32)", count)
+	if count > practicalFanoutLimit {
+		return pp, fmt.Errorf("sequential_pkey_eoas: count=%d exceeds practical limit (2^32)", count)
 	}
-	balance := uint256.NewInt(1)
-	if v, has := e.Parameters["balance"]; has {
-		b, _ := ParseUint256Param(v, "balance")
-		balance = b
+	pp.count = count
+	pp.balance = uint256.NewInt(1)
+	if v, has := params["balance"]; has {
+		b, err := ParseUint256Param(v, "balance")
+		if err != nil {
+			return pp, fmt.Errorf("sequential_pkey_eoas: %w", err)
+		}
+		if b.IsZero() {
+			return pp, fmt.Errorf("sequential_pkey_eoas: balance must be > 0 (zero-balance EOAs are pruned by EIP-161)")
+		}
+		pp.balance = b
 	}
+	return pp, nil
+}
 
-	startInt := new(big.Int).SetBytes(pkeyBytes)
-	out := make([]PreAllocEntity, 0, count)
-	cur := new(big.Int).Set(startInt)
+func (sequentialPkeyEOAsTemplate) ValidateParameters(params map[string]any) error {
+	_, err := parseSequentialPkeyEOAsParams(params)
+	return err
+}
+
+func (sequentialPkeyEOAsTemplate) Expand(ctx Context, e spec.Entity) ([]PreAllocEntity, error) {
+	pp, err := parseSequentialPkeyEOAsParams(e.Parameters)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]PreAllocEntity, 0, pp.count)
+	cur := new(big.Int).Set(pp.startPkey)
 	one := big.NewInt(1)
-	seen := make(map[common.Address]struct{}, count)
-	for i := uint64(0); i < count; i++ {
+	seen := make(map[common.Address]struct{}, pp.count)
+	for i := uint64(0); i < pp.count; i++ {
 		if cur.Sign() == 0 || cur.Cmp(secp256k1Order) >= 0 {
 			return nil, fmt.Errorf(
 				"sequential_pkey_eoas: derived pkey #%d falls outside [1, secp256k1_order); pick a smaller count or different start_pkey",
@@ -146,7 +164,7 @@ func (sequentialPkeyEOAsTemplate) Expand(ctx Context, e spec.Entity) ([]PreAlloc
 			Address: addr,
 			Account: &types.StateAccount{
 				Nonce:    0,
-				Balance:  new(uint256.Int).Set(balance),
+				Balance:  new(uint256.Int).Set(pp.balance),
 				Root:     types.EmptyRootHash,
 				CodeHash: types.EmptyCodeHash[:],
 			},

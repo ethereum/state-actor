@@ -16,6 +16,15 @@ import (
 // these versions are template-neutral so the caller (a new template)
 // owns the prefix in the wrapping fmt.Errorf.
 
+// practicalFanoutLimit caps every fan-out knob (sequential_eoas.count,
+// sequential_pkey_eoas.count, create2_deploys.salt_count,
+// create_preimage_deploys.count, storage_pattern.final) at 2^32 units.
+// Anything larger is almost certainly a typo — and for storage_pattern
+// the cap is also load-bearing for correctness: the slot iterator's
+// `k <= final` loop cannot terminate at final == MaxUint64, and slot 0
+// (final+1) would silently wrap to 0.
+const practicalFanoutLimit = uint64(1) << 32
+
 // ParseAddressParam decodes a quoted 0x-prefixed 20-byte hex string.
 func ParseAddressParam(v any, label string) (common.Address, error) {
 	s, ok := v.(string)

@@ -1,6 +1,7 @@
 package templates
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -42,14 +43,18 @@ func TestSequentialEOAsExpand(t *testing.T) {
 	}
 }
 
-func TestSequentialEOAsZeroCount(t *testing.T) {
-	ent := mkContractEntity("sequential_eoas", map[string]any{"count": 0})
-	out, err := (&sequentialEOAsTemplate{}).Expand(Context{}, ent)
-	if err != nil {
-		t.Fatalf("Expand: %v", err)
+// TestSequentialEOAsRejectsZeroCount pins the I3 fix: count=0 used to
+// expand to zero entities with zero warnings — a prestate silently
+// missing the entity (same silent-zero family as the --seed=0 footgun).
+// Both entry points now reject it.
+func TestSequentialEOAsRejectsZeroCount(t *testing.T) {
+	tmpl := &sequentialEOAsTemplate{}
+	params := map[string]any{"count": 0}
+	if err := tmpl.ValidateParameters(params); err == nil || !strings.Contains(err.Error(), "must be >= 1") {
+		t.Errorf("ValidateParameters(count=0): want 'must be >= 1' error, got %v", err)
 	}
-	if len(out) != 0 {
-		t.Errorf("expected zero output for count=0, got %d", len(out))
+	if _, err := tmpl.Expand(Context{}, mkContractEntity("sequential_eoas", params)); err == nil || !strings.Contains(err.Error(), "must be >= 1") {
+		t.Errorf("Expand(count=0): want 'must be >= 1' error, got %v", err)
 	}
 }
 
@@ -79,6 +84,12 @@ func TestSequentialEOAsValidate(t *testing.T) {
 	}
 	if err := tmpl.ValidateParameters(map[string]any{"count": -1}); err == nil {
 		t.Errorf("negative count: expected error")
+	}
+	if err := tmpl.ValidateParameters(map[string]any{"count": 0}); err == nil {
+		t.Errorf("zero count: expected error")
+	}
+	if err := tmpl.ValidateParameters(map[string]any{"count": uint64(1)<<32 + 1}); err == nil {
+		t.Errorf("count above 2^32: expected error (cap now enforced at validate time)")
 	}
 	// balance: omitted is valid (defaults to 1 in Expand).
 	if err := tmpl.ValidateParameters(map[string]any{"count": 1}); err != nil {

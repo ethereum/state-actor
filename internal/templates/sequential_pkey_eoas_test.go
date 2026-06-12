@@ -2,6 +2,7 @@ package templates
 
 import (
 	"math/big"
+	"strings"
 	"testing"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -167,16 +168,19 @@ func TestSequentialPkeyEOAs_RejectsMissingRequired(t *testing.T) {
 // TestSequentialPkeyEOAs_ZeroCountNoop pins that count=0 is a no-op
 // (no error, no entries) — matches sequential_eoas semantics for
 // consistency.
-func TestSequentialPkeyEOAs_ZeroCountNoop(t *testing.T) {
-	ent := mkContractEntity("sequential_pkey_eoas", map[string]any{
+// TestSequentialPkeyEOAs_RejectsZeroCount pins the I3 fix: count=0 used
+// to expand to zero entities with zero warnings (matching the old
+// sequential_eoas semantics). Both entry points now reject it.
+func TestSequentialPkeyEOAs_RejectsZeroCount(t *testing.T) {
+	tmpl := &sequentialPkeyEOAsTemplate{}
+	params := map[string]any{
 		"start_pkey": "0x1111111111111111111111111111111111111111111111111111111111111111",
 		"count":      0,
-	})
-	out, err := (&sequentialPkeyEOAsTemplate{}).Expand(Context{}, ent)
-	if err != nil {
-		t.Fatalf("Expand: %v", err)
 	}
-	if len(out) != 0 {
-		t.Errorf("count=0 should produce no entries (got %d)", len(out))
+	if err := tmpl.ValidateParameters(params); err == nil || !strings.Contains(err.Error(), "must be >= 1") {
+		t.Errorf("ValidateParameters(count=0): want 'must be >= 1' error, got %v", err)
+	}
+	if _, err := tmpl.Expand(Context{}, mkContractEntity("sequential_pkey_eoas", params)); err == nil || !strings.Contains(err.Error(), "must be >= 1") {
+		t.Errorf("Expand(count=0): want 'must be >= 1' error, got %v", err)
 	}
 }

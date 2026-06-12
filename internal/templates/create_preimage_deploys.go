@@ -3,6 +3,7 @@ package templates
 import (
 	"fmt"
 
+	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/holiman/uint256"
@@ -47,17 +48,31 @@ const TemplateNameCreatePreimageDeploys = "create_preimage_deploys"
 func (createPreimageDeploysTemplate) Name() string      { return TemplateNameCreatePreimageDeploys }
 func (createPreimageDeploysTemplate) UserVisible() bool { return true }
 
-const createPreimageNonceLimit = uint64(1) << 32
+// createPreimageDeploysParams is the typed result of
+// parseCreatePreimageDeploysParams.
+type createPreimageDeploysParams struct {
+	sender      common.Address
+	startNonce  uint64
+	count       uint64 // in [1, 2^32]
+	patternName string // "" in literal runtime mode
+	runtime     []byte // shared literal runtime; nil in pattern mode
+	storageInit map[common.Hash]common.Hash
+}
 
-func (createPreimageDeploysTemplate) ValidateParameters(params map[string]any) error {
+// parseCreatePreimageDeploysParams is the single validation+parse
+// boundary for this template. ValidateParameters and Expand both call
+// it, so a parameter set that validates is — by construction — the same
+// one that expands; no check can drift between the two entry points.
+func parseCreatePreimageDeploysParams(params map[string]any) (createPreimageDeploysParams, error) {
+	var pp createPreimageDeploysParams
 	if err := RejectUnknownKeys(params, "create_preimage_deploys", []string{
 		"sender", "start_nonce", "count", "runtime", "storage_init", "code_pattern",
 	}); err != nil {
-		return err
+		return pp, err
 	}
 	for _, required := range []string{"sender", "count"} {
 		if _, ok := params[required]; !ok {
-			return fmt.Errorf("create_preimage_deploys: missing required parameter %q", required)
+			return pp, fmt.Errorf("create_preimage_deploys: missing required parameter %q", required)
 		}
 	}
 	// `code_pattern` opts into a named per-address runtime generator.
@@ -66,84 +81,78 @@ func (createPreimageDeploysTemplate) ValidateParameters(params map[string]any) e
 	if v, has := params["code_pattern"]; has {
 		name, ok := v.(string)
 		if !ok {
-			return fmt.Errorf("create_preimage_deploys: code_pattern must be a string (got %T)", v)
+			return pp, fmt.Errorf("create_preimage_deploys: code_pattern must be a string (got %T)", v)
 		}
 		if !IsKnownCodePattern(name) {
-			return fmt.Errorf("create_preimage_deploys: unknown code_pattern %q (known: %q)",
+			return pp, fmt.Errorf("create_preimage_deploys: unknown code_pattern %q (known: %q)",
 				name, CodePatternUniqueJumpdestPreAmsterdam)
 		}
 		if _, has := params["runtime"]; has {
-			return fmt.Errorf("create_preimage_deploys: `runtime` is forbidden when `code_pattern` is set (the pattern generates per-address runtime)")
+			return pp, fmt.Errorf("create_preimage_deploys: `runtime` is forbidden when `code_pattern` is set (the pattern generates per-address runtime)")
 		}
+		pp.patternName = name
 	} else {
 		if _, ok := params["runtime"]; !ok {
-			return fmt.Errorf("create_preimage_deploys: missing required parameter %q (or set `code_pattern:`)", "runtime")
+			return pp, fmt.Errorf("create_preimage_deploys: missing required parameter %q (or set `code_pattern:`)", "runtime")
 		}
 		runtime, err := ParseHexBytesParam(params["runtime"], "runtime")
 		if err != nil {
-			return fmt.Errorf("create_preimage_deploys: %w", err)
+			return pp, fmt.Errorf("create_preimage_deploys: %w", err)
 		}
 		if len(runtime) == 0 {
-			return fmt.Errorf("create_preimage_deploys: runtime must be non-empty")
+			return pp, fmt.Errorf("create_preimage_deploys: runtime must be non-empty")
 		}
+		pp.runtime = runtime
 	}
-	if _, err := ParseAddressParam(params["sender"], "sender"); err != nil {
-		return fmt.Errorf("create_preimage_deploys: %w", err)
+	sender, err := ParseAddressParam(params["sender"], "sender")
+	if err != nil {
+		return pp, fmt.Errorf("create_preimage_deploys: %w", err)
 	}
+	pp.sender = sender
 	count, err := ParseUint64Param(params["count"], "count")
 	if err != nil {
-		return fmt.Errorf("create_preimage_deploys: %w", err)
+		return pp, fmt.Errorf("create_preimage_deploys: %w", err)
 	}
-	if count > createPreimageNonceLimit {
-		return fmt.Errorf("create_preimage_deploys: count=%d exceeds practical limit (2^32)", count)
+	if count == 0 {
+		return pp, fmt.Errorf("create_preimage_deploys: count must be >= 1 (count=0 emits nothing; delete the entity instead)")
 	}
+	if count > practicalFanoutLimit {
+		return pp, fmt.Errorf("create_preimage_deploys: count=%d exceeds practical limit (2^32)", count)
+	}
+	pp.count = count
 	if v, has := params["start_nonce"]; has {
-		if _, err := ParseUint64Param(v, "start_nonce"); err != nil {
-			return fmt.Errorf("create_preimage_deploys: %w", err)
+		n, err := ParseUint64Param(v, "start_nonce")
+		if err != nil {
+			return pp, fmt.Errorf("create_preimage_deploys: %w", err)
 		}
+		pp.startNonce = n
 	}
-	if v, has := params["storage_init"]; has {
-		if _, err := ParseStorageInitMap(v); err != nil {
-			return fmt.Errorf("create_preimage_deploys: %w", err)
-		}
+	si, err := ParseStorageInitMap(params["storage_init"])
+	if err != nil {
+		return pp, fmt.Errorf("create_preimage_deploys: %w", err)
 	}
-	return nil
+	pp.storageInit = si
+	return pp, nil
+}
+
+func (createPreimageDeploysTemplate) ValidateParameters(params map[string]any) error {
+	_, err := parseCreatePreimageDeploysParams(params)
+	return err
 }
 
 func (createPreimageDeploysTemplate) Expand(ctx Context, e spec.Entity) ([]PreAllocEntity, error) {
-	sender, _ := ParseAddressParam(e.Parameters["sender"], "sender")
-	count, _ := ParseUint64Param(e.Parameters["count"], "count")
-	startNonce := uint64(0)
-	if v, has := e.Parameters["start_nonce"]; has {
-		startNonce, _ = ParseUint64Param(v, "start_nonce")
-	}
-	storageInit, err := ParseStorageInitMap(e.Parameters["storage_init"])
+	pp, err := parseCreatePreimageDeploysParams(e.Parameters)
 	if err != nil {
-		return nil, fmt.Errorf("create_preimage_deploys: %w", err)
+		return nil, err
 	}
-
-	// Resolve per-address runtime: either `code_pattern` (per-address
-	// unique) or the literal `runtime:` parameter (shared). Mutex
-	// enforced in ValidateParameters.
-	var patternName string
-	var sharedRuntime []byte
-	if v, has := e.Parameters["code_pattern"]; has {
-		patternName, _ = v.(string)
-	} else {
-		sharedRuntime, _ = ParseHexBytesParam(e.Parameters["runtime"], "runtime")
-	}
-
-	if count == 0 {
-		return nil, nil
-	}
-	out := make([]PreAllocEntity, 0, count)
-	for i := uint64(0); i < count; i++ {
-		derived := crypto.CreateAddress(sender, startNonce+i)
-		runtime := sharedRuntime
-		if patternName != "" {
-			runtime, err = codePatternRuntimeFor(patternName, derived)
+	out := make([]PreAllocEntity, 0, pp.count)
+	for i := uint64(0); i < pp.count; i++ {
+		derived := crypto.CreateAddress(pp.sender, pp.startNonce+i)
+		runtime := pp.runtime
+		if pp.patternName != "" {
+			runtime, err = codePatternRuntimeFor(pp.patternName, derived)
 			if err != nil {
-				return nil, fmt.Errorf("create_preimage_deploys: nonce=%d: %w", startNonce+i, err)
+				return nil, fmt.Errorf("create_preimage_deploys: nonce=%d: %w", pp.startNonce+i, err)
 			}
 		}
 		out = append(out, PreAllocEntity{
@@ -155,7 +164,7 @@ func (createPreimageDeploysTemplate) Expand(ctx Context, e spec.Entity) ([]PreAl
 				CodeHash: crypto.Keccak256Hash(runtime).Bytes(),
 			},
 			Code:    runtime,
-			Storage: MapToSeq(storageInit),
+			Storage: MapToSeq(pp.storageInit),
 		})
 	}
 	return out, nil

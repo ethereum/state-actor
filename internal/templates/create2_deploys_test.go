@@ -2,6 +2,7 @@ package templates
 
 import (
 	"encoding/binary"
+	"strings"
 	"testing"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -90,18 +91,21 @@ func TestCREATE2DeploysCustomFactory(t *testing.T) {
 	}
 }
 
-func TestCREATE2DeploysZeroSaltCount(t *testing.T) {
-	ent := mkContractEntity("create2_deploys", map[string]any{
+// TestCREATE2DeploysRejectsZeroSaltCount pins the I3 fix: salt_count=0
+// used to expand to zero entities with zero warnings. Both entry points
+// now reject it.
+func TestCREATE2DeploysRejectsZeroSaltCount(t *testing.T) {
+	tmpl := &create2DeploysTemplate{}
+	params := map[string]any{
 		"initcode":   "0xfe",
 		"runtime":    "0x00",
 		"salt_count": 0,
-	})
-	out, err := (&create2DeploysTemplate{}).Expand(Context{}, ent)
-	if err != nil {
-		t.Fatalf("Expand: %v", err)
 	}
-	if len(out) != 0 {
-		t.Errorf("salt_count=0 must emit nothing, got %d", len(out))
+	if err := tmpl.ValidateParameters(params); err == nil || !strings.Contains(err.Error(), "must be >= 1") {
+		t.Errorf("ValidateParameters(salt_count=0): want 'must be >= 1' error, got %v", err)
+	}
+	if _, err := tmpl.Expand(Context{}, mkContractEntity("create2_deploys", params)); err == nil || !strings.Contains(err.Error(), "must be >= 1") {
+		t.Errorf("Expand(salt_count=0): want 'must be >= 1' error, got %v", err)
 	}
 }
 

@@ -39,24 +39,49 @@ const TemplateNameStoragePattern = "storage_pattern"
 func (storagePatternTemplate) Name() string      { return TemplateNameStoragePattern }
 func (storagePatternTemplate) UserVisible() bool { return true }
 
-func (storagePatternTemplate) ValidateParameters(params map[string]any) error {
+// storagePatternParams is the typed result of parseStoragePatternParams.
+type storagePatternParams struct {
+	final uint64 // in [0, 2^32]; final=0 stays legal (emits only slot 0 = 1)
+}
+
+// parseStoragePatternParams is the single validation+parse boundary for
+// this template. ValidateParameters and Expand both call it, so a
+// parameter set that validates is — by construction — the same one that
+// expands; no check can drift between the two entry points.
+func parseStoragePatternParams(params map[string]any) (storagePatternParams, error) {
+	var pp storagePatternParams
 	if err := RejectUnknownKeys(params, "storage_pattern", []string{"final"}); err != nil {
-		return err
+		return pp, err
 	}
 	if _, ok := params["final"]; !ok {
-		return fmt.Errorf("storage_pattern: missing required parameter `final`")
+		return pp, fmt.Errorf("storage_pattern: missing required parameter `final`")
 	}
-	if _, err := ParseUint64Param(params["final"], "final"); err != nil {
-		return fmt.Errorf("storage_pattern: %w", err)
+	final, err := ParseUint64Param(params["final"], "final")
+	if err != nil {
+		return pp, fmt.Errorf("storage_pattern: %w", err)
 	}
-	return nil
+	// Practical ceiling shared with the other fan-out templates — and
+	// load-bearing for correctness here: storagePatternIter's
+	// `k <= final` loop never terminates at final == MaxUint64, and
+	// slot 0 (final+1) would silently wrap to 0.
+	if final > practicalFanoutLimit {
+		return pp, fmt.Errorf("storage_pattern: final=%d exceeds practical limit (2^32)", final)
+	}
+	pp.final = final
+	return pp, nil
+}
+
+func (storagePatternTemplate) ValidateParameters(params map[string]any) error {
+	_, err := parseStoragePatternParams(params)
+	return err
 }
 
 func (storagePatternTemplate) Expand(ctx Context, e spec.Entity) ([]PreAllocEntity, error) {
-	final, err := ParseUint64Param(e.Parameters["final"], "final")
+	pp, err := parseStoragePatternParams(e.Parameters)
 	if err != nil {
-		return nil, fmt.Errorf("storage_pattern: %w", err)
+		return nil, err
 	}
+	final := pp.final
 
 	// Force nonce >= 1. Empty-account pruning (EIP-161) would wipe a
 	// code-less, balance-0, nonce-0 account, taking the storage pattern

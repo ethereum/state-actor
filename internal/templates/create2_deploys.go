@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"fmt"
 
+	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/holiman/uint256"
@@ -52,17 +53,31 @@ const TemplateNameCreate2Deploys = "create2_deploys"
 func (create2DeploysTemplate) Name() string      { return TemplateNameCreate2Deploys }
 func (create2DeploysTemplate) UserVisible() bool { return true }
 
-const create2DeploysSaltLimit = uint64(1) << 32
+// create2DeploysParams is the typed result of parseCreate2DeploysParams.
+type create2DeploysParams struct {
+	saltStart   uint64
+	saltCount   uint64         // in [1, 2^32]
+	factory     common.Address // defaults to CanonicalCREATE2FactoryAddress
+	patternName string         // "" in literal initcode/runtime mode
+	initcode    []byte         // literal parameter, or the pattern-owned constant
+	runtime     []byte         // shared literal runtime; nil in pattern mode
+	storageInit map[common.Hash]common.Hash
+}
 
-func (create2DeploysTemplate) ValidateParameters(params map[string]any) error {
+// parseCreate2DeploysParams is the single validation+parse boundary for
+// this template. ValidateParameters and Expand both call it, so a
+// parameter set that validates is — by construction — the same one that
+// expands; no check can drift between the two entry points.
+func parseCreate2DeploysParams(params map[string]any) (create2DeploysParams, error) {
+	var pp create2DeploysParams
 	if err := RejectUnknownKeys(params, "create2_deploys", []string{
 		"initcode", "salt_start", "salt_count", "runtime", "factory", "storage_init", "code_pattern",
 	}); err != nil {
-		return err
+		return pp, err
 	}
 	// salt_count is always required.
 	if _, ok := params["salt_count"]; !ok {
-		return fmt.Errorf("create2_deploys: missing required parameter %q", "salt_count")
+		return pp, fmt.Errorf("create2_deploys: missing required parameter %q", "salt_count")
 	}
 	// `code_pattern` opts into a named generator (initcode + per-address
 	// runtime). When set, `initcode` and `runtime` are forbidden — the
@@ -71,119 +86,104 @@ func (create2DeploysTemplate) ValidateParameters(params map[string]any) error {
 	if v, has := params["code_pattern"]; has {
 		name, ok := v.(string)
 		if !ok {
-			return fmt.Errorf("create2_deploys: code_pattern must be a string (got %T)", v)
+			return pp, fmt.Errorf("create2_deploys: code_pattern must be a string (got %T)", v)
 		}
 		if !IsKnownCodePattern(name) {
-			return fmt.Errorf("create2_deploys: unknown code_pattern %q (known: %q)",
+			return pp, fmt.Errorf("create2_deploys: unknown code_pattern %q (known: %q)",
 				name, CodePatternUniqueJumpdestPreAmsterdam)
 		}
 		if _, has := params["initcode"]; has {
-			return fmt.Errorf("create2_deploys: `initcode` is forbidden when `code_pattern` is set (the pattern owns the initcode)")
+			return pp, fmt.Errorf("create2_deploys: `initcode` is forbidden when `code_pattern` is set (the pattern owns the initcode)")
 		}
 		if _, has := params["runtime"]; has {
-			return fmt.Errorf("create2_deploys: `runtime` is forbidden when `code_pattern` is set (the pattern generates per-address runtime)")
+			return pp, fmt.Errorf("create2_deploys: `runtime` is forbidden when `code_pattern` is set (the pattern generates per-address runtime)")
 		}
+		pp.patternName = name
+		initcode, err := codePatternInitcodeFor(name)
+		if err != nil {
+			return pp, fmt.Errorf("create2_deploys: %w", err)
+		}
+		pp.initcode = initcode
 	} else {
 		for _, required := range []string{"initcode", "runtime"} {
 			if _, ok := params[required]; !ok {
-				return fmt.Errorf("create2_deploys: missing required parameter %q (or set `code_pattern:`)", required)
+				return pp, fmt.Errorf("create2_deploys: missing required parameter %q (or set `code_pattern:`)", required)
 			}
 		}
 		initcode, err := ParseHexBytesParam(params["initcode"], "initcode")
 		if err != nil {
-			return fmt.Errorf("create2_deploys: %w", err)
+			return pp, fmt.Errorf("create2_deploys: %w", err)
 		}
 		if len(initcode) == 0 {
-			return fmt.Errorf("create2_deploys: initcode must be non-empty")
+			return pp, fmt.Errorf("create2_deploys: initcode must be non-empty")
 		}
 		runtime, err := ParseHexBytesParam(params["runtime"], "runtime")
 		if err != nil {
-			return fmt.Errorf("create2_deploys: %w", err)
+			return pp, fmt.Errorf("create2_deploys: %w", err)
 		}
 		if len(runtime) == 0 {
-			return fmt.Errorf("create2_deploys: runtime must be non-empty (this template does not run the EVM; supply the runtime bytecode directly)")
+			return pp, fmt.Errorf("create2_deploys: runtime must be non-empty (this template does not run the EVM; supply the runtime bytecode directly)")
 		}
+		pp.initcode = initcode
+		pp.runtime = runtime
 	}
 	saltCount, err := ParseUint64Param(params["salt_count"], "salt_count")
 	if err != nil {
-		return fmt.Errorf("create2_deploys: %w", err)
+		return pp, fmt.Errorf("create2_deploys: %w", err)
 	}
-	if saltCount > create2DeploysSaltLimit {
-		return fmt.Errorf("create2_deploys: salt_count=%d exceeds practical limit (2^32)", saltCount)
+	if saltCount == 0 {
+		return pp, fmt.Errorf("create2_deploys: salt_count must be >= 1 (salt_count=0 emits nothing; delete the entity instead)")
 	}
+	if saltCount > practicalFanoutLimit {
+		return pp, fmt.Errorf("create2_deploys: salt_count=%d exceeds practical limit (2^32)", saltCount)
+	}
+	pp.saltCount = saltCount
 	if v, has := params["salt_start"]; has {
-		if _, err := ParseUint64Param(v, "salt_start"); err != nil {
-			return fmt.Errorf("create2_deploys: %w", err)
+		s, err := ParseUint64Param(v, "salt_start")
+		if err != nil {
+			return pp, fmt.Errorf("create2_deploys: %w", err)
 		}
+		pp.saltStart = s
 	}
+	pp.factory = CanonicalCREATE2FactoryAddress
 	if v, has := params["factory"]; has {
-		if _, err := ParseAddressParam(v, "factory"); err != nil {
-			return fmt.Errorf("create2_deploys: %w", err)
+		f, err := ParseAddressParam(v, "factory")
+		if err != nil {
+			return pp, fmt.Errorf("create2_deploys: %w", err)
 		}
+		pp.factory = f
 	}
-	if v, has := params["storage_init"]; has {
-		if _, err := ParseStorageInitMap(v); err != nil {
-			return fmt.Errorf("create2_deploys: %w", err)
-		}
+	si, err := ParseStorageInitMap(params["storage_init"])
+	if err != nil {
+		return pp, fmt.Errorf("create2_deploys: %w", err)
 	}
-	return nil
+	pp.storageInit = si
+	return pp, nil
+}
+
+func (create2DeploysTemplate) ValidateParameters(params map[string]any) error {
+	_, err := parseCreate2DeploysParams(params)
+	return err
 }
 
 func (create2DeploysTemplate) Expand(ctx Context, e spec.Entity) ([]PreAllocEntity, error) {
-	saltCount, _ := ParseUint64Param(e.Parameters["salt_count"], "salt_count")
-
-	saltStart := uint64(0)
-	if v, has := e.Parameters["salt_start"]; has {
-		saltStart, _ = ParseUint64Param(v, "salt_start")
-	}
-
-	factory := CanonicalCREATE2FactoryAddress
-	if v, has := e.Parameters["factory"]; has {
-		factory, _ = ParseAddressParam(v, "factory")
-	}
-
-	storageInit, err := ParseStorageInitMap(e.Parameters["storage_init"])
+	pp, err := parseCreate2DeploysParams(e.Parameters)
 	if err != nil {
-		return nil, fmt.Errorf("create2_deploys: %w", err)
+		return nil, err
 	}
 
-	// Resolve the initcode + per-derived-address runtime.
-	// Either `code_pattern` (named generator, owns both) or literal
-	// `initcode` + `runtime` parameters supply them; ValidateParameters
-	// enforces the mutex.
-	var initcode []byte
-	// patternName, when non-empty, signals per-address runtime generation
-	// via codePatternRuntimeFor; otherwise sharedRuntime is the literal
-	// `runtime:` parameter and reused across all derived contracts.
-	var patternName string
-	var sharedRuntime []byte
-	if v, has := e.Parameters["code_pattern"]; has {
-		patternName, _ = v.(string)
-		initcode, err = codePatternInitcodeFor(patternName)
-		if err != nil {
-			return nil, fmt.Errorf("create2_deploys: %w", err)
-		}
-	} else {
-		initcode, _ = ParseHexBytesParam(e.Parameters["initcode"], "initcode")
-		sharedRuntime, _ = ParseHexBytesParam(e.Parameters["runtime"], "runtime")
-	}
-
-	if saltCount == 0 {
-		return nil, nil
-	}
-
-	initHash := crypto.Keccak256(initcode)
-	out := make([]PreAllocEntity, 0, saltCount)
-	for k := uint64(0); k < saltCount; k++ {
+	initHash := crypto.Keccak256(pp.initcode)
+	out := make([]PreAllocEntity, 0, pp.saltCount)
+	for k := uint64(0); k < pp.saltCount; k++ {
 		var salt [32]byte
-		binary.BigEndian.PutUint64(salt[24:], saltStart+k)
-		derived := crypto.CreateAddress2(factory, salt, initHash)
+		binary.BigEndian.PutUint64(salt[24:], pp.saltStart+k)
+		derived := crypto.CreateAddress2(pp.factory, salt, initHash)
 
-		runtime := sharedRuntime
-		if patternName != "" {
-			runtime, err = codePatternRuntimeFor(patternName, derived)
+		runtime := pp.runtime
+		if pp.patternName != "" {
+			runtime, err = codePatternRuntimeFor(pp.patternName, derived)
 			if err != nil {
-				return nil, fmt.Errorf("create2_deploys: salt=%d: %w", saltStart+k, err)
+				return nil, fmt.Errorf("create2_deploys: salt=%d: %w", pp.saltStart+k, err)
 			}
 		}
 		out = append(out, PreAllocEntity{
@@ -195,7 +195,7 @@ func (create2DeploysTemplate) Expand(ctx Context, e spec.Entity) ([]PreAllocEnti
 				CodeHash: crypto.Keccak256Hash(runtime).Bytes(),
 			},
 			Code:    runtime,
-			Storage: MapToSeq(storageInit),
+			Storage: MapToSeq(pp.storageInit),
 		})
 	}
 	return out, nil

@@ -2,6 +2,7 @@ package templates
 
 import (
 	"bytes"
+	"strings"
 	"testing"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -87,18 +88,21 @@ func TestCreatePreimageDeploysStorageInit(t *testing.T) {
 	}
 }
 
-func TestCreatePreimageDeploysZeroCount(t *testing.T) {
-	ent := mkContractEntity("create_preimage_deploys", map[string]any{
+// TestCreatePreimageDeploysRejectsZeroCount pins the I3 fix: count=0
+// used to expand to zero entities with zero warnings. Both entry points
+// now reject it.
+func TestCreatePreimageDeploysRejectsZeroCount(t *testing.T) {
+	tmpl := &createPreimageDeploysTemplate{}
+	params := map[string]any{
 		"sender":  "0x000000000000000000000000000000000000beef",
 		"count":   0,
 		"runtime": "0x00",
-	})
-	out, err := (&createPreimageDeploysTemplate{}).Expand(Context{}, ent)
-	if err != nil {
-		t.Fatalf("Expand: %v", err)
 	}
-	if len(out) != 0 {
-		t.Errorf("count=0 must emit nothing, got %d", len(out))
+	if err := tmpl.ValidateParameters(params); err == nil || !strings.Contains(err.Error(), "must be >= 1") {
+		t.Errorf("ValidateParameters(count=0): want 'must be >= 1' error, got %v", err)
+	}
+	if _, err := tmpl.Expand(Context{}, mkContractEntity("create_preimage_deploys", params)); err == nil || !strings.Contains(err.Error(), "must be >= 1") {
+		t.Errorf("Expand(count=0): want 'must be >= 1' error, got %v", err)
 	}
 }
 
