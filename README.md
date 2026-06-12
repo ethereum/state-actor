@@ -54,7 +54,7 @@ After the run, boot the client against the produced datadir &mdash; the per-clie
 ## Installation
 
 ```bash
-git clone https://github.com/nerolation/state-actor.git
+git clone https://github.com/ethereum/state-actor.git
 cd state-actor
 go build -o state-actor .            # geth client only (pure Go)
 
