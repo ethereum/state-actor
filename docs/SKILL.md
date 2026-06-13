@@ -1,6 +1,6 @@
 ---
 name: state-actor
-description: Use this skill when a user wants to generate, boot, verify, or extend a state-actor-produced Ethereum database. Covers --client, --spec, --target-size, per-client boot recipes (geth / reth / besu / nethermind), and the canonical 22-entity spec fixture.
+description: Use this skill when a user wants to generate, boot, verify, or extend a state-actor-produced Ethereum database. Covers --client, --spec, --target-size, per-client boot recipes (geth / reth / besu / nethermind), and the canonical 29-entity spec fixture.
 ---
 
 # SKILL.md — how to use state-actor
@@ -13,7 +13,7 @@ state-actor generates client-ready Ethereum databases for geth, reth, besu, and 
 
 Read these in this order. The first one is load-bearing — read it before you read any prose about specs.
 
-1. [`examples/full-matrix-spec-feature.yaml`](../examples/full-matrix-spec-feature.yaml) — **the canonical syntax reference for `--spec`**. CI-pinned, 22 entities, every feature. Read this file before reading any other doc about specs; see the [Canonical spec reference](#canonical-spec-reference) section below for an intent → entity-# index.
+1. [`examples/full-matrix-spec-feature.yaml`](../examples/full-matrix-spec-feature.yaml) — **the canonical syntax reference for `--spec`**. CI-pinned, 29 entities, every feature. Read this file before reading any other doc about specs; see the [Canonical spec reference](#canonical-spec-reference) section below for an intent → entity-# index.
 2. [`SPEC.md`](SPEC.md) — the schema reference (parser rules, validation errors, address-resolution algorithm, `approximate_size_bytes` semantics). Read alongside the fixture.
 3. [`RUNBOOK.md`](RUNBOOK.md) — per-client boot recipes (geth / reth / besu / nethermind).
 4. [`ARCHITECTURE.md`](ARCHITECTURE.md) — internal architecture; cross-client determinism; per-client writer differences.
@@ -30,11 +30,11 @@ Everything else has a sane default. Run `state-actor --help` for the full list (
 
 ## Canonical spec reference
 
-**The single source of truth for what a `--spec` YAML can express is [`examples/full-matrix-spec-feature.yaml`](../examples/full-matrix-spec-feature.yaml).** Read that file before reading anything else about specs. It is exhaustive (22 entities, every feature), self-documenting (six section banners + per-entity comments), and CI keeps it correct.
+**The single source of truth for what a `--spec` YAML can express is [`examples/full-matrix-spec-feature.yaml`](../examples/full-matrix-spec-feature.yaml).** Read that file before reading anything else about specs. It is exhaustive (29 entities, every feature), self-documenting (six section banners + per-entity comments), and CI keeps it correct.
 
 The CI guarantees that hold this file as the canonical reference:
 
-- [`internal/specbuild/full_matrix_test.go`](../internal/specbuild/full_matrix_test.go) (`TestBuildFullMatrix`) pins the entity count at 22 and asserts the cross-client `PreAlloc` count equality. The unit-level drift gate — byte-identity is enforced downstream by the cross-client-genesis-root aggregator job.
+- [`internal/specbuild/full_matrix_test.go`](../internal/specbuild/full_matrix_test.go) (`TestBuildFullMatrix`) pins the entity count at 29 and asserts the cross-client `PreAlloc` count equality. The unit-level drift gate — byte-identity is enforced downstream by the cross-client-genesis-root aggregator job.
 - [`internal/e2e_testing/spec_setup.go`](../internal/e2e_testing/spec_setup.go) (`LoadCISpec`) loads the fixture with `seed=0` + `sizecal.NewFixed(64)` so every client sees the same input.
 - Per-client `TestE2ESuite` (in [`client/geth/e2e_test.go`](../client/geth/e2e_test.go), [`client/besu/e2e_test.go`](../client/besu/e2e_test.go), [`client/nethermind/e2e_test.go`](../client/nethermind/e2e_test.go), and [`client/reth/oracle_test.go`](../client/reth/oracle_test.go) for reth) boots a real client against state-actor's output, runs spamoor, and verifies every entity via the Go oracle.
 - The `cross-client · genesis state-root invariant` aggregator job in [`.github/workflows/ci.yml`](../.github/workflows/ci.yml) refuses to merge a PR whose four clients produce different genesis roots from this fixture.
