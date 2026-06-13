@@ -82,10 +82,11 @@ func CheckEntities(t *testing.T, rpcURL string, eoas, contracts []*entitygen.Acc
 // Reports any mismatch via t.Errorf; returns false on any mismatch,
 // true if everything checks out.
 //
-// Used by the per-client e2e suites at "0x0" (Phase 4: oracle re-query
-// against genesis). Pairs with CheckEntities — that one covers
-// entitygen synthetic entities; this one covers cfg-driven entries
-// (spec entities via Config.PreAlloc).
+// Used by the per-client e2e suites at "latest" (Phase 4: oracle
+// re-query). Pairs with CheckEntities — that one covers entitygen
+// synthetic entities; this one covers cfg-driven entries (spec entities
+// via Config.PreAlloc). Spec-entity STORAGE is not covered here (see the
+// GenesisStorage note below) — CheckSpecStorage handles it.
 func CheckInjections(t *testing.T, rpcURL string, cfg *generator.Config, blockTag string) bool {
 	t.Helper()
 	if cfg == nil {
@@ -142,13 +143,14 @@ func CheckInjections(t *testing.T, rpcURL string, cfg *generator.Config, blockTa
 			passed = false
 		}
 	}
-	// Storage verification: every spec entity with non-empty storage gets
-	// up to storageSampleSize slots re-queried via eth_getStorageAt and
-	// compared byte-for-byte. Sampling bounds RPC roundtrips at
-	// O(addresses × storageSampleSize); for the CI baseline fixture
-	// (~6 entities with storage, 5 slots each) that's ~30 RPC calls.
-	// This catches the bug class: ERC-20 holder balances + 7702 EOA
-	// storage-bloat slots landed in the writer but vanished by RPC time.
+	// Storage verification: spec-entity storage does NOT flow through
+	// cfg.GenesisStorage — generator.Config.materializePreAlloc folds only
+	// Account + Code into the cfg maps and leaves Storage as a lazy
+	// iter.Seq2 on cfg.PreAlloc for the writers' Phase-0 streaming, so this
+	// map is empty on the spec path. Spec-entity storage is verified by
+	// CheckSpecStorage (sampled straight from PreAlloc). This loop remains
+	// for any future caller that DOES populate GenesisStorage; it samples
+	// up to storageSampleSize slots per entry via eth_getStorageAt.
 	for addr, slots := range cfg.GenesisStorage {
 		if len(slots) == 0 {
 			continue
