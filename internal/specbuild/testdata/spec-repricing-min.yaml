@@ -14,8 +14,11 @@
 # benchmarks at the smallest valid size." For end-to-end rehearsal at
 # ~10 GB on disk (full ERC-20 storage, 1 GB bloated EOA, 1.5 M-nonce
 # Bittrex chain) use `examples/spec-repricing-10gb.yaml`. For sub-
-# second schema smoke (used by build_repricing_test.go) use
-# `examples/spec-repricing-smoke.yaml`.
+# second schema smoke (used by build_repricing_test.go) use the sibling
+# `spec-repricing-smoke.yaml` in this testdata directory.
+#
+# This is a test fixture (parsed by build_repricing_test.go's
+# TestParseRepricingMin), not a user-facing example.
 #
 # ── 300 M-gas headroom math (why the three count-based knobs are 150 000) ─
 #
@@ -94,7 +97,7 @@
 #
 #   state-actor --client=geth \
 #     --db=/media/jochem/research-disk/chaindata/repricing-min-fusaka \
-#     --spec=examples/spec-repricing-min.yaml \
+#     --spec=internal/specbuild/testdata/spec-repricing-min.yaml \
 #     --fork=osaka \
 #     --chain-id=1337 \
 #     --seed=42 \

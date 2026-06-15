@@ -25,7 +25,7 @@ import (
 // production fixture is examples/spec-repricing-min.yaml; this test
 // stays small so it can run in milliseconds.
 func TestBuildRepricingSmoke(t *testing.T) {
-	s, err := spec.ParseFile("../../examples/spec-repricing-smoke.yaml")
+	s, err := spec.ParseFile("testdata/spec-repricing-smoke.yaml")
 	if err != nil {
 		t.Fatalf("ParseFile: %v", err)
 	}
@@ -177,7 +177,7 @@ func TestBuildRepricingSmoke(t *testing.T) {
 // create_preimage_deploys) that don't run through any other test's
 // determinism scaffolding.
 func TestBuildRepricingSmokeDeterministic(t *testing.T) {
-	s, err := spec.ParseFile("../../examples/spec-repricing-smoke.yaml")
+	s, err := spec.ParseFile("testdata/spec-repricing-smoke.yaml")
 	if err != nil {
 		t.Fatalf("ParseFile: %v", err)
 	}
@@ -239,7 +239,7 @@ func TestBuildRepricingSmokeDeterministic(t *testing.T) {
 // counts of approximate_size_bytes-driven entities, none of which are
 // in the repricing example).
 func TestBuildRepricingSmokeCrossClient(t *testing.T) {
-	s, err := spec.ParseFile("../../examples/spec-repricing-smoke.yaml")
+	s, err := spec.ParseFile("testdata/spec-repricing-smoke.yaml")
 	if err != nil {
 		t.Fatalf("ParseFile: %v", err)
 	}
@@ -284,7 +284,7 @@ func TestBuildRepricingSmokeCrossClient(t *testing.T) {
 // (TestBuildRepricingSmoke) is the end-to-end Build canary; this is
 // just the lint canary for the larger sibling.
 func TestParseRepricingMin(t *testing.T) {
-	s, err := spec.ParseFile("../../examples/spec-repricing-min.yaml")
+	s, err := spec.ParseFile("testdata/spec-repricing-min.yaml")
 	if err != nil {
 		t.Fatalf("ParseFile: %v", err)
 	}

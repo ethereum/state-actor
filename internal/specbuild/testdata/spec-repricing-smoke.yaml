@@ -12,9 +12,9 @@
 # NOT a benchmark prestate. Counts are 1-10 — far below the
 # 150_000-account minimum that a 300 M-gas repricing benchmark
 # requires. For a fixture sized to actually drive a 300 M-gas
-# benchmark, see `examples/spec-repricing-min.yaml`. For the ~10 GB
-# rehearsal scale (full ERC-20 + bloated EOA + Bittrex), see
-# `examples/spec-repricing-10gb.yaml`.
+# benchmark, see the sibling `spec-repricing-min.yaml` in this testdata
+# directory. For the ~10 GB rehearsal scale (full ERC-20 + bloated EOA +
+# Bittrex), see `examples/spec-repricing-10gb.yaml`.
 #
 # ── Fork relevance ────────────────────────────────────────────────────
 #
@@ -34,9 +34,11 @@
 # sibling `unique_jumpdest_amsterdam` pattern will be added; existing
 # pre-Amsterdam fixtures keep working unchanged.
 #
-# To exercise locally (smoke only — not a real benchmark prestate):
+# This is a test fixture (consumed by build_repricing_test.go), not a
+# user-facing example. To exercise it by hand anyway (smoke only — not a
+# real benchmark prestate):
 #   state-actor --client=geth --db=/tmp/repricing-smoke \
-#     --spec=examples/spec-repricing-smoke.yaml --fork=osaka
+#     --spec=internal/specbuild/testdata/spec-repricing-smoke.yaml --fork=osaka
 entities:
   # ── 1. Sequential EOAs at 0x1000+ ─────────────────────────────────────
   # Backs SequentialAddressLayout(starting_address=0x1000, increment=1)
