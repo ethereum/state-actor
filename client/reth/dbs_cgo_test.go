@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	iReth "github.com/nerolation/state-actor/internal/reth"
+	iReth "github.com/ethereum/state-actor/internal/reth"
 )
 
 func TestOpenEnvsFreshDir(t *testing.T) {

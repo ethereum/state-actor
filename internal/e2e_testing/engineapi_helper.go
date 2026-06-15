@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/nerolation/state-actor/internal/engineapi"
+	"github.com/ethereum/state-actor/internal/engineapi"
 )
 
 // StartEngineDriver spins up an engineapi.EngineDriver mock CL targeting

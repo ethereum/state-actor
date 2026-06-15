@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/nerolation/state-actor/genesis"
+	"github.com/ethereum/state-actor/genesis"
 )
 
 // TestWriteGenesisJSON verifies the informational geth-genesis.json lands at

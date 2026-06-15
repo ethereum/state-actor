@@ -12,7 +12,7 @@ package clientpolicy
 import (
 	"fmt"
 
-	"github.com/nerolation/state-actor/genesis"
+	"github.com/ethereum/state-actor/genesis"
 )
 
 // FlagValues is the subset of CLI flags ValidateForClient needs to make a

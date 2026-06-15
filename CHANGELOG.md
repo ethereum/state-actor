@@ -65,7 +65,7 @@
   writer code paths handle spec entities unchanged.
 - Nethermind synthetic-accounts writer (`client/nethermind/`) now
   threads alloc storage through the storage-trie path — **closes
-  https://github.com/nerolation/state-actor/issues/22**. Specs combining
+  https://github.com/ethereum/state-actor/issues/22**. Specs combining
   storage-bearing entities with synthetic auto-fill (`--target-size`)
   work on nethermind for the first time.
 

@@ -6,7 +6,7 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
 
-	"github.com/nerolation/state-actor/internal/spec"
+	"github.com/ethereum/state-actor/internal/spec"
 )
 
 // PreAllocEntity is the unified post-expansion record every writer

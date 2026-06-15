@@ -11,7 +11,7 @@ import (
 	"github.com/erigontech/mdbx-go/mdbx"
 	"github.com/linxGnu/grocksdb"
 
-	iReth "github.com/nerolation/state-actor/internal/reth"
+	iReth "github.com/ethereum/state-actor/internal/reth"
 )
 
 // Reth MDBX geometry — matches reth's default in

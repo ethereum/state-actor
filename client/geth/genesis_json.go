@@ -6,7 +6,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/nerolation/state-actor/genesis"
+	"github.com/ethereum/state-actor/genesis"
 )
 
 // GenesisJSONFileName is the informational geth-format genesis dropped at the

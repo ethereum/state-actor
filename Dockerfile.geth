@@ -39,7 +39,7 @@ FROM alpine:3.19
 
 LABEL org.opencontainers.image.title="State Actor (geth)"
 LABEL org.opencontainers.image.description="Ethereum state generator targeting --client=geth (direct cockroachdb/pebble)"
-LABEL org.opencontainers.image.source="https://github.com/nerolation/state-actor"
+LABEL org.opencontainers.image.source="https://github.com/ethereum/state-actor"
 
 # ca-certificates for HTTPS RPC; curl for the smoke target's RPC probes
 # (validate-big-db-geth.sh runs eth_chainId / eth_getBalance from inside

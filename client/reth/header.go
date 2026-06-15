@@ -3,8 +3,8 @@ package reth
 import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
-	"github.com/nerolation/state-actor/genesis"
-	"github.com/nerolation/state-actor/internal/genesisheader"
+	"github.com/ethereum/state-actor/genesis"
+	"github.com/ethereum/state-actor/internal/genesisheader"
 )
 
 // buildBlock0Header builds the canonical genesis block header for the cgo

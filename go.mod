@@ -1,4 +1,4 @@
-module github.com/nerolation/state-actor
+module github.com/ethereum/state-actor
 
 go 1.24.0
 

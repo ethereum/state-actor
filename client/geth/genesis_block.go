@@ -12,8 +12,8 @@ import (
 	"github.com/ethereum/go-ethereum/rlp"
 	"github.com/ethereum/go-ethereum/trie"
 
-	"github.com/nerolation/state-actor/genesis"
-	"github.com/nerolation/state-actor/internal/genesisheader"
+	"github.com/ethereum/state-actor/genesis"
+	"github.com/ethereum/state-actor/internal/genesisheader"
 )
 
 // pathdbSchemaVersion mirrors the on-disk schema constant from

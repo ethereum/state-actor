@@ -3,8 +3,8 @@ package specbuild
 import (
 	"testing"
 
-	"github.com/nerolation/state-actor/internal/spec"
-	"github.com/nerolation/state-actor/internal/templates"
+	"github.com/ethereum/state-actor/internal/spec"
+	"github.com/ethereum/state-actor/internal/templates"
 )
 
 // TestBuildFullMatrix parses + validates + builds

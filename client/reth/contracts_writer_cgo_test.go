@@ -13,8 +13,8 @@ import (
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/holiman/uint256"
 
-	"github.com/nerolation/state-actor/generator"
-	"github.com/nerolation/state-actor/internal/entitygen"
+	"github.com/ethereum/state-actor/generator"
+	"github.com/ethereum/state-actor/internal/entitygen"
 )
 
 func TestWriteContractsSmall(t *testing.T) {

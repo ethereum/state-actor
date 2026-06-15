@@ -19,7 +19,7 @@ import (
 	"github.com/ethereum/go-ethereum/ethdb/pebble"
 	"github.com/ethereum/go-ethereum/rlp"
 
-	"github.com/nerolation/state-actor/internal/entitygen"
+	"github.com/ethereum/state-actor/internal/entitygen"
 )
 
 // Generator handles state generation.
@@ -39,7 +39,7 @@ type Generator struct {
 //
 // Importing a client package as a side effect activates its factory:
 //
-//	import _ "github.com/nerolation/state-actor/client/geth"
+//	import _ "github.com/ethereum/state-actor/client/geth"
 //	gen, err := generator.New(cfg)
 //
 // If no factory is registered, returns a clear error pointing at the missing

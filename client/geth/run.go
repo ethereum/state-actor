@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"path/filepath"
 
-	"github.com/nerolation/state-actor/generator"
-	"github.com/nerolation/state-actor/genesis"
+	"github.com/ethereum/state-actor/generator"
+	"github.com/ethereum/state-actor/genesis"
 )
 
 // Options carries geth-specific tuning knobs. Reserved for future

@@ -20,7 +20,7 @@ FROM alpine:3.19
 
 LABEL org.opencontainers.image.title="State Actor"
 LABEL org.opencontainers.image.description="High-performance Ethereum state generator"
-LABEL org.opencontainers.image.source="https://github.com/nerolation/state-actor"
+LABEL org.opencontainers.image.source="https://github.com/ethereum/state-actor"
 LABEL org.opencontainers.image.licenses="MIT"
 
 RUN apk add --no-cache ca-certificates

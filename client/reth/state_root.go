@@ -8,8 +8,8 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/rlp"
 
-	"github.com/nerolation/state-actor/internal/entitygen"
-	iReth "github.com/nerolation/state-actor/internal/reth"
+	"github.com/ethereum/state-actor/internal/entitygen"
+	iReth "github.com/ethereum/state-actor/internal/reth"
 )
 
 // ComputeStateRoot returns the MPT state root over the supplied accounts.

@@ -12,8 +12,8 @@ import (
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/holiman/uint256"
 
-	"github.com/nerolation/state-actor/generator"
-	"github.com/nerolation/state-actor/internal/templates"
+	"github.com/ethereum/state-actor/generator"
+	"github.com/ethereum/state-actor/internal/templates"
 )
 
 // TestSpecStorageTrieNodesPersisted pins that the spec-entity Phase 0

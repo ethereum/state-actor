@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/nerolation/state-actor/genesis"
+	"github.com/ethereum/state-actor/genesis"
 )
 
 func readWrittenSpec(t *testing.T, fork string) map[string]any {

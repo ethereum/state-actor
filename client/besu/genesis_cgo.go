@@ -10,8 +10,8 @@ import (
 	"github.com/ethereum/go-ethereum/core/types"
 	gethrlp "github.com/ethereum/go-ethereum/rlp"
 
-	"github.com/nerolation/state-actor/genesis"
-	"github.com/nerolation/state-actor/internal/besu/keys"
+	"github.com/ethereum/state-actor/genesis"
+	"github.com/ethereum/state-actor/internal/besu/keys"
 )
 
 // writeGenesisBlock persists the genesis block (header / body / receipts /

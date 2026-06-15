@@ -12,7 +12,7 @@ import (
 	"github.com/ethereum/go-ethereum/ethdb/pebble"
 	"github.com/ethereum/go-ethereum/rlp"
 
-	"github.com/nerolation/state-actor/internal/autofill"
+	"github.com/ethereum/state-actor/internal/autofill"
 )
 
 // mustPlan returns the autofill Plan for the given budget or fails the test.

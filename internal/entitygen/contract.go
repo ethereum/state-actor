@@ -83,7 +83,7 @@ func GenerateContract(rng *mrand.Rand, codeSize int, numSlots int) *Account {
 // GenerateContractRoll bundles the canonical "roll a slot count, then
 // roll a contract" RNG sequence every state-actor writer uses. Splitting
 // the two calls (GenerateSlotCount + GenerateContract) at every call
-// site is what produced nerolation/state-actor#42's secondary bug —
+// site is what produced ethereum/state-actor#42's secondary bug —
 // boot-test reproductions skipped GenerateSlotCount and ended up one
 // Float64 ahead of the writer's RNG, so the contracts they reproduced
 // did not match the contracts the writer persisted.

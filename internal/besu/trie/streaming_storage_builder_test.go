@@ -10,8 +10,8 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/crypto"
 
-	"github.com/nerolation/state-actor/internal/besu"
-	besurlp "github.com/nerolation/state-actor/internal/besu/rlp"
+	"github.com/ethereum/state-actor/internal/besu"
+	besurlp "github.com/ethereum/state-actor/internal/besu/rlp"
 )
 
 // TestStreamingStorageBuilder_Empty: zero AddSlot → EmptyTrieNodeHash,

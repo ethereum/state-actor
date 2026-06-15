@@ -17,7 +17,7 @@ import (
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/params"
 
-	"github.com/nerolation/state-actor/genesis"
+	"github.com/ethereum/state-actor/genesis"
 )
 
 // Build constructs a *types.Header for the genesis block described by g

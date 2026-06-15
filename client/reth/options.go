@@ -6,8 +6,8 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/crypto"
 
-	"github.com/nerolation/state-actor/generator"
-	"github.com/nerolation/state-actor/internal/entitygen"
+	"github.com/ethereum/state-actor/generator"
+	"github.com/ethereum/state-actor/internal/entitygen"
 )
 
 // Options carries optional knobs for RunCgo. Reserved for future use; the

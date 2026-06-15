@@ -7,7 +7,7 @@ import (
 
 	"github.com/ethereum/go-ethereum/crypto"
 
-	"github.com/nerolation/state-actor/internal/entitygen"
+	"github.com/ethereum/state-actor/internal/entitygen"
 )
 
 func TestGenerateEOAFlavored_NonceAlwaysNonZero(t *testing.T) {

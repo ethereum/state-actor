@@ -8,8 +8,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/nerolation/state-actor/generator"
-	"github.com/nerolation/state-actor/internal/e2e_testing"
+	"github.com/ethereum/state-actor/generator"
+	"github.com/ethereum/state-actor/internal/e2e_testing"
 )
 
 func TestRethGoldenStateRoot(t *testing.T) {

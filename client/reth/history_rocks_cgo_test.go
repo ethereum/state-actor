@@ -9,7 +9,7 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/linxGnu/grocksdb"
 
-	iReth "github.com/nerolation/state-actor/internal/reth"
+	iReth "github.com/ethereum/state-actor/internal/reth"
 )
 
 // TestHistorySink_PutAndFlush exercises the basic write+read cycle: stage

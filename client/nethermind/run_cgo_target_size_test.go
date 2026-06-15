@@ -10,9 +10,9 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 
-	"github.com/nerolation/state-actor/generator"
-	"github.com/nerolation/state-actor/genesis"
-	"github.com/nerolation/state-actor/internal/autofill"
+	"github.com/ethereum/state-actor/generator"
+	"github.com/ethereum/state-actor/genesis"
+	"github.com/ethereum/state-actor/internal/autofill"
 )
 
 // TestRunEmitsFullPlan asserts that Run emits exactly

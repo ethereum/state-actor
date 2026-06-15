@@ -8,9 +8,9 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 
-	"github.com/nerolation/state-actor/internal/sizecal"
-	"github.com/nerolation/state-actor/internal/spec"
-	"github.com/nerolation/state-actor/internal/templates"
+	"github.com/ethereum/state-actor/internal/sizecal"
+	"github.com/ethereum/state-actor/internal/spec"
+	"github.com/ethereum/state-actor/internal/templates"
 )
 
 // fixedSizer is a SizeApproximator stub for tests that drive

@@ -11,7 +11,7 @@ import (
 	"github.com/erigontech/mdbx-go/mdbx"
 	"github.com/ethereum/go-ethereum/core/types"
 
-	iReth "github.com/nerolation/state-actor/internal/reth"
+	iReth "github.com/ethereum/state-actor/internal/reth"
 )
 
 func TestWriteMetadataAllTables(t *testing.T) {

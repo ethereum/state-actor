@@ -10,7 +10,7 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
 
-	iReth "github.com/nerolation/state-actor/internal/reth"
+	iReth "github.com/ethereum/state-actor/internal/reth"
 )
 
 // WriteMetadata populates the minimum-boot MDBX metadata into envs in a

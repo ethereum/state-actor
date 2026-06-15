@@ -7,7 +7,7 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	gethrlp "github.com/ethereum/go-ethereum/rlp"
 
-	"github.com/nerolation/state-actor/internal/besu"
+	"github.com/ethereum/state-actor/internal/besu"
 )
 
 // ErrSlotsOutOfOrder is returned by StreamingStorageBuilder.AddSlot when

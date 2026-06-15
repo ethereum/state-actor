@@ -8,10 +8,10 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/holiman/uint256"
 
-	"github.com/nerolation/state-actor/internal/rpcprobe"
-	"github.com/nerolation/state-actor/internal/spec"
-	"github.com/nerolation/state-actor/internal/specbuild"
-	"github.com/nerolation/state-actor/internal/templates"
+	"github.com/ethereum/state-actor/internal/rpcprobe"
+	"github.com/ethereum/state-actor/internal/spec"
+	"github.com/ethereum/state-actor/internal/specbuild"
+	"github.com/ethereum/state-actor/internal/templates"
 )
 
 // erc20OracleSampleCap caps the per-entity sample of synthesized

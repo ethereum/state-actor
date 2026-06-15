@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/nerolation/state-actor/internal/oracle"
+	"github.com/ethereum/state-actor/internal/oracle"
 )
 
 // TestCISpecMatchesSpamoorSender asserts the spamoor sender entity in

@@ -12,10 +12,10 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/linxGnu/grocksdb"
 
-	"github.com/nerolation/state-actor/generator"
-	"github.com/nerolation/state-actor/internal/autofill"
-	"github.com/nerolation/state-actor/internal/besu/keys"
-	"github.com/nerolation/state-actor/internal/e2e_testing"
+	"github.com/ethereum/state-actor/generator"
+	"github.com/ethereum/state-actor/internal/autofill"
+	"github.com/ethereum/state-actor/internal/besu/keys"
+	"github.com/ethereum/state-actor/internal/e2e_testing"
 )
 
 func TestBesuGoldenStateRoot(t *testing.T) {

@@ -3,7 +3,7 @@ package trie
 import (
 	"github.com/ethereum/go-ethereum/common"
 
-	"github.com/nerolation/state-actor/internal/besu"
+	"github.com/ethereum/state-actor/internal/besu"
 )
 
 // NodeSink receives trie-node writes from a Builder. The Bonsai client

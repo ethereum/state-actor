@@ -26,10 +26,10 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 
-	"github.com/nerolation/state-actor/generator"
-	"github.com/nerolation/state-actor/genesis"
-	"github.com/nerolation/state-actor/internal/genesisheader"
-	"github.com/nerolation/state-actor/internal/neth"
+	"github.com/ethereum/state-actor/generator"
+	"github.com/ethereum/state-actor/genesis"
+	"github.com/ethereum/state-actor/internal/genesisheader"
+	"github.com/ethereum/state-actor/internal/neth"
 )
 
 // runImpl orchestrates a Nethermind RocksDB write.

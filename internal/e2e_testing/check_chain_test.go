@@ -10,8 +10,8 @@ import (
 
 	"github.com/ethereum/go-ethereum/params"
 
-	"github.com/nerolation/state-actor/internal/rpcprobe"
-	"github.com/nerolation/state-actor/internal/syscontracts"
+	"github.com/ethereum/state-actor/internal/rpcprobe"
+	"github.com/ethereum/state-actor/internal/syscontracts"
 )
 
 // fakeRPC is a JSON-RPC 2.0 mock keyed by method name with an optional

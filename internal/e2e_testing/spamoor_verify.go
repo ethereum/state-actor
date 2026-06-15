@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/nerolation/state-actor/internal/rpcprobe"
+	"github.com/ethereum/state-actor/internal/rpcprobe"
 )
 
 // AssertSpamoorOutputs verifies that spamoor's tx-blasting actually

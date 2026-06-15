@@ -4,10 +4,10 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/nerolation/state-actor/internal/sizecal"
-	"github.com/nerolation/state-actor/internal/spec"
-	"github.com/nerolation/state-actor/internal/specbuild"
-	"github.com/nerolation/state-actor/internal/templates"
+	"github.com/ethereum/state-actor/internal/sizecal"
+	"github.com/ethereum/state-actor/internal/spec"
+	"github.com/ethereum/state-actor/internal/specbuild"
+	"github.com/ethereum/state-actor/internal/templates"
 )
 
 // FixedBytesPerSlot is the calibration factor passed to sizecal.NewFixed

@@ -9,5 +9,5 @@ package generator_test
 // generator.RegisterDefaultWriterFactory. After this init() runs,
 // generator.New(cfg) succeeds for tests that don't supply an explicit factory.
 import (
-	_ "github.com/nerolation/state-actor/client/geth"
+	_ "github.com/ethereum/state-actor/client/geth"
 )

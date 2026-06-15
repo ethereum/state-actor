@@ -3,7 +3,7 @@ package autofill
 import (
 	"testing"
 
-	"github.com/nerolation/state-actor/internal/sizecal"
+	"github.com/ethereum/state-actor/internal/sizecal"
 )
 
 func TestPlanForBudget_BelowOneAccount(t *testing.T) {

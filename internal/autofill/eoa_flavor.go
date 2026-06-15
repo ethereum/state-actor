@@ -7,7 +7,7 @@ import (
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/holiman/uint256"
 
-	"github.com/nerolation/state-actor/internal/entitygen"
+	"github.com/ethereum/state-actor/internal/entitygen"
 )
 
 // EOAFlavors carries the per-EOA Bernoulli weights for the two flavor

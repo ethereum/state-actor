@@ -109,7 +109,7 @@ func RandSuffix(n int) string {
 // is set, otherwise nil. Each client's e2e test passes its own env-var
 // name (BESU_DOCKER_PLATFORM / NETH_DOCKER_PLATFORM / etc.) — the
 // override unblocks arm64 contributors when the pinned image is
-// amd64-only (see nerolation/state-actor#43).
+// amd64-only (see ethereum/state-actor#43).
 func DockerPlatformArgs(envVar string) []string {
 	if v := os.Getenv(envVar); v != "" {
 		return []string{"--platform", v}

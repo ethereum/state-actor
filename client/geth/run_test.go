@@ -13,9 +13,9 @@ import (
 
 	"github.com/holiman/uint256"
 
-	"github.com/nerolation/state-actor/generator"
-	"github.com/nerolation/state-actor/internal/autofill"
-	"github.com/nerolation/state-actor/internal/templates"
+	"github.com/ethereum/state-actor/generator"
+	"github.com/ethereum/state-actor/internal/autofill"
+	"github.com/ethereum/state-actor/internal/templates"
 )
 
 func gethTestPlan(tb testing.TB, budget uint64) *autofill.Plan {

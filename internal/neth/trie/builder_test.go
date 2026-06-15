@@ -10,7 +10,7 @@ import (
 	gethrlp "github.com/ethereum/go-ethereum/rlp"
 	gethtrie "github.com/ethereum/go-ethereum/trie"
 
-	"github.com/nerolation/state-actor/internal/neth"
+	"github.com/ethereum/state-actor/internal/neth"
 )
 
 // recordingStorage captures every NodeStorage callback for tests.

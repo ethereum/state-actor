@@ -102,7 +102,7 @@ func RegisterDefaultWriterFactory(f WriterFactory) {
 // returning a nil-writer Generator that crashes later.
 func resolveDefaultWriterFactory() (WriterFactory, error) {
 	if defaultWriterFactory == nil {
-		return nil, fmt.Errorf("no default writer factory registered: import a client package (e.g. _ \"github.com/nerolation/state-actor/client/geth\") or use NewWithWriter")
+		return nil, fmt.Errorf("no default writer factory registered: import a client package (e.g. _ \"github.com/ethereum/state-actor/client/geth\") or use NewWithWriter")
 	}
 	return defaultWriterFactory, nil
 }
@@ -138,7 +138,7 @@ func RegisterDefaultMPTGenerator(f MPTGeneratorFunc) {
 // clear error pointing at the missing client import.
 func resolveDefaultMPTGenerator() (MPTGeneratorFunc, error) {
 	if defaultMPTGenerator == nil {
-		return nil, fmt.Errorf("no default MPT generator registered: import a client package (e.g. _ \"github.com/nerolation/state-actor/client/geth\")")
+		return nil, fmt.Errorf("no default MPT generator registered: import a client package (e.g. _ \"github.com/ethereum/state-actor/client/geth\")")
 	}
 	return defaultMPTGenerator, nil
 }

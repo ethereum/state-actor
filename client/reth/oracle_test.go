@@ -11,14 +11,14 @@ import (
 	"testing"
 	"time"
 
-	"github.com/nerolation/state-actor/generator"
-	stategenesis "github.com/nerolation/state-actor/genesis"
-	"github.com/nerolation/state-actor/internal/autofill"
-	e2e "github.com/nerolation/state-actor/internal/e2e_testing"
-	"github.com/nerolation/state-actor/internal/oracle"
-	iReth "github.com/nerolation/state-actor/internal/reth"
-	"github.com/nerolation/state-actor/internal/rpcprobe"
-	"github.com/nerolation/state-actor/internal/syscontracts"
+	"github.com/ethereum/state-actor/generator"
+	stategenesis "github.com/ethereum/state-actor/genesis"
+	"github.com/ethereum/state-actor/internal/autofill"
+	e2e "github.com/ethereum/state-actor/internal/e2e_testing"
+	"github.com/ethereum/state-actor/internal/oracle"
+	iReth "github.com/ethereum/state-actor/internal/reth"
+	"github.com/ethereum/state-actor/internal/rpcprobe"
+	"github.com/ethereum/state-actor/internal/syscontracts"
 )
 
 // rethImageRef returns the fully-qualified reth image reference from the

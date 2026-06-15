@@ -308,14 +308,14 @@ metadata. The generator core only sees the abstract Writer surface
 Clients register themselves as the default writer factory via init():
 
 ```go
-import _ "github.com/nerolation/state-actor/client/geth"
+import _ "github.com/ethereum/state-actor/client/geth"
 gen, err := generator.New(cfg) // uses geth's Pebble writer
 ```
 
 To select a factory explicitly (or to support future clients alongside geth):
 
 ```go
-import "github.com/nerolation/state-actor/client/geth"
+import "github.com/ethereum/state-actor/client/geth"
 gen, err := generator.NewWithWriter(cfg, geth.NewWriterFactory())
 ```
 

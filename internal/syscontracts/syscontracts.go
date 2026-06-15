@@ -7,7 +7,7 @@ import (
 	"github.com/ethereum/go-ethereum/params"
 	"github.com/holiman/uint256"
 
-	"github.com/nerolation/state-actor/generator"
+	"github.com/ethereum/state-actor/generator"
 )
 
 // DepositContractAddress is the canonical mainnet Beacon Chain Deposit Contract

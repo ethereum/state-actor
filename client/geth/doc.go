@@ -11,20 +11,20 @@
 // The package's init() registers itself as the default Writer factory. A
 // blank import is therefore sufficient for state-actor's CLI (geth path):
 //
-//	import _ "github.com/nerolation/state-actor/client/geth"
+//	import _ "github.com/ethereum/state-actor/client/geth"
 //	gen, err := generator.New(cfg) // uses geth writer
 //
 // To select the factory explicitly (e.g. when multiple client packages are
 // imported) use NewWriterFactory:
 //
-//	import "github.com/nerolation/state-actor/client/geth"
+//	import "github.com/ethereum/state-actor/client/geth"
 //	gen, err := generator.NewWithWriter(cfg, geth.NewWriterFactory())
 //
 // # Layering
 //
 // This package depends on:
-//   - github.com/nerolation/state-actor/generator (for Config, Writer interface, WriterStats)
-//   - github.com/nerolation/state-actor/genesis   (for the Genesis JSON parser type)
+//   - github.com/ethereum/state-actor/generator (for Config, Writer interface, WriterStats)
+//   - github.com/ethereum/state-actor/genesis   (for the Genesis JSON parser type)
 //
 // The generator and genesis packages do NOT import this package — that
 // would create a generator → client/geth → generator import cycle. Tests

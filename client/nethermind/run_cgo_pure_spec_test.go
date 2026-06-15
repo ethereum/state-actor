@@ -13,9 +13,9 @@ import (
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/holiman/uint256"
 
-	"github.com/nerolation/state-actor/generator"
-	"github.com/nerolation/state-actor/genesis"
-	"github.com/nerolation/state-actor/internal/templates"
+	"github.com/ethereum/state-actor/generator"
+	"github.com/ethereum/state-actor/genesis"
+	"github.com/ethereum/state-actor/internal/templates"
 )
 
 // TestPureSpecDispatchUsesStreamingPath pins that a Config with no

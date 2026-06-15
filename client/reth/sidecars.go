@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"strconv"
 
-	iReth "github.com/nerolation/state-actor/internal/reth"
+	iReth "github.com/ethereum/state-actor/internal/reth"
 )
 
 // WriteDatabaseVersion writes <dbDir>/database.version with the canonical

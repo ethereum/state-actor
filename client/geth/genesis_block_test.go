@@ -12,7 +12,7 @@ import (
 	"github.com/ethereum/go-ethereum/params"
 	"github.com/ethereum/go-ethereum/rlp"
 
-	"github.com/nerolation/state-actor/genesis"
+	"github.com/ethereum/state-actor/genesis"
 )
 
 // readSnapshotGeneratorEntry reads and decodes the SnapshotGenerator blob,

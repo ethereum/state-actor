@@ -18,8 +18,8 @@ import (
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/rlp"
 
-	"github.com/nerolation/state-actor/generator"
-	"github.com/nerolation/state-actor/genesis"
+	"github.com/ethereum/state-actor/generator"
+	"github.com/ethereum/state-actor/genesis"
 )
 
 // Writer writes state to a geth-compatible Pebble database using

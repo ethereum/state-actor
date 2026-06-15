@@ -14,9 +14,9 @@ import (
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/holiman/uint256"
 
-	"github.com/nerolation/state-actor/generator"
-	iReth "github.com/nerolation/state-actor/internal/reth"
-	"github.com/nerolation/state-actor/internal/streamingtrie"
+	"github.com/ethereum/state-actor/generator"
+	iReth "github.com/ethereum/state-actor/internal/reth"
+	"github.com/ethereum/state-actor/internal/streamingtrie"
 )
 
 // maxStreamSpecStorageWorkers caps drain-and-compute parallelism; each worker

@@ -15,10 +15,10 @@ import (
 	"github.com/ethereum/go-ethereum/params"
 	"github.com/linxGnu/grocksdb"
 
-	"github.com/nerolation/state-actor/genesis"
-	"github.com/nerolation/state-actor/internal/besu/keys"
-	"github.com/nerolation/state-actor/internal/genesisheader"
-	"github.com/nerolation/state-actor/internal/testhex"
+	"github.com/ethereum/state-actor/genesis"
+	"github.com/ethereum/state-actor/internal/besu/keys"
+	"github.com/ethereum/state-actor/internal/genesisheader"
+	"github.com/ethereum/state-actor/internal/testhex"
 )
 
 // TestDifferentialOracle replays Besu-source-derived genesis fixtures

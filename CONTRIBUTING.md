@@ -16,7 +16,7 @@ Thank you for your interest in contributing to State Actor!
 
 ```bash
 # Clone
-git clone https://github.com/nerolation/state-actor.git
+git clone https://github.com/ethereum/state-actor.git
 cd state-actor
 
 # Build

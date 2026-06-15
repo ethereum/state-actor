@@ -6,11 +6,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/nerolation/state-actor/generator"
-	"github.com/nerolation/state-actor/internal/entitygen"
-	"github.com/nerolation/state-actor/internal/oracle"
-	"github.com/nerolation/state-actor/internal/rpcprobe"
-	"github.com/nerolation/state-actor/internal/spec"
+	"github.com/ethereum/state-actor/generator"
+	"github.com/ethereum/state-actor/internal/entitygen"
+	"github.com/ethereum/state-actor/internal/oracle"
+	"github.com/ethereum/state-actor/internal/rpcprobe"
+	"github.com/ethereum/state-actor/internal/spec"
 )
 
 // SuitePhasesCfg parameterizes the post-boot phases of a per-client e2e

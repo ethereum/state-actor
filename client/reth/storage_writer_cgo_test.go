@@ -13,8 +13,8 @@ import (
 	"github.com/holiman/uint256"
 	"github.com/linxGnu/grocksdb"
 
-	"github.com/nerolation/state-actor/internal/entitygen"
-	iReth "github.com/nerolation/state-actor/internal/reth"
+	"github.com/ethereum/state-actor/internal/entitygen"
+	iReth "github.com/ethereum/state-actor/internal/reth"
 )
 
 // countMDBXRows returns the row count of an MDBX table by full scan. Used

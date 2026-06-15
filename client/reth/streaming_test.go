@@ -9,8 +9,8 @@ import (
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/rlp"
 
-	"github.com/nerolation/state-actor/internal/entitygen"
-	"github.com/nerolation/state-actor/internal/streamsort"
+	"github.com/ethereum/state-actor/internal/entitygen"
+	"github.com/ethereum/state-actor/internal/streamsort"
 )
 
 // TestStreaming_GoldenEqualsLegacy is the load-bearing determinism test

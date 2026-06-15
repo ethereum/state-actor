@@ -13,7 +13,7 @@ import (
 	"github.com/ethereum/go-ethereum/trie"
 	"github.com/holiman/uint256"
 
-	"github.com/nerolation/state-actor/internal/entitygen"
+	"github.com/ethereum/state-actor/internal/entitygen"
 )
 
 func TestComputeStateRootEmpty(t *testing.T) {

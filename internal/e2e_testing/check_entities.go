@@ -7,9 +7,9 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 
-	"github.com/nerolation/state-actor/generator"
-	"github.com/nerolation/state-actor/internal/entitygen"
-	"github.com/nerolation/state-actor/internal/rpcprobe"
+	"github.com/ethereum/state-actor/generator"
+	"github.com/ethereum/state-actor/internal/entitygen"
+	"github.com/ethereum/state-actor/internal/rpcprobe"
 )
 
 // CheckEntities re-queries every entitygen-injected balance / code /

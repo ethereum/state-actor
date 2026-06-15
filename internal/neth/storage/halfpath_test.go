@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"testing"
 
-	"github.com/nerolation/state-actor/internal/neth"
+	"github.com/ethereum/state-actor/internal/neth"
 )
 
 // TestStateNodeKey_LayoutShallowPath pins the byte layout for a path

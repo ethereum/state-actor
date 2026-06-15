@@ -8,7 +8,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/nerolation/state-actor/internal/rpcprobe"
+	"github.com/ethereum/state-actor/internal/rpcprobe"
 )
 
 // SpamoorRunCfg parameterizes a spamoor erc20_bloater run for the per-

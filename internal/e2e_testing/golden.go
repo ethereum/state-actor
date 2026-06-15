@@ -6,10 +6,10 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 
-	"github.com/nerolation/state-actor/generator"
-	"github.com/nerolation/state-actor/internal/autofill"
-	"github.com/nerolation/state-actor/internal/entitygen"
-	"github.com/nerolation/state-actor/internal/syscontracts"
+	"github.com/ethereum/state-actor/generator"
+	"github.com/ethereum/state-actor/internal/autofill"
+	"github.com/ethereum/state-actor/internal/entitygen"
+	"github.com/ethereum/state-actor/internal/syscontracts"
 )
 
 // GoldenTestBudget is the auto-fill target budget every cross-client

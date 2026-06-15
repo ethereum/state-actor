@@ -11,8 +11,8 @@ import (
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/rlp"
 
-	"github.com/nerolation/state-actor/generator"
-	"github.com/nerolation/state-actor/internal/autofill"
+	"github.com/ethereum/state-actor/generator"
+	"github.com/ethereum/state-actor/internal/autofill"
 )
 
 // TestGethOracleBootReadable is the geth-MPT boot-readability gate.
@@ -119,7 +119,7 @@ func TestGethOracleBootReadable(t *testing.T) {
 	// against rawdb.ReadSnapshotRoot(db). A mismatch produces "State
 	// snapshot is not consistent" → "Genesis state is missing" → every
 	// state RPC fails. This assertion catches that class of bug at unit
-	// level, no Docker required (nerolation/state-actor#42).
+	// level, no Docker required (ethereum/state-actor#42).
 	rootBlob := rawdb.ReadAccountTrieNode(db, []byte{})
 	if len(rootBlob) == 0 {
 		t.Fatal("Account trie root node missing — Phase 2 didn't emit OnTrieNode for the root")

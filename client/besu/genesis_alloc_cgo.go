@@ -12,10 +12,10 @@ import (
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/holiman/uint256"
 
-	"github.com/nerolation/state-actor/genesis"
-	"github.com/nerolation/state-actor/internal/besu"
-	besurlp "github.com/nerolation/state-actor/internal/besu/rlp"
-	besutrie "github.com/nerolation/state-actor/internal/besu/trie"
+	"github.com/ethereum/state-actor/genesis"
+	"github.com/ethereum/state-actor/internal/besu"
+	besurlp "github.com/ethereum/state-actor/internal/besu/rlp"
+	besutrie "github.com/ethereum/state-actor/internal/besu/trie"
 )
 
 // writeGenesisAllocAccounts feeds a genesis JSON's `alloc` map directly into

@@ -8,7 +8,7 @@ import (
 
 	"github.com/linxGnu/grocksdb"
 
-	nethstorage "github.com/nerolation/state-actor/internal/neth/storage"
+	nethstorage "github.com/ethereum/state-actor/internal/neth/storage"
 )
 
 // stateDBSink writes state-trie nodes to the State DB using HalfPath keys.

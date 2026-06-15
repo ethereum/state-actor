@@ -9,8 +9,8 @@ import (
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/rlp"
 
-	"github.com/nerolation/state-actor/internal/entitygen"
-	iReth "github.com/nerolation/state-actor/internal/reth"
+	"github.com/ethereum/state-actor/internal/entitygen"
+	iReth "github.com/ethereum/state-actor/internal/reth"
 )
 
 // computeStorageRoot computes the MPT root over the contract's storage slots.

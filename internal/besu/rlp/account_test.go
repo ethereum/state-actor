@@ -8,7 +8,7 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/holiman/uint256"
 
-	"github.com/nerolation/state-actor/internal/besu"
+	"github.com/ethereum/state-actor/internal/besu"
 )
 
 // TestEncodeAccount_EOAZero pins the byte output of a zero-state EOA:

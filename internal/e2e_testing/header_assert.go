@@ -9,8 +9,8 @@ import (
 
 	"github.com/ethereum/go-ethereum/common/hexutil"
 
-	"github.com/nerolation/state-actor/genesis"
-	"github.com/nerolation/state-actor/internal/rpcprobe"
+	"github.com/ethereum/state-actor/genesis"
+	"github.com/ethereum/state-actor/internal/rpcprobe"
 )
 
 // AssertGenesisHeaderMatches is the end-to-end proof of the unification

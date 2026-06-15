@@ -4,8 +4,8 @@ import (
 	"fmt"
 	mrand "math/rand"
 
-	"github.com/nerolation/state-actor/internal/entitygen"
-	"github.com/nerolation/state-actor/internal/sizecal"
+	"github.com/ethereum/state-actor/internal/entitygen"
+	"github.com/ethereum/state-actor/internal/sizecal"
 )
 
 // Plan is the deterministic recipe for filling target_size − spec_cost

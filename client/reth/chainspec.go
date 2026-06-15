@@ -6,7 +6,7 @@ import (
 	"math/big"
 	"os"
 
-	"github.com/nerolation/state-actor/genesis"
+	"github.com/ethereum/state-actor/genesis"
 )
 
 // writeChainSpec writes a Reth-compatible chainspec JSON to outPath.

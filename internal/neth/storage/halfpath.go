@@ -19,7 +19,7 @@
 package storage
 
 import (
-	"github.com/nerolation/state-actor/internal/neth"
+	"github.com/ethereum/state-actor/internal/neth"
 )
 
 // StateNodeKeyLen is the byte length of a HalfPath state-trie node key:

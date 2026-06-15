@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 
-	"github.com/nerolation/state-actor/generator"
+	"github.com/ethereum/state-actor/generator"
 )
 
 // errNotImplemented is returned by the !cgo_neth build's runImpl. The

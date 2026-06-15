@@ -17,9 +17,9 @@ import (
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/holiman/uint256"
 
-	"github.com/nerolation/state-actor/generator"
-	"github.com/nerolation/state-actor/internal/neth"
-	"github.com/nerolation/state-actor/internal/testhex"
+	"github.com/ethereum/state-actor/generator"
+	"github.com/ethereum/state-actor/internal/neth"
+	"github.com/ethereum/state-actor/internal/testhex"
 )
 
 // TestDifferentialOracle pins state-actor's genesis-block hash for each

@@ -10,7 +10,7 @@ import (
 	"github.com/holiman/uint256"
 	"github.com/ethereum/go-ethereum/core/types"
 
-	"github.com/nerolation/state-actor/internal/entitygen"
+	"github.com/ethereum/state-actor/internal/entitygen"
 )
 
 // rpcStub responds to eth_getBalance / eth_getCode / eth_getStorageAt

@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/nerolation/state-actor/generator"
+	"github.com/ethereum/state-actor/generator"
 )
 
 // init registers state-actor's default writer factory (used by binary-trie
@@ -13,7 +13,7 @@ import (
 //
 // Importing this package — even with a blank import:
 //
-//	import _ "github.com/nerolation/state-actor/client/geth"
+//	import _ "github.com/ethereum/state-actor/client/geth"
 //
 // is enough to make generator.New(cfg).Generate() work without further
 // wiring for both modes. main.go and e2e tests opt in this way.

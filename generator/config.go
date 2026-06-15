@@ -7,9 +7,9 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
 
-	"github.com/nerolation/state-actor/genesis"
-	"github.com/nerolation/state-actor/internal/autofill"
-	"github.com/nerolation/state-actor/internal/templates"
+	"github.com/ethereum/state-actor/genesis"
+	"github.com/ethereum/state-actor/internal/autofill"
+	"github.com/ethereum/state-actor/internal/templates"
 )
 
 // TrieMode represents the trie algorithm used for state root computation.

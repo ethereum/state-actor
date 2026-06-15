@@ -24,7 +24,7 @@ import (
 
 	"github.com/erigontech/mdbx-go/mdbx"
 
-	iReth "github.com/nerolation/state-actor/internal/reth"
+	iReth "github.com/ethereum/state-actor/internal/reth"
 )
 
 func main() {

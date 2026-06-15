@@ -5,7 +5,7 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 
-	"github.com/nerolation/state-actor/internal/spec"
+	"github.com/ethereum/state-actor/internal/spec"
 )
 
 func TestResolveAddressExplicit(t *testing.T) {

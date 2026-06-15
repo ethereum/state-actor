@@ -3,7 +3,7 @@ package oracle
 import (
 	"testing"
 
-	"github.com/nerolation/state-actor/internal/autofill"
+	"github.com/ethereum/state-actor/internal/autofill"
 )
 
 // TestReproduce_Determinism — same cfg → identical (addr, code, slots)

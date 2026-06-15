@@ -6,7 +6,7 @@ import (
 	"context"
 	"errors"
 
-	"github.com/nerolation/state-actor/generator"
+	"github.com/ethereum/state-actor/generator"
 )
 
 // runCgoNotAvailableError documents to callers (and to TestRunCgoStubBuildPath)

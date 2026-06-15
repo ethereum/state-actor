@@ -9,7 +9,7 @@ import (
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/holiman/uint256"
 
-	"github.com/nerolation/state-actor/internal/neth"
+	"github.com/ethereum/state-actor/internal/neth"
 )
 
 // TestEncodeAccount_Empty pins the byte output of an empty account

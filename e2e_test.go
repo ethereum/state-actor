@@ -11,10 +11,10 @@ import (
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/ethdb/pebble"
 
-	"github.com/nerolation/state-actor/client/geth"
-	"github.com/nerolation/state-actor/generator"
-	"github.com/nerolation/state-actor/genesis"
-	"github.com/nerolation/state-actor/internal/autofill"
+	"github.com/ethereum/state-actor/client/geth"
+	"github.com/ethereum/state-actor/generator"
+	"github.com/ethereum/state-actor/genesis"
+	"github.com/ethereum/state-actor/internal/autofill"
 )
 
 // TestEndToEndWithGenesis tests the complete workflow:

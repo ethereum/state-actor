@@ -7,7 +7,7 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	gethtrie "github.com/ethereum/go-ethereum/trie"
 
-	"github.com/nerolation/state-actor/internal/neth"
+	"github.com/ethereum/state-actor/internal/neth"
 )
 
 // NodeStorage is the sink for HalfPath-keyed trie nodes that Builder emits.

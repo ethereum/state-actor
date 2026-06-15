@@ -9,7 +9,7 @@ import (
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/params"
 
-	"github.com/nerolation/state-actor/generator"
+	"github.com/ethereum/state-actor/generator"
 )
 
 // expectedSysContracts enumerates the 5 canonical mainnet system contracts

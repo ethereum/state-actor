@@ -14,8 +14,8 @@ package oracle
 import (
 	mrand "math/rand"
 
-	"github.com/nerolation/state-actor/internal/autofill"
-	"github.com/nerolation/state-actor/internal/entitygen"
+	"github.com/ethereum/state-actor/internal/autofill"
+	"github.com/ethereum/state-actor/internal/entitygen"
 )
 
 // ReproduceCfg controls the entity stream Reproduce regenerates. Mirrors

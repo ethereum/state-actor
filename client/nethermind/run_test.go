@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/nerolation/state-actor/generator"
-	"github.com/nerolation/state-actor/internal/autofill"
+	"github.com/ethereum/state-actor/generator"
+	"github.com/ethereum/state-actor/internal/autofill"
 )
 
 // TestRun_StubReturnsNotImplemented pins the !cgo_neth build behavior:

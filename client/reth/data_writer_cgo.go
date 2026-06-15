@@ -8,9 +8,9 @@ import (
 
 	"github.com/erigontech/mdbx-go/mdbx"
 
-	"github.com/nerolation/state-actor/generator"
-	"github.com/nerolation/state-actor/internal/entitygen"
-	iReth "github.com/nerolation/state-actor/internal/reth"
+	"github.com/ethereum/state-actor/generator"
+	"github.com/ethereum/state-actor/internal/entitygen"
+	iReth "github.com/ethereum/state-actor/internal/reth"
 )
 
 // WriteEOAs writes the v2 data-table rows for each account inside one

@@ -11,7 +11,7 @@ import (
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/linxGnu/grocksdb"
 
-	nethrlp "github.com/nerolation/state-actor/internal/neth/rlp"
+	nethrlp "github.com/ethereum/state-actor/internal/neth/rlp"
 )
 
 // blockNumPrefixedKey is GetBlockNumPrefixedKey from

@@ -9,7 +9,7 @@ import (
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/holiman/uint256"
 
-	"github.com/nerolation/state-actor/internal/spec"
+	"github.com/ethereum/state-actor/internal/spec"
 )
 
 func TestERC20ValidateParameters(t *testing.T) {

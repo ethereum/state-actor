@@ -12,9 +12,9 @@ import (
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto"
 
-	"github.com/nerolation/state-actor/generator"
-	nethtrie "github.com/nerolation/state-actor/internal/neth/trie"
-	"github.com/nerolation/state-actor/internal/streamingtrie"
+	"github.com/ethereum/state-actor/generator"
+	nethtrie "github.com/ethereum/state-actor/internal/neth/trie"
+	"github.com/ethereum/state-actor/internal/streamingtrie"
 )
 
 // runPhase0 drains each PreAlloc entity's storage iter in parallel, splicing

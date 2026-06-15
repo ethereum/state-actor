@@ -9,8 +9,8 @@ import (
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/holiman/uint256"
 
-	"github.com/nerolation/state-actor/internal/besu"
-	besurlp "github.com/nerolation/state-actor/internal/besu/rlp"
+	"github.com/ethereum/state-actor/internal/besu"
+	besurlp "github.com/ethereum/state-actor/internal/besu/rlp"
 )
 
 // recordingSink is a NodeSink that captures all writes for assertion.

@@ -9,8 +9,8 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/params"
 
-	"github.com/nerolation/state-actor/internal/rpcprobe"
-	"github.com/nerolation/state-actor/internal/syscontracts"
+	"github.com/ethereum/state-actor/internal/rpcprobe"
+	"github.com/ethereum/state-actor/internal/syscontracts"
 )
 
 // CheckChainID asserts the running client returns `want` for eth_chainId.

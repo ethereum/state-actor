@@ -19,9 +19,9 @@ import (
 	"github.com/ethereum/go-ethereum/rlp"
 	"github.com/ethereum/go-ethereum/trie"
 
-	"github.com/nerolation/state-actor/generator"
-	"github.com/nerolation/state-actor/internal/streamingtrie"
-	"github.com/nerolation/state-actor/internal/streamsort"
+	"github.com/ethereum/state-actor/generator"
+	"github.com/ethereum/state-actor/internal/streamingtrie"
+	"github.com/ethereum/state-actor/internal/streamsort"
 )
 
 const phase1FlushBytes = 64 * 1024 * 1024

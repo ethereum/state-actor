@@ -14,9 +14,9 @@ import (
 	"github.com/ethereum/go-ethereum/crypto"
 	gethrlp "github.com/ethereum/go-ethereum/rlp"
 
-	"github.com/nerolation/state-actor/generator"
-	nethtrie "github.com/nerolation/state-actor/internal/neth/trie"
-	"github.com/nerolation/state-actor/internal/streamsort"
+	"github.com/ethereum/state-actor/generator"
+	nethtrie "github.com/ethereum/state-actor/internal/neth/trie"
+	"github.com/ethereum/state-actor/internal/streamsort"
 )
 
 // maxPhase0Workers caps Phase 0 drain-and-compute parallelism. Each worker
