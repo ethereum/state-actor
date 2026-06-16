@@ -237,7 +237,7 @@ func truncateForTargetSize(entities []spec.Entity, opts BuildOptions, diag *Diag
 // we warn. Unique per-address pattern code is fully materialized by
 // Expand and retained in generator.Config.GenesisCode for the whole run
 // (only Storage streams), measured at ≈24.6 KB resident per derived
-// contract. The shipped spec-repricing-min.yaml (150 000 × 24 576 B
+// contract. A production-minimum repricing fixture (150 000 × 24 576 B
 // ≈ 3.4 GiB) warns BY DESIGN: that is the heads-up a laptop user needs
 // and costs the bench host one log line.
 const patternResidentWarnBytes uint64 = 2 << 30 // 2 GiB

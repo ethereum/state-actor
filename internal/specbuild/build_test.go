@@ -46,8 +46,9 @@ func parseSpec(t *testing.T, src string) *spec.Spec {
 // 2 GiB estimated unique-runtime residency a per-entity diagnostics
 // warning fires. Calls the helper directly (no Build, no Expand) so the
 // boundary counts stay instant. Measured basis: ≈24.6 KB resident per
-// pattern contract; the shipped min fixture (150k ≈ 3.4 GiB) warns BY
-// DESIGN, the smoke fixture stays silent (see TestBuildRepricingSmoke).
+// pattern contract; a 150k-contract production fixture (≈3.4 GiB) warns
+// BY DESIGN, while small fixtures (e.g. full-matrix's salt_count=2) stay
+// silent (see TestBuildFullMatrix's warning-free assertion).
 func TestPatternResidentCodeWarnings(t *testing.T) {
 	mk := func(template string, params map[string]any) spec.Entity {
 		return spec.Entity{Kind: spec.KindContract, Template: template, Parameters: params}
