@@ -122,7 +122,7 @@ func main() {
 		}
 	}
 
-	// ethrex uses its own fork ceiling (prague per MaxForkForClient).
+	// ethrex shares the common fork ceiling (osaka per MaxForkForClient).
 	// The chosenFork resolution below handles this uniformly.
 
 	config := generator.Config{

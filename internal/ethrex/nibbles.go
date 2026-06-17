@@ -52,19 +52,6 @@ func CompactEncode(nibbles []byte, isLeaf bool) []byte {
 	return out
 }
 
-// nibblesEqual reports whether a == b.
-func nibblesEqual(a, b []byte) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-	return true
-}
-
 // commonPrefixLen returns the number of leading nibbles that a and b share.
 func commonPrefixLen(a, b []byte) int {
 	n := len(a)

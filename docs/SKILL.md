@@ -1,6 +1,6 @@
 ---
 name: state-actor
-description: Use this skill when a user wants to generate, boot, verify, or extend a state-actor-produced Ethereum database. Covers --client, --spec, --target-size, per-client boot recipes (geth / reth / besu / nethermind), and the canonical 29-entity spec fixture.
+description: Use this skill when a user wants to generate, boot, verify, or extend a state-actor-produced Ethereum database. Covers --client, --spec, --target-size, per-client boot recipes (geth / reth / besu / nethermind / ethrex), and the canonical 29-entity spec fixture.
 ---
 
 # SKILL.md — how to use state-actor
@@ -15,7 +15,7 @@ Read these in this order. The first one is load-bearing — read it before you r
 
 1. [`examples/full-matrix-spec-feature.yaml`](../examples/full-matrix-spec-feature.yaml) — **the canonical syntax reference for `--spec`**. CI-pinned, 29 entities, every feature. Read this file before reading any other doc about specs; see the [Canonical spec reference](#canonical-spec-reference) section below for an intent → entity-# index.
 2. [`SPEC.md`](SPEC.md) — the schema reference (parser rules, validation errors, address-resolution algorithm, `approximate_size_bytes` semantics). Read alongside the fixture.
-3. [`RUNBOOK.md`](RUNBOOK.md) — per-client boot recipes (geth / reth / besu / nethermind).
+3. [`RUNBOOK.md`](RUNBOOK.md) — per-client boot recipes (geth / reth / besu / nethermind / ethrex).
 4. [`ARCHITECTURE.md`](ARCHITECTURE.md) — internal architecture; cross-client determinism; per-client writer differences.
 
 ## Three load-bearing flags

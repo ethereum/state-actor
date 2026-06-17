@@ -8,10 +8,16 @@ storage schema changes.
 ## Pinned release
 
 ```
-lambdaclass/ethrex @ v15.0.0
+lambdaclass/ethrex @ v16.0.0
 ```
 
-The fixture is byte-identical from v13.0.0 (commit 318ec2888) through v15.0.0.
+The state-bearing CFs (`account_trie_nodes`, `storage_trie_nodes`,
+`account_codes`, `account_code_metadata`) are byte-identical from v13.0.0
+(commit 318ec2888) through v16.0.0 — verified by regenerating at v16 and diffing
+against the v15-generated dump (only `chain_data[0x80]` changed, to add
+`osakaTime`). v16 bumped `STORE_SCHEMA_VERSION` to 3, but the v2→v3 migration
+only rewrites `RECEIPTS`/`TRANSACTION_LOCATIONS` (both empty at genesis), so the
+golden CFs are unaffected. v16 also matches the e2e boot pin (e2e_test.go).
 
 Any ethrex commit that bumps `STORE_SCHEMA_VERSION` or changes the key layout
 of `account_trie_nodes`, `storage_trie_nodes`, `account_codes`, or
@@ -25,7 +31,7 @@ Go codec in `internal/ethrex/`.
    ```sh
    git clone https://github.com/lambdaclass/ethrex
    cd ethrex
-   git checkout v15.0.0
+   git checkout v16.0.0
    ```
 
 2. Copy the dump harness into ethrex's examples directory:

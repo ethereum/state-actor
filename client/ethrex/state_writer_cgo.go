@@ -37,16 +37,11 @@ import (
 // is correct for the e2e fixture and moderate --target-size. See doc.go for
 // the ceiling note.
 //
-// Flat-KV / snap-sync layout: ethrex serves state reads from the flat-KV CFs
-// once a background task has swept the trie post-sync. We pre-populate them so
-// the produced DB models a SYNCED node (matching how every other client fakes a
-// synced flat layer). Specifically we model a snap-synced node: each leaf
-// full-path row (the only rows whose key ends in the leaf-flag nibble) is routed
-// ONLY to the flat-KV CF, never duplicated into the trie-node CF — exactly how
-// ethrex's own apply_trie_updates and snap-sync bulk builder persist state. The
-// trie-node CFs keep the structural and leaf-NODE-RLP rows (which carry the value
-// for root/proofs), so the trie is complete. writeState then stamps
-// misc_values["last_written"]=0xff so ethrex skips regeneration on boot.
+// Flat-KV / snap-sync layout: leaf full-path rows are routed ONLY to the
+// flat-KV CFs (never duplicated into the trie-node CFs), modelling a snap-synced
+// node; writeState stamps misc_values["last_written"]=0xff so ethrex skips
+// regeneration on boot. See the package doc (doc.go, "Flat-KV layer") for the
+// full rationale and the ethrex source it mirrors.
 func writeState(
 	ctx context.Context,
 	cfg generator.Config,
@@ -90,37 +85,18 @@ func writeState(
 		return common.Hash{}, nil, err
 	}
 
-	// isLeafFullPath reports whether a node row is a leaf's full-path row (the
-	// "row 2" the Builder emits as path++rem++[LeafFlag]). These are the only
-	// rows whose key ends in the leaf-flag nibble; branch/extension/leaf-node-RLP
-	// rows and the empty-trie sentinel never do.
-	isLeafFullPath := func(path []byte) bool {
-		return len(path) > 0 && path[len(path)-1] == ethrexinternal.LeafFlag
-	}
-
-	// accountTrieNodeSink routes the account trie's emitted rows in the snap-sync
-	// layout: a leaf full-path row goes ONLY to account_flatkeyvalue, never to
-	// account_trie_nodes. This mirrors how ethrex itself persists state — its
-	// apply_trie_updates routes leaf rows (len 65/131) to the flat-KV CF and only
-	// structural/leaf-node rows to the trie-node CF, and its snap-sync bulk
-	// builder (trie_from_sorted) writes no leaf full-path rows either. The leaf
-	// NODE RLP (row 1) still lands in account_trie_nodes and carries the value for
-	// root/proof computation, so the on-disk trie is complete without the
-	// duplicate row-2 entry. A genesis-booted node would carry that duplicate; a
-	// snap-synced node does not — modelling the latter keeps the DB representative
-	// and smaller.
+	// accountTrieNodeSink applies the snap-sync split: leaf full-path rows go ONLY
+	// to account_flatkeyvalue, structural/leaf-node rows to account_trie_nodes.
+	// See the package doc (doc.go, "Flat-KV layer") for the rationale.
 	accountTrieNodeSink := ethrexinternal.NodeSink(func(path []byte, value []byte) error {
-		if isLeafFullPath(path) {
+		if isLeafFullPathHelper(path) {
 			return accountFkvSink.put(path, value)
 		}
 		return accountSink.put(path, value)
 	})
 
-	// Storage tries route their emitted rows with the same snap-sync split as
-	// the account trie (leaf full-path → storage_flatkeyvalue only; structural
-	// and leaf-node rows → storage_trie_nodes). Phase 0 applies this split in
-	// its per-worker sinks; Phase 2 applies it inline when replaying buffered
-	// rows / building big-account storage (see below).
+	// Storage tries apply the same split: Phase 0 in its per-worker sinks, Phase 2
+	// inline when replaying buffered rows / building big-account storage.
 
 	// preAllocStorageRoots maps addrHash → computed storage root for PreAlloc
 	// entities whose storage was built in-memory.
@@ -263,7 +239,10 @@ func writeState(
 			}
 			var addrHash common.Hash
 			copy(addrHash[:], key)
-			ent := decodeEntity(value)
+			ent, decErr := decodeEntity(value)
+			if decErr != nil {
+				return decErr
+			}
 
 			item := &accountWorkItem{
 				seq:      seq,
@@ -349,7 +328,7 @@ func writeState(
 		} else {
 			// Replay buffered storage rows into RocksDB in their captured order.
 			for _, row := range res.storageRows {
-				if isLeafFullPath(row.path) {
+				if isLeafFullPathHelper(row.path) {
 					if err := storageFkvSink.put(row.path, row.value); err != nil {
 						return err
 					}
@@ -442,6 +421,14 @@ func writeState(
 		return common.Hash{}, nil, err
 	}
 	if err := storageFkvSink.flushSync(); err != nil {
+		return common.Hash{}, nil, err
+	}
+	// Code sinks too: their defer Close() in run_cgo.go drops the flush error, so
+	// flush them explicitly here before the completion gate is stamped below.
+	if err := codeSink.flushSync(); err != nil {
+		return common.Hash{}, nil, err
+	}
+	if err := codeMetaSink.flushSync(); err != nil {
 		return common.Hash{}, nil, err
 	}
 
@@ -578,31 +565,68 @@ func encodeEntity(nonce uint64, balance *uint256.Int, code []byte, slots map[com
 	return out
 }
 
-func decodeEntity(blob []byte) entity {
-	if len(blob) < 1 {
-		panic("ethrex: empty entity blob")
+// decodeEntity reverses encodeEntity. Blobs are produced internally and
+// round-trip through streamsort, so malformed input is unreachable today; even
+// so it returns an error rather than panicking, because it runs on the Stage A
+// reader goroutine where a panic would bypass setErr and crash the pipeline.
+func decodeEntity(blob []byte) (entity, error) {
+	// need reports an error if blob lacks n bytes from pos onward.
+	need := func(pos, n int) error {
+		if pos+n > len(blob) {
+			return fmt.Errorf("ethrex: truncated entity blob: need %d bytes at offset %d, have %d", n, pos, len(blob))
+		}
+		return nil
+	}
+	if err := need(0, 1); err != nil {
+		return entity{}, err
 	}
 	e := entity{kind: entityKind(blob[0])}
+	switch e.kind {
+	case entityEOA, entityContract:
+	default:
+		return entity{}, fmt.Errorf("ethrex: unknown entity kind byte %d", blob[0])
+	}
 	pos := 1
+	if err := need(pos, 8); err != nil {
+		return entity{}, err
+	}
 	e.nonce = binary.BigEndian.Uint64(blob[pos : pos+8])
 	pos += 8
+	if err := need(pos, 1); err != nil {
+		return entity{}, err
+	}
 	balLen := int(blob[pos])
 	pos++
+	if err := need(pos, balLen); err != nil {
+		return entity{}, err
+	}
 	balBytes := blob[pos : pos+balLen]
 	pos += balLen
 	e.balance = new(uint256.Int)
 	e.balance.SetBytes(balBytes)
 
 	if e.kind == entityContract {
+		if err := need(pos, 4); err != nil {
+			return entity{}, err
+		}
 		codeLen := int(binary.BigEndian.Uint32(blob[pos : pos+4]))
 		pos += 4
+		if err := need(pos, codeLen); err != nil {
+			return entity{}, err
+		}
 		e.code = make([]byte, codeLen)
 		copy(e.code, blob[pos:pos+codeLen])
 		pos += codeLen
+		if err := need(pos, 4); err != nil {
+			return entity{}, err
+		}
 		slotCount := int(binary.BigEndian.Uint32(blob[pos : pos+4]))
 		pos += 4
 		e.slots = make(map[common.Hash]*uint256.Int, slotCount)
 		for i := 0; i < slotCount; i++ {
+			if err := need(pos, 64); err != nil {
+				return entity{}, err
+			}
 			var k, v common.Hash
 			copy(k[:], blob[pos:pos+32])
 			pos += 32
@@ -613,5 +637,5 @@ func decodeEntity(blob []byte) entity {
 			e.slots[k] = u
 		}
 	}
-	return e
+	return e, nil
 }

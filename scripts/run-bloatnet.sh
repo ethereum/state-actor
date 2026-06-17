@@ -211,6 +211,8 @@ NETH_CFG
             # $ETHREX_IMAGE must include that flag. --syncmode full is required:
             # in the default snap mode ethrex returns SYNCING + null payloadId for
             # every engine forkchoiceUpdated, so the driver can never build.
+            # $JWT_HEX is generated once at script start (openssl rand, see top
+            # of file); RUNBOOK.md documents the engine-API JWT requirement.
             cp "$JWT_HEX" "$data/jwt.hex"
             docker run -d --name $ct \
                 --network host \

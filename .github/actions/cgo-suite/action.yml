@@ -87,7 +87,7 @@ runs:
         VOL="${CLIENT}-suite-datadir"
         docker volume rm -f "$VOL" >/dev/null 2>&1 || true
         docker volume create "$VOL"
-        # All 3 cgo builder images now share WORKDIR=/app + no
+        # All 4 cgo builder images now share WORKDIR=/app + no
         # ENTRYPOINT, so the docker run is uniform: <image> go test ...
         # No more `--entrypoint bash -c 'cd /app && ...'` workaround.
         run_filter=()

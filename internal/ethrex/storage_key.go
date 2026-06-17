@@ -22,20 +22,6 @@ func StoragePrefix(addrHash common.Hash) []byte {
 	return prefix
 }
 
-// StorageNodeKey returns the full storage_trie_nodes key for a node at the
-// given raw path within the per-account storage trie.
-//
-// The result is StoragePrefix(addrHash) ++ pathNibbles.
-// Mirrors ethrex layering.rs apply_prefix: the 66-nibble address prefix is
-// prepended to every node path before writing to storage_trie_nodes.
-func StorageNodeKey(addrHash common.Hash, pathNibbles []byte) []byte {
-	prefix := StoragePrefix(addrHash)
-	key := make([]byte, len(prefix)+len(pathNibbles))
-	copy(key, prefix)
-	copy(key[len(prefix):], pathNibbles)
-	return key
-}
-
 // PrefixedSink returns a NodeSink that prepends StoragePrefix(addrHash) to
 // every path before forwarding to the underlying sink. Use this to route a
 // per-account storage Builder's raw node paths into storage_trie_nodes.

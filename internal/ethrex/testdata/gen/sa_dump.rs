@@ -1,6 +1,7 @@
-//! Throwaway spike harness for state-actor's ethrex integration.
+//! Regeneration harness for state-actor's ethrex golden fixture.
 //! Builds a genesis store via the real `add_initial_state` path, then dumps
-//! every column family as hex JSON so the Go codec can be golden-validated.
+//! every column family as hex JSON so the Go codec can be golden-validated
+//! against testdata/genesis_dump.json (see README.md for how to run it).
 //!
 //! Run: cargo run -p ethrex-storage --features rocksdb --example sa_dump -- \
 //!        <genesis.json> <datadir> <out.json>
@@ -11,8 +12,9 @@ use std::io::BufReader;
 
 use ethrex_common::types::Genesis;
 use ethrex_storage::api::tables::TABLES;
+use ethrex_storage::api::StorageBackend;
 use ethrex_storage::backend::rocksdb::RocksDBBackend;
-use ethrex_storage::{EngineType, Store};
+use ethrex_storage::{DEFAULT_ROCKSDB_BLOCK_CACHE_SIZE_BYTES, EngineType, Store};
 
 fn hex(b: &[u8]) -> String {
     let mut s = String::with_capacity(2 + b.len() * 2);
@@ -47,8 +49,8 @@ async fn main() {
     std::thread::sleep(std::time::Duration::from_millis(200));
 
     // 2. Reopen read-only via the backend and dump every CF.
-    use ethrex_storage::api::StorageBackend;
-    let backend = RocksDBBackend::open(datadir).expect("reopen backend");
+    let backend = RocksDBBackend::open(datadir, DEFAULT_ROCKSDB_BLOCK_CACHE_SIZE_BYTES)
+        .expect("reopen backend");
     let read = backend.begin_read().expect("begin_read");
 
     let mut dump: BTreeMap<String, Vec<[String; 2]>> = BTreeMap::new();

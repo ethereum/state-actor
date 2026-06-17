@@ -199,8 +199,9 @@ func openEthrexDB(dbPath string) (*ethrexDB, error) {
 	if parallelism > bulkBackgroundJobs {
 		parallelism = bulkBackgroundJobs
 	}
+	// IncreaseParallelism already sets max background jobs to the same value;
+	// no separate SetMaxBackgroundJobs needed.
 	dbOpts.IncreaseParallelism(parallelism)
-	dbOpts.SetMaxBackgroundJobs(parallelism)
 
 	db, cfHandles, err := grocksdb.OpenDbColumnFamilies(
 		dbOpts, dbPath, cfNames, cfOpts,

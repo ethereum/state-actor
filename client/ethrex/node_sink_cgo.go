@@ -199,7 +199,10 @@ func newResultHeap() *resultHeap {
 // ---------------------------------------------------------------------------
 
 // isLeafFullPathHelper reports whether path is a leaf full-path row (key ends
-// in the LeafFlag nibble). Mirrors the isLeafFullPath closure in writeState.
+// in the LeafFlag nibble). These are the only rows the Builder emits whose key
+// ends in the leaf-flag nibble; branch/extension/leaf-node-RLP rows and the
+// empty-trie sentinel never do. Used by both Stage B workers and Stage C inline
+// routing in writeState.
 func isLeafFullPathHelper(path []byte) bool {
 	return len(path) > 0 && path[len(path)-1] == ethrexinternal.LeafFlag
 }
