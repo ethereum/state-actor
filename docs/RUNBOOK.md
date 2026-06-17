@@ -300,7 +300,7 @@ docker run --rm \
 - `/data/metadata.json` — `{"schema_version": 2}`, required by ethrex `Store::new`
 - `/data/ethrex-genesis.json` — full genesis JSON; pass via `--network` when booting
 
-**Boot path.** ethrex's `add_initial_state` short-circuits when `canonical_block_hashes[0]` already resolves to a matching genesis header hash — state-actor writes that row, so ethrex skips state-trie recomputation at boot. The exact boot flags (image tag, `--network` path, dev-mode flag) are validated in the e2e suite (Phase 4) and will be pinned in `client/ethrex/doc.go` once the pinned image is confirmed. The pattern follows the besu/nethermind Engine API approach: boot the node, then drive blocks via `engine_forkchoiceUpdated`.
+**Boot path.** ethrex's `add_initial_state` short-circuits when `canonical_block_hashes[0]` already resolves to a matching genesis header hash — state-actor writes that row, so ethrex skips state-trie recomputation at boot. Required boot flags (validated by the e2e suite, Phase 4): `--network <ethrex-genesis.json>`, `--datadir <dir>`, `--skip-genesis-validation` (trust the written stateRoot rather than recompute from the empty-alloc sidecar; needs lambdaclass/ethrex#6783, in releases ≥ v16.0.0), and `--syncmode full`. The `--syncmode full` flag is mandatory for engine-driven block production: in the default snap mode ethrex's fork-choice handler returns `SYNCING` with a null `payloadId` for every `engine_forkchoiceUpdated`, so the mock CL can never obtain a payload to build. The pattern follows the besu/nethermind Engine API approach: boot the node, then drive blocks via `engine_forkchoiceUpdated` (ethrex also mandates an authrpc JWT, signed by the driver).
 
 **Verify.**
 

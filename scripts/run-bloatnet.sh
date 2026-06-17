@@ -208,7 +208,9 @@ NETH_CFG
             # (see start_engine_driver_if_needed). --skip-genesis-validation
             # makes ethrex trust the state-actor-written stateRoot instead of
             # recomputing from the empty-alloc sidecar (lambdaclass/ethrex#6783);
-            # $ETHREX_IMAGE must include that flag.
+            # $ETHREX_IMAGE must include that flag. --syncmode full is required:
+            # in the default snap mode ethrex returns SYNCING + null payloadId for
+            # every engine forkchoiceUpdated, so the driver can never build.
             cp "$JWT_HEX" "$data/jwt.hex"
             docker run -d --name $ct \
                 --network host \
@@ -217,6 +219,7 @@ NETH_CFG
                 --network /data/ethrex-genesis.json \
                 --datadir /data \
                 --skip-genesis-validation \
+                --syncmode full \
                 --http.addr 127.0.0.1 --http.port 8545 \
                 --http.api eth,net,web3 \
                 --authrpc.addr 127.0.0.1 --authrpc.port 8551 \

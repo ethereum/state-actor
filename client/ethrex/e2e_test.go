@@ -30,10 +30,10 @@ import (
 // against, digest-pinned for reproducibility. Override with
 // ETHREX_IMAGE=ghcr.io/lambdaclass/ethrex:<tag> to test a specific release.
 //
-// Tagged release v16.0.0-rc.2 (ghcr tag 16.0.0-rc.2), the first release >15.0.0
-// to include --skip-genesis-validation (lambdaclass/ethrex#6783, merged
-// 2026-06-04; this image built 2026-06-08), which the boot phase requires.
-const pinnedEthrexImage = "ghcr.io/lambdaclass/ethrex:16.0.0-rc.2@sha256:1873c36dcda955df9e5209b56e6fe47db67fb26abf00506de7695ba4683a1c5a"
+// Official release v16.0.0 (ghcr tag 16.0.0, published 2026-06-08), the first
+// stable release >15.0.0 to include --skip-genesis-validation
+// (lambdaclass/ethrex#6783, merged 2026-06-04), which the boot phase requires.
+const pinnedEthrexImage = "ghcr.io/lambdaclass/ethrex:16.0.0@sha256:1873c36dcda955df9e5209b56e6fe47db67fb26abf00506de7695ba4683a1c5a"
 
 func ethrexImageRef() string {
 	if v := os.Getenv("ETHREX_IMAGE"); v != "" {
@@ -152,6 +152,15 @@ func TestE2ESuite(t *testing.T) {
 		// with an empty alloc, so ethrex must trust the stored state root rather
 		// than recompute it from alloc. Requires lambdaclass/ethrex#6783.
 		"--skip-genesis-validation",
+		// Full sync, not the default snap. ethrex's engine fork_choice handler
+		// (crates/networking/rpc/engine/fork_choice.rs) unconditionally returns
+		// PayloadStatus::SYNCING with a null payloadId for EVERY forkchoiceUpdated
+		// while sync_mode == Snap ("Ignore any FCU during snap-sync"), so the mock
+		// CL can never get a payloadId to build on. With --syncmode full the FCU
+		// reaches apply_fork_choice, which treats head==latest-canonical (our
+		// genesis) as a normal build target and returns VALID + payloadId. There
+		// are no peers, so neither mode actually syncs; full just doesn't gate.
+		"--syncmode", "full",
 		"--http.addr", "0.0.0.0",
 		"--http.port", "8545",
 		"--http.api", "eth,net,web3",
