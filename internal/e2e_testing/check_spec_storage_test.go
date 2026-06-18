@@ -5,7 +5,7 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 
-	"github.com/nerolation/state-actor/internal/templates"
+	"github.com/ethereum/state-actor/internal/templates"
 )
 
 // TestCheckSpecStorage_HappyPath drives CheckSpecStorage against the

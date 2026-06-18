@@ -1,6 +1,6 @@
 package templates
 
-import "github.com/nerolation/state-actor/internal/spec"
+import "github.com/ethereum/state-actor/internal/spec"
 
 // fixedSizer is a SizeApproximator stub for tests. The real per-client
 // calibration lives in internal/sizecal/; templates should never depend on

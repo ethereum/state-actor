@@ -13,7 +13,7 @@ import (
 	"github.com/holiman/uint256"
 	"github.com/linxGnu/grocksdb"
 
-	ethrexinternal "github.com/nerolation/state-actor/internal/ethrex"
+	ethrexinternal "github.com/ethereum/state-actor/internal/ethrex"
 )
 
 // flushThresholdBytes is the WriteBatch flush threshold during bulk import.

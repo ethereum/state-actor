@@ -15,15 +15,15 @@ import (
 	"testing"
 	"time"
 
-	"github.com/nerolation/state-actor/client/ethrex"
-	"github.com/nerolation/state-actor/generator"
-	stategenesis "github.com/nerolation/state-actor/genesis"
-	"github.com/nerolation/state-actor/internal/autofill"
-	e2e "github.com/nerolation/state-actor/internal/e2e_testing"
-	"github.com/nerolation/state-actor/internal/engineapi"
-	"github.com/nerolation/state-actor/internal/oracle"
-	"github.com/nerolation/state-actor/internal/rpcprobe"
-	"github.com/nerolation/state-actor/internal/syscontracts"
+	"github.com/ethereum/state-actor/client/ethrex"
+	"github.com/ethereum/state-actor/generator"
+	stategenesis "github.com/ethereum/state-actor/genesis"
+	"github.com/ethereum/state-actor/internal/autofill"
+	e2e "github.com/ethereum/state-actor/internal/e2e_testing"
+	"github.com/ethereum/state-actor/internal/engineapi"
+	"github.com/ethereum/state-actor/internal/oracle"
+	"github.com/ethereum/state-actor/internal/rpcprobe"
+	"github.com/ethereum/state-actor/internal/syscontracts"
 )
 
 // pinnedEthrexImage is the upstream ethrex Docker image the e2e suite pins

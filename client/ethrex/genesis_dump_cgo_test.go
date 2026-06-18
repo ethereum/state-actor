@@ -25,10 +25,10 @@ import (
 	"github.com/holiman/uint256"
 	"github.com/linxGnu/grocksdb"
 
-	"github.com/nerolation/state-actor/client/ethrex"
-	"github.com/nerolation/state-actor/generator"
-	"github.com/nerolation/state-actor/genesis"
-	ethrexinternal "github.com/nerolation/state-actor/internal/ethrex"
+	"github.com/ethereum/state-actor/client/ethrex"
+	"github.com/ethereum/state-actor/generator"
+	"github.com/ethereum/state-actor/genesis"
+	ethrexinternal "github.com/ethereum/state-actor/internal/ethrex"
 )
 
 func TestGenesisDumpGolden(t *testing.T) {

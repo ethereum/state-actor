@@ -12,8 +12,8 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	gethrlp "github.com/ethereum/go-ethereum/rlp"
 
-	"github.com/nerolation/state-actor/genesis"
-	"github.com/nerolation/state-actor/internal/genesisheader"
+	"github.com/ethereum/state-actor/genesis"
+	"github.com/ethereum/state-actor/internal/genesisheader"
 )
 
 // TestGenesisHeaderGolden builds a genesis header matching the ethrex spike

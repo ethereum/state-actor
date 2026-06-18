@@ -6,8 +6,8 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 
-	"github.com/nerolation/state-actor/internal/spec"
-	"github.com/nerolation/state-actor/internal/templates"
+	"github.com/ethereum/state-actor/internal/spec"
+	"github.com/ethereum/state-actor/internal/templates"
 )
 
 // TestArachnidFactoryRequired pins the cross-entity invariant: a

@@ -9,7 +9,7 @@ import (
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/holiman/uint256"
 
-	"github.com/nerolation/state-actor/internal/spec"
+	"github.com/ethereum/state-actor/internal/spec"
 )
 
 func init() {

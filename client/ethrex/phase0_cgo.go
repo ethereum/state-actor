@@ -12,9 +12,9 @@ import (
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/holiman/uint256"
 
-	"github.com/nerolation/state-actor/generator"
-	ethrexinternal "github.com/nerolation/state-actor/internal/ethrex"
-	"github.com/nerolation/state-actor/internal/streamingtrie"
+	"github.com/ethereum/state-actor/generator"
+	ethrexinternal "github.com/ethereum/state-actor/internal/ethrex"
+	"github.com/ethereum/state-actor/internal/streamingtrie"
 )
 
 // maxPhase0Workers caps Phase 0 drain-and-compute parallelism. Each worker

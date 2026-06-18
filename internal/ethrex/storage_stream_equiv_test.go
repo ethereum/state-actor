@@ -12,7 +12,7 @@ import (
 	"github.com/ethereum/go-ethereum/rlp"
 	"github.com/holiman/uint256"
 
-	"github.com/nerolation/state-actor/internal/streamingtrie"
+	"github.com/ethereum/state-actor/internal/streamingtrie"
 )
 
 // storage_stream_equiv_test.go is the byte-identity gate for routing the ethrex

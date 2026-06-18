@@ -11,7 +11,7 @@ import (
 
 	"github.com/linxGnu/grocksdb"
 
-	ethrexinternal "github.com/nerolation/state-actor/internal/ethrex"
+	ethrexinternal "github.com/ethereum/state-actor/internal/ethrex"
 )
 
 // bulkBackgroundJobs caps RocksDB's background compaction/flush thread pool

@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/nerolation/state-actor/client/ethrex"
-	"github.com/nerolation/state-actor/genesis"
+	"github.com/ethereum/state-actor/client/ethrex"
+	"github.com/ethereum/state-actor/genesis"
 )
 
 // TestWriteStoreMetadata verifies that WriteStoreMetadata writes a valid JSON

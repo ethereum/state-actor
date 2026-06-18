@@ -7,8 +7,8 @@ import (
 	"path/filepath"
 
 	"github.com/ethereum/go-ethereum/common"
-	"github.com/nerolation/state-actor/genesis"
-	ethrexinternal "github.com/nerolation/state-actor/internal/ethrex"
+	"github.com/ethereum/state-actor/genesis"
+	ethrexinternal "github.com/ethereum/state-actor/internal/ethrex"
 )
 
 // StoreDir returns the directory ethrex opens its RocksDB from for a custom

@@ -7,7 +7,7 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/crypto"
 
-	"github.com/nerolation/state-actor/internal/spec"
+	"github.com/ethereum/state-actor/internal/spec"
 )
 
 func TestCREATE2FactoryExpand(t *testing.T) {

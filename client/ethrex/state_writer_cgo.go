@@ -15,9 +15,9 @@ import (
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/holiman/uint256"
 
-	"github.com/nerolation/state-actor/generator"
-	ethrexinternal "github.com/nerolation/state-actor/internal/ethrex"
-	"github.com/nerolation/state-actor/internal/streamsort"
+	"github.com/ethereum/state-actor/generator"
+	ethrexinternal "github.com/ethereum/state-actor/internal/ethrex"
+	"github.com/ethereum/state-actor/internal/streamsort"
 )
 
 // writeState builds the full ethrex state from cfg and writes it to db.
