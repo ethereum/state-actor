@@ -279,14 +279,12 @@ cast chain-id --rpc-url http://<container-ip>:8545   # → 0x539
 
 Reference: `client/ethrex/e2e_test.go` (`TestE2ESuite`).
 
-**Generate.** ethrex uses cgo (RocksDB bindings via grocksdb) — build via Docker.
+**Generate.** ethrex uses cgo (RocksDB bindings via grocksdb) — run the published Docker image (or build `Dockerfile.ethrex` locally).
 
 ```bash
-docker build -f Dockerfile.ethrex -t state-actor-ethrex .
 docker run --rm \
   -v /tmp/sa-ethrex:/data \
-  state-actor-ethrex \
-  ./state-actor \
+  ghcr.io/ethereum/state-actor-ethrex:main \
   --client=ethrex --db=/data \
   --target-size=100MB \
   --seed=42 \
