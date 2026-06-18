@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### Documentation
+- **RUNBOOK and `client/besu/doc.go` document Besu's p2p requirement for the Engine
+  API.** Besu accepts `engine_forkchoiceUpdated` on an isolated snapshot node only with
+  p2p enabled — its synchronizer must register the post-merge head as in-sync, otherwise
+  Besu answers `SYNCING`.
+
 ### Fixed
 - **`erc20` template now honors `approximate_size_bytes`.** Previously
   the universal entity-level sizing knob was silently ignored on the

@@ -181,11 +181,12 @@ docker run -d \
   --engine-jwt-disabled
 ```
 
-Three besu-specific subtleties:
+Four besu-specific subtleties:
 
 - `--genesis-state-hash-cache-enabled` tells besu to trust the stored state root rather than recompute it from `chainspec.alloc` — required, since state-actor writes synthetic state directly into RocksDB.
 - `--data-storage-format=BONSAI` matches state-actor's writer layout.
 - Besu has **no native post-Merge dev mode** (clique is broken post-Shanghai; the legacy `--miner-enabled` path was removed in 26.4.0). Block production must be driven via the Engine API by a mock consensus layer. The state-actor repo's `internal/engineapi/` package provides a Go-side driver; in CI, `internal/e2e_testing.StartEngineDriver` drives blocks via `engine_forkchoiceUpdated` / `getPayload` / `newPayload`.
+- besu accepts `engine_forkchoiceUpdated` on this isolated node only with **p2p enabled** (the default — the boot command above does not disable it). Its synchronizer must run to register the post-merge head as in-sync; with `--p2p-enabled=false` it never does, so besu answers `SYNCING` to every forkchoice update. Keep p2p on (peers stay at zero anyway).
 
 The flags above match `host-allowlist=all` (literal `all`, not `*` — `*` would glob-expand against `/opt/besu/` in the image's entrypoint).
 

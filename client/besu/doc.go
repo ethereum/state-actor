@@ -27,6 +27,11 @@
 // genesis configs. Sticking with 25.11.0 keeps single-binary block
 // production until the Engine-API path is plumbed.
 //
+// When the Engine-API path runs against a 26.x Besu, keep p2p enabled: Besu
+// accepts engine_forkchoiceUpdated on an isolated node only once its
+// synchronizer has registered the post-merge head as in-sync, which it does
+// only with p2p on — --p2p-enabled=false makes Besu answer SYNCING.
+//
 // # Build
 //
 // state-actor's Besu path is **Docker-only**. The cgo_besu build tag gates
