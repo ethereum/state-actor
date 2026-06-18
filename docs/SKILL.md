@@ -1,28 +1,28 @@
 ---
 name: state-actor
-description: Use this skill when a user wants to generate, boot, verify, or extend a state-actor-produced Ethereum database. Covers --client, --spec, --target-size, per-client boot recipes (geth / reth / besu / nethermind), and the canonical 22-entity spec fixture.
+description: Use this skill when a user wants to generate, boot, verify, or extend a state-actor-produced Ethereum database. Covers --client, --spec, --target-size, per-client boot recipes (geth / reth / besu / nethermind / ethrex), and the canonical 29-entity spec fixture.
 ---
 
 # SKILL.md — how to use state-actor
 
 This is the canonical "how to use this lib" doc for agents. The root [`AGENTS.md`](../AGENTS.md) is a pointer that points here.
 
-state-actor generates client-ready Ethereum databases for geth, reth, besu, and nethermind without going through each client's `init` path. You point it at a `--db` path, choose a `--client`, optionally pass a `--spec` declaring concrete entities, and it writes a database the client can boot against directly.
+state-actor generates client-ready Ethereum databases for geth, reth, besu, nethermind, and ethrex without going through each client's `init` path. You point it at a `--db` path, choose a `--client`, optionally pass a `--spec` declaring concrete entities, and it writes a database the client can boot against directly.
 
 ## Read these first
 
 Read these in this order. The first one is load-bearing — read it before you read any prose about specs.
 
-1. [`examples/full-matrix-spec-feature.yaml`](../examples/full-matrix-spec-feature.yaml) — **the canonical syntax reference for `--spec`**. CI-pinned, 22 entities, every feature. Read this file before reading any other doc about specs; see the [Canonical spec reference](#canonical-spec-reference) section below for an intent → entity-# index.
+1. [`examples/full-matrix-spec-feature.yaml`](../examples/full-matrix-spec-feature.yaml) — **the canonical syntax reference for `--spec`**. CI-pinned, 29 entities, every feature. Read this file before reading any other doc about specs; see the [Canonical spec reference](#canonical-spec-reference) section below for an intent → entity-# index.
 2. [`SPEC.md`](SPEC.md) — the schema reference (parser rules, validation errors, address-resolution algorithm, `approximate_size_bytes` semantics). Read alongside the fixture.
-3. [`RUNBOOK.md`](RUNBOOK.md) — per-client boot recipes (geth / reth / besu / nethermind).
+3. [`RUNBOOK.md`](RUNBOOK.md) — per-client boot recipes (geth / reth / besu / nethermind / ethrex).
 4. [`ARCHITECTURE.md`](ARCHITECTURE.md) — internal architecture; cross-client determinism; per-client writer differences.
 
 ## Three load-bearing flags
 
 | Flag | What it controls |
 |---|---|
-| `--client` | Which client format to write (`geth`, `reth`, `besu`, `nethermind`) |
+| `--client` | Which client format to write (`geth`, `reth`, `besu`, `nethermind`, `ethrex`) |
 | `--spec` | Path to a YAML file declaring concrete entities (EOAs, contracts, ERC-20s, EIP-7702 delegations) |
 | `--target-size` | Advisory budget that sizes the auto-fill of synthetic state. Not a hard on-disk cap — actual size may vary per client. |
 
@@ -30,13 +30,13 @@ Everything else has a sane default. Run `state-actor --help` for the full list (
 
 ## Canonical spec reference
 
-**The single source of truth for what a `--spec` YAML can express is [`examples/full-matrix-spec-feature.yaml`](../examples/full-matrix-spec-feature.yaml).** Read that file before reading anything else about specs. It is exhaustive (22 entities, every feature), self-documenting (six section banners + per-entity comments), and CI keeps it correct.
+**The single source of truth for what a `--spec` YAML can express is [`examples/full-matrix-spec-feature.yaml`](../examples/full-matrix-spec-feature.yaml).** Read that file before reading anything else about specs. It is exhaustive (29 entities, every feature), self-documenting (six section banners + per-entity comments), and CI keeps it correct.
 
 The CI guarantees that hold this file as the canonical reference:
 
-- [`internal/specbuild/full_matrix_test.go`](../internal/specbuild/full_matrix_test.go) (`TestBuildFullMatrix`) pins the entity count at 22 and asserts the cross-client `PreAlloc` count equality. The unit-level drift gate — byte-identity is enforced downstream by the cross-client-genesis-root aggregator job.
+- [`internal/specbuild/full_matrix_test.go`](../internal/specbuild/full_matrix_test.go) (`TestBuildFullMatrix`) pins the entity count at 29 and asserts the cross-client `PreAlloc` count equality. The unit-level drift gate — byte-identity is enforced downstream by the cross-client-genesis-root aggregator job.
 - [`internal/e2e_testing/spec_setup.go`](../internal/e2e_testing/spec_setup.go) (`LoadCISpec`) loads the fixture with `seed=0` + `sizecal.NewFixed(64)` so every client sees the same input.
-- Per-client `TestE2ESuite` (in [`client/geth/e2e_test.go`](../client/geth/e2e_test.go), [`client/besu/e2e_test.go`](../client/besu/e2e_test.go), [`client/nethermind/e2e_test.go`](../client/nethermind/e2e_test.go), and [`client/reth/oracle_test.go`](../client/reth/oracle_test.go) for reth) boots a real client against state-actor's output, runs spamoor, and verifies every entity via the Go oracle.
+- Per-client `TestE2ESuite` (in [`client/geth/e2e_test.go`](../client/geth/e2e_test.go), [`client/besu/e2e_test.go`](../client/besu/e2e_test.go), [`client/nethermind/e2e_test.go`](../client/nethermind/e2e_test.go), [`client/reth/oracle_test.go`](../client/reth/oracle_test.go) for reth, and [`client/ethrex/e2e_test.go`](../client/ethrex/e2e_test.go) for ethrex) boots a real client against state-actor's output, runs spamoor, and verifies every entity via the Go oracle.
 - The `cross-client · genesis state-root invariant` aggregator job in [`.github/workflows/ci.yml`](../.github/workflows/ci.yml) refuses to merge a PR whose four clients produce different genesis roots from this fixture.
 
 The fixture is organised into six labelled sections; each one pins a feature cluster:
@@ -101,9 +101,10 @@ See [`RUNBOOK.md#geth`](RUNBOOK.md#geth) for the boot command, and [`client/geth
 go run . --db=/tmp/sa-reth --client=reth --target-size=100MB        # MDBX + RocksDB + static files
 go run . --db=/tmp/sa-besu --client=besu --target-size=100MB        # single RocksDB, 8 Bonsai CFs
 go run . --db=/tmp/sa-neth --client=nethermind --target-size=100MB  # 7 RocksDB instances
+go run . --db=/tmp/sa-ethrex --client=ethrex --target-size=100MB   # single RocksDB, 20 CFs
 ```
 
-`besu`, `nethermind`, and `reth` require cgo (RocksDB / MDBX bindings). On macOS, build via Docker — the repo ships per-client Dockerfiles. The per-client on-disk layout and pinned upstream version live in [`client/reth/doc.go`](../client/reth/doc.go), [`client/besu/doc.go`](../client/besu/doc.go), [`client/nethermind/doc.go`](../client/nethermind/doc.go).
+`besu`, `nethermind`, `reth`, and `ethrex` require cgo (RocksDB / MDBX bindings). On macOS, build via Docker — the repo ships per-client Dockerfiles. The per-client on-disk layout and pinned upstream version live in [`client/reth/doc.go`](../client/reth/doc.go), [`client/besu/doc.go`](../client/besu/doc.go), [`client/nethermind/doc.go`](../client/nethermind/doc.go), [`client/ethrex/doc.go`](../client/ethrex/doc.go).
 
 ### Boot a generated DB on a client
 
@@ -127,7 +128,7 @@ cast code    0x<a-known-spec-contract> --rpc-url ... # → the spec's bytecode
 
 ### Reproduce a CI failure locally
 
-CI loads `examples/full-matrix-spec-feature.yaml` on top of `--seed=42 --target-size=100MB` (mirrored across all four `TestE2ESuite` constants). The auto-fill (mainnet-shaped 20 / 10 / 70 split) emits synthetic state to fill the headroom between the spec's projected cost and `--target-size` — the spec entities are written first, the auto-fill fills the gap. Re-run:
+CI loads `examples/full-matrix-spec-feature.yaml` on top of `--seed=42 --target-size=100MB` (mirrored across all five `TestE2ESuite` constants). The auto-fill (mainnet-shaped 20 / 10 / 70 split) emits synthetic state to fill the headroom between the spec's projected cost and `--target-size` — the spec entities are written first, the auto-fill fills the gap. Re-run:
 
 ```bash
 go test -run TestE2ESuite ./client/<client>/... -v
@@ -135,14 +136,14 @@ go test -run TestE2ESuite ./client/<client>/... -v
 
 ### Diagnose "wrong state root"
 
-The cross-client genesis-root invariant says: same `--seed`, same spec, same client-policy → identical state root across all four MPT clients. If it diverges, see [`ARCHITECTURE.md#cross-client-determinism`](ARCHITECTURE.md#cross-client-determinism) for the full check-list (per-client calibration in [`internal/sizecal/doc.go`](../internal/sizecal/doc.go); canonical syscontract preamble; CI keystone job).
+The cross-client genesis-root invariant says: same `--seed`, same spec, same client-policy → identical state root across all five MPT clients. If it diverges, see [`ARCHITECTURE.md#cross-client-determinism`](ARCHITECTURE.md#cross-client-determinism) for the full check-list (per-client calibration in [`internal/sizecal/doc.go`](../internal/sizecal/doc.go); canonical syscontract preamble; CI keystone job).
 
 ## Constraints & gotchas
 
-- **Besu / reth / nethermind require Docker** for the writer side (cgo dependencies; no native build on macOS). Only geth has a pure-Go writer.
+- **Besu / reth / nethermind / ethrex require Docker** for the writer side (cgo dependencies; no native build on macOS). Only geth has a pure-Go writer.
 - **`--seed=0` is a footgun**: `main.go` rewrites it to `time.Now().UnixNano()`, i.e. randomises. For determinism use any non-zero seed. Bench convention is `--seed=42`.
 - **`--target-size` is required when `--spec` is not set**: drives the mainnet-shaped auto-fill (20 % account-trie / 10 % bytecode / 70 % storage) over the whole budget. With `--spec`, spec entities count first; the auto-fill fills the headroom on top. If the spec alone exceeds the budget, `internal/specbuild` truncates the entity list to the longest prefix that fits and emits a `--target-size … truncated spec at entity[N]` warning to stderr; no auto-fill runs in that case.
-- **`--archive` is geth/reth only**: rejected for besu and nethermind.
+- **`--archive` is geth/reth only**: rejected for besu, nethermind, and ethrex.
 - **`--binary-trie` is geth-only** (EIP-7864).
 - **When using `--spec` alone, omit `--target-size`** — that way no auto-fill runs on top and random EOAs can't collide with spec-derived addresses. Set both only when you want the auto-fill to pad the headroom.
 - **Nethermind boot needs a JSON `boot.cfg`** pointing at the chainspec + datadir (see `client/nethermind/e2e_test.go`'s `nethermindE2EConfigTemplate`). The other clients accept boot flags directly.
@@ -167,6 +168,6 @@ The entry points cluster by the kind of extension:
 | Change how spec entities resolve | [`internal/specbuild/doc.go`](../internal/specbuild/doc.go) | This is the seam between the YAML schema (parsed by `internal/spec`) and the writer-facing `[]PreAllocEntity` slice. Address modes live in `derive.go`. |
 | Touch the YAML schema | [`internal/spec/doc.go`](../internal/spec/doc.go) | Pure data + parse + schema-time validation. Keep import-cycle-free with `internal/templates`. |
 | Touch sizing / calibration | [`internal/sizecal/doc.go`](../internal/sizecal/doc.go) | One global `bytesPerSlot` constant per client; the CI invariance gate uses `NewFixed(64)` so test sizing can't mask a `Default()` drift. |
-| Add or modify a client target | [`client/geth/doc.go`](../client/geth/doc.go) (template), [`client/reth/doc.go`](../client/reth/doc.go), [`client/besu/doc.go`](../client/besu/doc.go), [`client/nethermind/doc.go`](../client/nethermind/doc.go) | Add `client/<name>/` with a `Run` (or `RunCgo`) entry point, a `doc.go` documenting on-disk layout + pinned upstream version, and a `TestE2ESuite` driving Docker boot + the shared `e2e.RunSuitePhases` oracle. Wire into `internal/clientpolicy/policy.go`. |
+| Add or modify a client target | [`client/geth/doc.go`](../client/geth/doc.go) (template), [`client/reth/doc.go`](../client/reth/doc.go), [`client/besu/doc.go`](../client/besu/doc.go), [`client/nethermind/doc.go`](../client/nethermind/doc.go), [`client/ethrex/doc.go`](../client/ethrex/doc.go) | Add `client/<name>/` with a `Run` (or `RunCgo`) entry point, a `doc.go` documenting on-disk layout + pinned upstream version, and a `TestE2ESuite` driving Docker boot + the shared `e2e.RunSuitePhases` oracle. Wire into `internal/clientpolicy/policy.go`. |
 | Work on the reth codec | [`internal/reth/doc.go`](../internal/reth/doc.go) | Byte-exact mirror of reth's MDBX schema + Compact codec. Pinned to a specific reth commit; updating requires regenerating `testdata/fixtures.json`. |
 | Add a CLI flag | `main.go` + [`ARCHITECTURE.md`](ARCHITECTURE.md) | Declare in `main.go`, document in `--help` text, refresh the compact flag table in [`README.md`](../README.md). |

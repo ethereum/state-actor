@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/holiman/uint256"
 
 	"github.com/ethereum/state-actor/internal/sizecal"
 	"github.com/ethereum/state-actor/internal/spec"
@@ -39,6 +40,199 @@ func parseSpec(t *testing.T, src string) *spec.Spec {
 		t.Fatalf("parse: %v", err)
 	}
 	return s
+}
+
+// TestPatternResidentCodeWarnings pins the I5 advisory tier: above
+// 2 GiB estimated unique-runtime residency a per-entity diagnostics
+// warning fires. Calls the helper directly (no Build, no Expand) so the
+// boundary counts stay instant. Measured basis: ≈24.6 KB resident per
+// pattern contract; a 150k-contract production fixture (≈3.4 GiB) warns
+// BY DESIGN, while small fixtures (e.g. full-matrix's salt_count=2) stay
+// silent (see TestBuildFullMatrix's warning-free assertion).
+func TestPatternResidentCodeWarnings(t *testing.T) {
+	mk := func(template string, params map[string]any) spec.Entity {
+		return spec.Entity{Kind: spec.KindContract, Template: template, Parameters: params}
+	}
+	cases := []struct {
+		name     string
+		entity   spec.Entity
+		wantWarn bool
+		contains string
+	}{
+		{"just under 2 GiB", mk("create2_deploys", map[string]any{
+			"code_pattern": "unique_jumpdest_pre_amsterdam", "salt_count": 87381,
+		}), false, ""},
+		{"just over 2 GiB", mk("create2_deploys", map[string]any{
+			"code_pattern": "unique_jumpdest_pre_amsterdam", "salt_count": 87382,
+		}), true, "2.0 GiB"},
+		{"min-fixture scale", mk("create2_deploys", map[string]any{
+			"code_pattern": "unique_jumpdest_pre_amsterdam", "salt_count": 150000,
+		}), true, "3.4 GiB"},
+		{"preimage pattern over threshold", mk("create_preimage_deploys", map[string]any{
+			"code_pattern": "unique_jumpdest_pre_amsterdam", "sender": "0x000000000000000000000000000000000000beef", "count": 150000,
+		}), true, "3.4 GiB"},
+		{"shared runtime is exempt", mk("create_preimage_deploys", map[string]any{
+			"runtime": "0x00", "sender": "0x000000000000000000000000000000000000beef", "count": 1000000,
+		}), false, ""},
+		{"garbage count deferred to schema validation", mk("create2_deploys", map[string]any{
+			"code_pattern": "unique_jumpdest_pre_amsterdam", "salt_count": "lots",
+		}), false, ""},
+	}
+	for _, c := range cases {
+		var diag Diagnostics
+		appendPatternResidentCodeWarnings([]spec.Entity{c.entity}, &diag)
+		if got := len(diag.Warnings) > 0; got != c.wantWarn {
+			t.Errorf("%s: warned=%v, want %v (%v)", c.name, got, c.wantWarn, diag.Warnings)
+			continue
+		}
+		if c.wantWarn && !strings.Contains(diag.Warnings[0], c.contains) {
+			t.Errorf("%s: warning should contain %q; got: %s", c.name, c.contains, diag.Warnings[0])
+		}
+	}
+}
+
+// TestBuildWarnsTargetSizeBlindTemplates pins the I4 fix: --target-size
+// budgets entities at ~bytesPerAccount via e.ApproximateSizeBytes only,
+// so a storage_pattern entity expanding 1001 slots (~140 KB real trie
+// cost) sailed under a 1000-byte TargetSize with ZERO warnings
+// (demonstrated against the unfixed tree) — truncateForTargetSize fails
+// open and the autofill top-up then overshoots. Build now emits exactly
+// ONE diagnostics warning naming every cost-blind entity. (The real fix
+// — a per-template ProjectCost — stays the TODO(template-aware-budget)
+// follow-up; this is the user-facing tripwire.)
+func TestBuildWarnsTargetSizeBlindTemplates(t *testing.T) {
+	mkStoragePattern := func(addr string) spec.Entity {
+		a := spec.HexAddress(common.HexToAddress(addr))
+		return spec.Entity{
+			Kind:       spec.KindContract,
+			Template:   "storage_pattern",
+			Address:    &a,
+			Parameters: map[string]any{"final": 1000},
+		}
+	}
+	countBlindWarnings := func(diag Diagnostics) int {
+		n := 0
+		for _, w := range diag.Warnings {
+			if strings.Contains(w, "size projection cannot see") {
+				n++
+			}
+		}
+		return n
+	}
+
+	// TargetSize > 0 (well above the ~175 B projected cost, far below the
+	// ~140 KB real cost) → exactly one warning naming the template.
+	opts := defaultOpts
+	opts.TargetSize = 1000
+	s := &spec.Spec{Entities: []spec.Entity{mkStoragePattern("0x0000000000000000000000000000000000005000")}}
+	pre, diag, err := Build(s, opts)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if len(pre) != 1 {
+		t.Fatalf("entity count: got %d, want 1 (must build, not truncate)", len(pre))
+	}
+	if n := countBlindWarnings(diag); n != 1 {
+		t.Fatalf("blind-template warnings: got %d, want 1 (warnings: %v)", n, diag.Warnings)
+	}
+	if !strings.Contains(diag.Warnings[0], "storage_pattern") {
+		t.Errorf("warning must name the template; got: %s", diag.Warnings[0])
+	}
+
+	// TargetSize == 0 → no warning.
+	_, diag, err = Build(s, defaultOpts)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if n := countBlindWarnings(diag); n != 0 {
+		t.Errorf("TargetSize=0: got %d blind warnings, want 0 (%v)", n, diag.Warnings)
+	}
+
+	// Two blind entities → still exactly ONE warning, listing both anchors.
+	s2 := &spec.Spec{Entities: []spec.Entity{
+		mkStoragePattern("0x0000000000000000000000000000000000005000"),
+		mkStoragePattern("0x0000000000000000000000000000000000006000"),
+	}}
+	_, diag, err = Build(s2, opts)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if n := countBlindWarnings(diag); n != 1 {
+		t.Errorf("two blind entities: got %d warnings, want 1 (%v)", n, diag.Warnings)
+	}
+	if len(diag.Warnings) > 0 && (!strings.Contains(diag.Warnings[0], "entities[0]") || !strings.Contains(diag.Warnings[0], "entities[1]")) {
+		t.Errorf("warning must list both anchors; got: %s", diag.Warnings[0])
+	}
+
+	// Parameterless template (create2_factory: one fixed account the
+	// projection prices correctly) → no warning.
+	s3 := &spec.Spec{Entities: []spec.Entity{{
+		Kind:     spec.KindContract,
+		Template: "create2_factory",
+	}}}
+	_, diag, err = Build(s3, opts)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if n := countBlindWarnings(diag); n != 0 {
+		t.Errorf("create2_factory-only: got %d blind warnings, want 0 (%v)", n, diag.Warnings)
+	}
+}
+
+// TestBuildRejectsIgnoredEntityFields pins the C1 fix: entity-level
+// `balance:` on a template that only reads parameters.balance used to be
+// SILENTLY ignored — Build returned 1-wei accounts with zero warnings
+// (demonstrated against the unfixed tree), so a 150k-sender pool the
+// spec said was funded came out holding 1 wei each, discovered only when
+// the benchmark's first value-bearing transaction failed. Build now
+// rejects the entity outright, naming the parameters-level alternative.
+func TestBuildRejectsIgnoredEntityFields(t *testing.T) {
+	anchor := spec.HexAddress(common.HexToAddress("0x0000000000000000000000000000000000001000"))
+	bal := spec.BigIntDecimal{V: uint256.NewInt(5_000_000_000_000_000_000)}
+	s := &spec.Spec{Entities: []spec.Entity{{
+		Kind:       spec.KindContract,
+		Template:   "sequential_eoas",
+		Address:    &anchor,
+		Balance:    &bal,
+		Parameters: map[string]any{"count": 3},
+	}}}
+	pre, diag, err := Build(s, defaultOpts)
+	if err == nil {
+		got := "no entities"
+		if len(pre) > 0 {
+			got = fmt.Sprintf("%d entities, first balance=%s", len(pre), pre[0].Account.Balance)
+		}
+		t.Fatalf("expected error for ignored entity-level balance; got nil (%s, %d warnings)", got, len(diag.Warnings))
+	}
+	for _, want := range []string{"entity-level", "parameters.balance"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error must contain %q; got: %v", want, err)
+		}
+	}
+}
+
+// TestBuildAllowsHonoredEntityFields is the control for the C1 fix:
+// storage_pattern honors entity-level nonce/balance (the shipped
+// repricing fixtures rely on exactly this shape), so it must keep
+// building — and the values must actually land in the account.
+func TestBuildAllowsHonoredEntityFields(t *testing.T) {
+	anchor := spec.HexAddress(common.HexToAddress("0x0000000000000000000000000000000000004000"))
+	bal := spec.BigIntDecimal{V: uint256.NewInt(7)}
+	s := &spec.Spec{Entities: []spec.Entity{{
+		Kind:       spec.KindContract,
+		Template:   "storage_pattern",
+		Address:    &anchor,
+		Nonce:      1,
+		Balance:    &bal,
+		Parameters: map[string]any{"final": 5},
+	}}}
+	pre, _, err := Build(s, defaultOpts)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if len(pre) != 1 || pre[0].Account.Nonce != 1 || pre[0].Account.Balance.Uint64() != 7 {
+		t.Fatalf("storage_pattern entity-level fields not honored: %+v", pre[0].Account)
+	}
 }
 
 func TestBuildStory1(t *testing.T) {

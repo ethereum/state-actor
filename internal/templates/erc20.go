@@ -46,8 +46,21 @@ const erc20FixedDecimals = 18
 // from explicit + random balances; users cannot override it.
 type erc20Template struct{}
 
-func (erc20Template) Name() string      { return "erc20" }
+// TemplateNameERC20 is the registry key for this template.
+const TemplateNameERC20 = "erc20"
+
+func (erc20Template) Name() string      { return TemplateNameERC20 }
 func (erc20Template) UserVisible() bool { return true }
+
+func (erc20Template) HonoredEntityFields() EntityFieldSet {
+	h := EntityFieldSupport{Honored: true}
+	return EntityFieldSet{
+		Balance:              h,
+		Nonce:                h,                    // floored to 1 in Expand
+		Code:                 EntityFieldSupport{}, // the template owns the runtime; spec.Validate already forbids template+code
+		ApproximateSizeBytes: h,                    // fallback sizing when neither total_owners nor total_allowances is set
+	}
+}
 
 func (erc20Template) ValidateParameters(params map[string]any) error {
 	required := []string{"symbol", "name", "decimals"}

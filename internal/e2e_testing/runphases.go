@@ -149,6 +149,16 @@ func RunSuitePhases(t *testing.T, cfg SuitePhasesCfg) {
 	if !CheckInjections(t, cfg.RPCURL, cfg.GeneratorConfig, "latest") {
 		t.Fatalf("pre-spamoor oracle re-query (injections + alloc) failed; aborting before spamoor phase")
 	}
+	// 4c′ — spec-entity storage, sampled straight from PreAlloc.
+	// CheckInjections can't see it: GenesisStorage stays empty on the
+	// spec path (Storage streams from cfg.PreAlloc to the writers), so
+	// without this probe spec storage is gated only by cross-client root
+	// agreement — identical wrong layouts on all four clients would pass.
+	if cfg.GeneratorConfig != nil {
+		if !CheckSpecStorage(t, cfg.RPCURL, cfg.GeneratorConfig.PreAlloc, "latest") {
+			t.Fatalf("pre-spamoor oracle re-query (spec storage) failed; aborting before spamoor phase")
+		}
+	}
 	// 4d — ERC-20 template oracle: name/symbol/decimals/totalSupply +
 	// every explicit owner/allowance + sampled random ones. Verifies
 	// the vendored OZ v5 bytecode is RPC-callable and every spec'd

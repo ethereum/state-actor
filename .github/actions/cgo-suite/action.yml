@@ -12,7 +12,7 @@ description: |
 
 inputs:
   client:
-    description: Client name (besu | nethermind | reth) — used in volume names + result filename
+    description: Client name (besu | nethermind | reth | ethrex) — used in volume names + result filename
     required: true
   dockerfile:
     description: Dockerfile path for this client's builder image
@@ -24,7 +24,7 @@ inputs:
     description: GHA buildx cache scope (per-client to avoid eviction)
     required: true
   env-prefix:
-    description: 'Prefix for ORACLE_DATADIR / ORACLE_VOL / DOCKER_PLATFORM env vars (BESU | NETH | RETH)'
+    description: 'Prefix for ORACLE_DATADIR / ORACLE_VOL / DOCKER_PLATFORM env vars (BESU | NETH | RETH | ETHREX)'
     required: true
   test-tags:
     description: 'go test -tags string (e.g. "cgo_besu oracle")'
@@ -87,7 +87,7 @@ runs:
         VOL="${CLIENT}-suite-datadir"
         docker volume rm -f "$VOL" >/dev/null 2>&1 || true
         docker volume create "$VOL"
-        # All 3 cgo builder images now share WORKDIR=/app + no
+        # All 4 cgo builder images now share WORKDIR=/app + no
         # ENTRYPOINT, so the docker run is uniform: <image> go test ...
         # No more `--entrypoint bash -c 'cd /app && ...'` workaround.
         run_filter=()

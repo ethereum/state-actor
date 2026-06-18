@@ -135,8 +135,31 @@ func RunCgo(ctx context.Context, cfg generator.Config, opts Options) (*generator
 			for i := 0; i < b; i++ {
 				batch[i] = plan.DrawEOA(rng)
 			}
-			if err := WriteEOAs(envs, batch, 0, cfg.Archive, stats); err != nil {
-				return nil, fmt.Errorf("RunCgo: WriteEOAs: %w", err)
+			// plan.DrawEOA can return 7702-delegating EOAs carrying a 23-byte
+			// 0xef0100<addr> code. Those must go through WriteContracts so their
+			// CodeHash lands in HashedAccounts — WriteEOAs writes BytecodeHash=nil,
+			// which would store them code-less and make reth's HashedAccounts
+			// leaves diverge from the committed state root (the streamsort uses
+			// acc.StateAccount.CodeHash, so the root would include the delegation
+			// while the leaf would not). Dispatch by shape, exactly like the alloc
+			// path above.
+			var plainEOAs, codeEOAs []*entitygen.Account
+			for _, acc := range batch {
+				if len(acc.Code) == 0 {
+					plainEOAs = append(plainEOAs, acc)
+				} else {
+					codeEOAs = append(codeEOAs, acc)
+				}
+			}
+			if len(plainEOAs) > 0 {
+				if err := WriteEOAs(envs, plainEOAs, 0, cfg.Archive, stats); err != nil {
+					return nil, fmt.Errorf("RunCgo: WriteEOAs: %w", err)
+				}
+			}
+			if len(codeEOAs) > 0 {
+				if err := WriteContracts(envs, codeEOAs, 0, cfg.Archive, stats); err != nil {
+					return nil, fmt.Errorf("RunCgo: WriteContracts(7702 EOA): %w", err)
+				}
 			}
 			for _, acc := range batch {
 				if err := putAccountRLP(acc); err != nil {
@@ -244,4 +267,3 @@ func RunCgo(ctx context.Context, cfg generator.Config, opts Options) (*generator
 	stats.TotalBytes = stats.AccountBytes + stats.StorageBytes + stats.CodeBytes
 	return stats, nil
 }
-

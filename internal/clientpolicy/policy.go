@@ -39,12 +39,12 @@ type FlagValues struct {
 //     by every client.
 func ValidateForClient(client string, fv FlagValues) error {
 	switch client {
-	case "geth", "nethermind", "besu", "reth":
+	case "geth", "nethermind", "besu", "reth", "ethrex":
 		// recognized; per-flag checks below
 	case "erigon":
-		return fmt.Errorf("--client=%s is not yet implemented (planned in a follow-up PR); use --client=geth, --client=nethermind, --client=besu, or --client=reth", client)
+		return fmt.Errorf("--client=%s is not yet implemented (planned in a follow-up PR); use --client=geth, --client=nethermind, --client=besu, --client=reth, or --client=ethrex", client)
 	default:
-		return fmt.Errorf("--client=%s is not recognized; valid values: geth, nethermind, besu, reth", client)
+		return fmt.Errorf("--client=%s is not recognized; valid values: geth, nethermind, besu, reth, ethrex", client)
 	}
 
 	// EIP-7864 binary trie — geth-only.
@@ -56,6 +56,8 @@ func ValidateForClient(client string, fv FlagValues) error {
 			return fmt.Errorf("--binary-trie is not supported with --client=besu (Besu does not implement EIP-7864)")
 		case "reth":
 			return fmt.Errorf("--binary-trie is not supported with --client=reth (Reth does not implement EIP-7864)")
+		case "ethrex":
+			return fmt.Errorf("--binary-trie is not supported with --client=ethrex (ethrex does not implement EIP-7864)")
 		}
 	}
 

@@ -6,7 +6,7 @@
 #                                   tag set. Catches compile + non-cgo
 #                                   regressions early.
 #   cgo-suite (matrix: besu,
-#     nethermind, reth)           — per-client e2e suite for the 3 cgo
+#     nethermind, reth, ethrex)   — per-client e2e suite for the 4 cgo
 #                                   clients. Each leg runs db-gen → boot
 #                                   → genesis-root capture → oracle
 #                                   re-query @ "0x0" → spamoor (~100
@@ -15,9 +15,10 @@
 #                                   run TestDifferentialOracle; reth
 #                                   runs all `cgo_reth oracle` tests
 #                                   (TestE2ESuite + TestRethDbStats* +
-#                                   TestRethNodeBootEmptyAlloc). Per-leg
-#                                   logic lives in the cgo-suite
-#                                   composite action at
+#                                   TestRethNodeBootEmptyAlloc); ethrex
+#                                   runs TestEthrexGoldenStateRoot +
+#                                   TestE2ESuite. Per-leg logic lives in
+#                                   the cgo-suite composite action at
 #                                   .github/actions/cgo-suite/.
 #   geth-suite                    — same shape; geth runs in --dev mode
 #                                   (PoA + self-emulated CL) so Phase
@@ -28,7 +29,7 @@
 #   cross-client-genesis-root     — needs cgo-suite + geth-suite.
 #                                   Downloads each artifact; validates
 #                                   the genesis_state_root regex +
-#                                   rejects all-zero; asserts all 4
+#                                   rejects all-zero; asserts all 5
 #                                   clients agree. ~30 sec.
 #
 # Replaces the previous 9-job layout (default + reth-cgo + 3 oracles +
@@ -99,7 +100,7 @@ jobs:
   #  4. Uploads {client}-result.json for the cross-client aggregator.
   #
   # Was: 3 separate ~60-LOC jobs sharing ~95% of their structure. Now:
-  # one matrix + 3 entries. Single bump-point for cache strategy /
+  # one matrix + 4 entries. Single bump-point for cache strategy /
   # spamoor wiring / Docker flags. Composite action lives in
   # .github/actions/cgo-suite/.
   # ---------------------------------------------------------------------------
@@ -141,6 +142,14 @@ jobs:
             # test coverage that the previous `-run TestE2ESuite` filter
             # silently dropped.
             test-run-filter: ''
+          - client: ethrex
+            dockerfile: Dockerfile.ethrex
+            image-tag: state-actor-ethrex-builder:latest
+            cache-scope: ethrex-builder
+            env-prefix: ETHREX
+            test-tags: 'cgo_ethrex oracle'
+            test-pkg: ./client/ethrex/
+            test-run-filter: 'TestEthrexGoldenStateRoot|TestGenesisDumpGolden|TestE2ESuite'
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/cgo-suite
@@ -218,16 +227,16 @@ jobs:
         with:
           path: _artifacts
           merge-multiple: true
-      - name: Compare genesis state-roots across all 4 clients
+      - name: Compare genesis state-roots across all 5 clients
         run: |
           set -euo pipefail
           cd _artifacts
           ls -l
-          # All 4 clients must have uploaded a result. Otherwise the
-          # invariant check is meaningless — e.g. if 3 of 4 suites fail
+          # All 5 clients must have uploaded a result. Otherwise the
+          # invariant check is meaningless — e.g. if 4 of 5 suites fail
           # before Phase 3, only 1 result lands here and the "all unique
           # roots == 1" check would trivially pass with 1 entry.
-          want=(besu geth nethermind reth)
+          want=(besu ethrex geth nethermind reth)
           missing=()
           for c in "${want[@]}"; do
             if [ ! -f "$c-result.json" ]; then
@@ -243,10 +252,10 @@ jobs:
           # shape, and reject the all-zero hash. `jq -r .x` on a
           # missing field outputs the literal string "null" — which
           # would silently be considered "unique" by the count below
-          # if all 4 clients reported missing fields. Same for short/
+          # if all 5 clients reported missing fields. Same for short/
           # malformed values. The regex pin defends against false-PASS
           # via missing fields or zero-init writes — it's the
-          # invariant the whole 5-job CI exists to defend.
+          # invariant the whole 6-job CI exists to defend.
           root_re='^0x[0-9a-fA-F]{64}$'
           zero_root='0x0000000000000000000000000000000000000000000000000000000000000000'
           for c in "${want[@]}"; do
@@ -268,4 +277,4 @@ jobs:
             echo "$uniq_roots" | jq .
             exit 1
           fi
-          echo "PASS: all 4 clients agree on genesis state-root: $(echo "$uniq_roots" | jq -r '.[0]')"
+          echo "PASS: all 5 clients agree on genesis state-root: $(echo "$uniq_roots" | jq -r '.[0]')"

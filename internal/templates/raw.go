@@ -19,8 +19,15 @@ func init() {
 // storage slots filling approximate_size_bytes (if > 0).
 type rawTemplate struct{}
 
-func (rawTemplate) Name() string      { return "raw" }
+// TemplateNameRaw is the registry key for this template; Name() returns
+// this constant so cross-package consumers (specbuild's pickTemplate)
+// can never drift from the registered name.
+const TemplateNameRaw = "raw"
+
+func (rawTemplate) Name() string      { return TemplateNameRaw }
 func (rawTemplate) UserVisible() bool { return false }
+
+func (rawTemplate) HonoredEntityFields() EntityFieldSet { return AllEntityFieldsHonored() }
 
 func (rawTemplate) ValidateParameters(params map[string]any) error {
 	if len(params) > 0 {

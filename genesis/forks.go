@@ -9,12 +9,13 @@ import (
 	"github.com/ethereum/go-ethereum/params"
 )
 
-// DefaultFork is the fork-active-at-genesis when --fork is not set.
-//
-// "prague" is the safe default that geth and reth writers populate
-// structurally complete (RequestsHash etc.). Bump to "osaka"/"amsterdam"
-// once besu and nethermind writers cover post-Prague header fields (B7
-// in the unify-client-features plan).
+// DefaultFork is the conservative cross-client fallback fork, used where no
+// client context is available: BuildChainConfigForFork("")/LatestForkName and
+// the engine-API default. It is intentionally NOT the genesis default — the CLI
+// resolves an unset --fork to MaxForkForClient(client), which returns "osaka"
+// for every supported client (see MaxForkForClient). "prague" stays the
+// context-free fallback because it is the last fork all writers populate
+// structurally complete without per-client conditionals.
 const DefaultFork = "prague"
 
 // Fork identifies a hard-fork by its lower-case canonical name. Activation
@@ -111,9 +112,9 @@ func BuildChainConfigForFork(name string, chainID *big.Int) (*params.ChainConfig
 	return cfg, nil
 }
 
-// LatestForkName returns the fork name state-actor defaults to when --fork
-// is not set. Tracks DefaultFork; exposed so the CLI help string can
-// reflect the current default without duplicating the constant.
+// LatestForkName returns DefaultFork, the context-free fallback fork (NOT the
+// per-client genesis default, which is MaxForkForClient). Exposed so callers
+// can reference the fallback without duplicating the constant.
 func LatestForkName() string { return DefaultFork }
 
 // ListForks returns the user-selectable fork names in historical
@@ -143,9 +144,9 @@ func SortedForks() []string {
 // ceiling should be rejected at parse time so the resulting DB doesn't
 // boot with a "wrong genesis hash" mismatch.
 //
-// Today's ceilings (all 4 clients on Osaka after the writer migration to internal/genesisheader.Build):
-//   - geth, reth, besu, nethermind: osaka. Header construction flows
-//     through internal/genesisheader.Build for besu/reth/nethermind
+// Today's ceilings (all 5 clients on Osaka after the writer migration to internal/genesisheader.Build):
+//   - geth, reth, besu, nethermind, ethrex: osaka. Header construction flows
+//     through internal/genesisheader.Build for besu/reth/nethermind/ethrex
 //     (geth uses go-ethereum's native genesis builder, which handles
 //     every fork through Osaka identically). Per-client chainspec
 //     writers emit shanghaiTime/cancunTime/pragueTime/osakaTime/
@@ -161,7 +162,7 @@ func SortedForks() []string {
 // corresponding header fields.
 func MaxForkForClient(client string) string {
 	switch client {
-	case "geth", "reth", "besu", "nethermind":
+	case "geth", "reth", "besu", "nethermind", "ethrex":
 		return "osaka"
 	default:
 		return DefaultFork

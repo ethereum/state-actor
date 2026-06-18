@@ -1,0 +1,124 @@
+# syntax=docker/dockerfile:1
+# Dockerfile.ethrex — builds state-actor with the cgo_ethrex tag so
+# --client=ethrex works.
+#
+# RocksDB strategy: build from source. Pinned to RocksDB 10.10.1 to match
+# `grocksdb v1.10.8`'s C-binding expectations (its build.sh pins this exact
+# version). ethrex uses a single RocksDB instance with 20 column families;
+# the same grocksdb pairing used for besu and nethermind applies here.
+#
+# Why 10.10.1 specifically: grocksdb v1.10.8's C bindings reference
+# `rocksdb_slice_t`, which doesn't exist in RocksDB 10.6.2 headers — building
+# against 10.6.2 fails with:
+#   grocksdb/array.go:17:23: could not determine what C.rocksdb_slice_t refers to
+# Bumping RocksDB to 10.10.1 (this file) is the easier fix vs downgrading
+# grocksdb to v1.10.4 — go.mod is shared with cgo_neth which already pairs
+# with 10.10.1.
+#
+#   * Verified pairings (from grocksdb's build.sh per tag):
+#       grocksdb v1.10.4 → RocksDB 10.6.2
+#       grocksdb v1.10.5 → RocksDB 10.7.5
+#       grocksdb v1.10.6 → RocksDB 10.8.3
+#       grocksdb v1.10.7 → RocksDB 10.9.1
+#       grocksdb v1.10.8 → RocksDB 10.10.1  ← we use this
+#
+#   * On-disk layout: single RocksDB at <dbPath> with 20 column families.
+#     Sidecar files: metadata.json (schema_version=2) and ethrex-genesis.json
+#     (full genesis JSON for `ethrex --network <path>`).
+#
+# Run:
+#   docker build -f Dockerfile.ethrex -t state-actor-ethrex:latest .
+#   docker run --rm -v $(pwd)/_artifacts/ethrex:/data state-actor-ethrex:latest \
+#     --client=ethrex --db=/data --accounts=10 --contracts=0
+
+ARG ROCKSDB_VERSION=10.10.1
+
+# ---------- Stage 1: builder (rocksdb + state-actor) ----------
+# Both the RocksDB shared library and the state-actor binary are built in
+# this stage to avoid header/lib path drift between separate stages. Stage
+# 2 (runtime) carries only the .so + state-actor binary, not the toolchain.
+FROM golang:1.24-bookworm AS builder
+
+ARG ROCKSDB_VERSION
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    curl \
+    git \
+    build-essential \
+    cmake \
+    pkg-config \
+    libgflags-dev \
+    libsnappy-dev \
+    liblz4-dev \
+    libzstd-dev \
+    libbz2-dev \
+    zlib1g-dev \
+    gnupg \
+    # docker-ce-cli is needed by `make test-ethrex-boot` — the boot test
+    # runs inside this builder image and spawns an ethrex container via DinD
+    # (host docker socket mount). Without the docker CLI in PATH the
+    # test fails at exec.Command("docker", …). Same setup as
+    # Dockerfile.besu (the Docker apt repo's bookworm stable channel).
+    && install -m 0755 -d /etc/apt/keyrings \
+    && curl -fsSL https://download.docker.com/linux/debian/gpg \
+       | gpg --dearmor -o /etc/apt/keyrings/docker.gpg \
+    && chmod a+r /etc/apt/keyrings/docker.gpg \
+    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] \
+       https://download.docker.com/linux/debian bookworm stable" \
+       > /etc/apt/sources.list.d/docker.list \
+    && apt-get update && apt-get install -y --no-install-recommends docker-ce-cli \
+    && rm -rf /var/lib/apt/lists/*
+
+# Build RocksDB from source. -j2 keeps peak memory under ~4GB; rocksdb's
+# larger C++ files need 1-2GB per gcc instance and Docker Desktop's
+# default 8GB can't sustain $(nproc) parallel compiles on Apple Silicon.
+RUN mkdir -p /src && cd /src \
+    && curl -fsSL "https://github.com/facebook/rocksdb/archive/refs/tags/v${ROCKSDB_VERSION}.tar.gz" \
+       | tar xz \
+    && cd rocksdb-${ROCKSDB_VERSION} \
+    && PORTABLE=1 USE_RTTI=1 DISABLE_WARNING_AS_ERROR=1 make -j2 shared_lib \
+    && make install-shared INSTALL_PATH=/usr/local \
+    && ldconfig \
+    && cd /src && rm -rf rocksdb-${ROCKSDB_VERSION}
+# DISABLE_WARNING_AS_ERROR=1 mirrors Dockerfile.nethermind's note: gcc 12
+# (debian bookworm) tags a -Wrestrict warning in rocksdb's table/unique_id.cc
+# as an error. Same workaround applies as in the nethermind build.
+
+ENV CGO_ENABLED=1 \
+    CGO_CFLAGS="-I/usr/local/include" \
+    CGO_LDFLAGS="-L/usr/local/lib -lrocksdb -lstdc++ -lm -lz -lbz2 -lsnappy -llz4 -lzstd"
+
+WORKDIR /app
+
+# Cache go.mod / go.sum dependency layer.
+COPY go.mod go.sum ./
+RUN go mod download
+
+COPY . .
+
+RUN go build -tags cgo_ethrex -ldflags "-s -w" -o /out/state-actor .
+
+# ---------- Stage 2: minimal runtime image ----------
+FROM debian:bookworm-slim AS runtime
+
+# Compression libs (rocksdb runtime links against these). RocksDB's own
+# .so comes from the builder stage. libgflags2.2 is a static transitive
+# dep of librocksdb.so — without it runtime symbol resolution fails.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    libsnappy1v5 \
+    liblz4-1 \
+    libzstd1 \
+    libbz2-1.0 \
+    libstdc++6 \
+    libgflags2.2 \
+    zlib1g \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=builder /usr/local/lib/librocksdb.so* /usr/local/lib/
+RUN ldconfig
+
+COPY --from=builder /out/state-actor /usr/local/bin/state-actor
+
+ENTRYPOINT ["/usr/local/bin/state-actor"]

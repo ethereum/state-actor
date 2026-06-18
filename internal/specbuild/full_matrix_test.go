@@ -29,7 +29,7 @@ func TestBuildFullMatrix(t *testing.T) {
 	if _, err := s.Validate(templates.UserVisibleNames()); err != nil {
 		t.Fatalf("Validate: %v", err)
 	}
-	if got, want := len(s.Entities), 22; got != want {
+	if got, want := len(s.Entities), 29; got != want {
 		t.Fatalf("entity count: got %d, want %d", got, want)
 	}
 

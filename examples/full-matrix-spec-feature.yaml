@@ -90,9 +90,13 @@ entities:
       name: NonceOverride
       total_owners: 10
 
-  # 7. ERC-20 + approximate_size_bytes storage synth (template + bloat
-  # combo, exercises the raw.go:57-62 synth path AND the explicit
-  # owners path in the same entity).
+  # 7. ERC-20 sizing precedence: explicit total_owners WINS over
+  # approximate_size_bytes. The erc20 template's approximate_size_bytes
+  # fallback only fires when neither total_owners nor total_allowances is
+  # set (internal/templates/erc20.go), so the 50_000 below is inert here
+  # and present only to pin that precedence. (The fallback path itself is
+  # unit-proven byte-equivalent to the total_owners path in erc20_test.go;
+  # it is not a separate on-disk shape.)
   - kind: contract
     template: erc20
     name: bloated-erc20
@@ -151,11 +155,12 @@ entities:
     name: raw-named
     code: "0x60606040526000357c01000000000000000000000000000000000000000000000000000000009004"
 
-  # 12. Near-EIP-170 max-size code (≤24_576 bytes). Pads a small valid
-  # PUSH1/STOP prelude with a 24_500-byte 0x00 tail — passes EIP-170
-  # validation (≤24_576) and exercises the writer's large-code path.
-  # For the YAML we set a deterministic ~10 KB literal to keep the
-  # file small.
+  # 12. raw template with an explicit literal code blob (39 bytes here).
+  # Exercises the raw-code writer path at a fixed address. The LARGE-code
+  # writer path (near-EIP-170, byte-unique per address) is covered by
+  # entity 29 (create2_deploys code_pattern), whose 24_576-byte runtimes
+  # are byte-probed via eth_getCode on every client — keeping this entry
+  # a small literal so the fixture file stays compact.
   - kind: contract
     name: raw-large
     address: 0x000000000000000000000000000000000000bbbc
@@ -230,3 +235,124 @@ entities:
   - kind: eoa
     name: default-nonce-eoa
     balance: "100000000000000000"
+
+  # ── 23-29. PR 76 repricing-benchmark templates ───────────────────────
+  # Instances of the six user-visible templates introduced in PR 76
+  # (storage_pattern, create2_factory, create2_deploys,
+  # create_preimage_deploys, sequential_eoas, sequential_pkey_eoas),
+  # spanning each template's distinct writer-visible MODES: literal vs
+  # code_pattern code (#25 vs #29), shared vs per-address-unique runtime,
+  # storage_init on code-bearing derived contracts (#26), the 1-wei
+  # default EOA (#27), and a custom entity-level nonce (#23). Scale stays
+  # under the 500 KB total-fixture budget.
+  #
+  # Coverage layered against the existing unit tests:
+  #   - internal/templates/<template>_test.go pins each iter's (key, value)
+  #     output (correctness of what the iter emits).
+  #   - This fixture drives the per-client writer path: each of
+  #     geth/besu/nethermind/reth materializes the entities during
+  #     TestE2ESuite, then Phase 4 RPC-probes them directly —
+  #     eth_getCode (byte-exact, CheckInjections), eth_getTransactionCount
+  #     (CheckInjections, exact when nonce>0), eth_getStorageAt (sampled,
+  #     CheckSpecStorage) — AND the cross-client-genesis-root aggregator
+  #     asserts all 4 roots agree. Both layers are needed: the root commits
+  #     to CodeHash (shared code), so only the direct eth_getCode probe can
+  #     catch a client persisting truncated/wrong code bytes.
+
+  # 23. storage_pattern — dense-counter layout. slot 0 = final+1,
+  # slot k = k for k in 1..final. Entity-level nonce/balance are honored
+  # by this template; nonce: 42 (≠ the template's EIP-161 floor of 1)
+  # gets an exact eth_getTransactionCount probe at L4, and the slot
+  # layout is sampled by CheckSpecStorage.
+  - kind: contract
+    template: storage_pattern
+    name: ci-storage-pattern
+    address: 0x000000000000000000000000000000000000c0de
+    nonce: 42
+    balance: "1000000000000000000"
+    parameters:
+      final: 20
+
+  # 24. create2_factory — Arachnid deterministic-deployment proxy
+  # runtime. Address pinned by the template to the canonical
+  # 0x4e59…956c; required for create2_deploys (#25) to reference it.
+  - kind: contract
+    template: create2_factory
+    name: ci-create2-factory
+    address: 0x4e59b44847b379578588920cA78FbF26c0B4956C
+
+  # 25. create2_deploys — fans out salt_count contracts at
+  # CREATE2-derived addresses. Uses canonical factory above.
+  - kind: contract
+    template: create2_deploys
+    name: ci-create2-deploys
+    parameters:
+      initcode: "0x6001600052602060006000F0"
+      runtime: "0x615fff565b"
+      salt_count: 3
+
+  # 26. create_preimage_deploys — fans out `count` contracts at
+  # CREATE-derived addresses (keccak(rlp([sender, nonce]))[12:]).
+  # Sender is a parameter, not the entity's own address. storage_init
+  # plants the same slots on every derived contract, so these are
+  # code-bearing AND storage-bearing accounts — CheckSpecStorage samples
+  # the slots, exercising the per-client Phase-0 storage-root splice for
+  # accounts that also carry code.
+  - kind: contract
+    template: create_preimage_deploys
+    name: ci-create-preimage
+    parameters:
+      sender: "0x000000000000000000000000000000000000abcd"
+      start_nonce: 2
+      count: 3
+      runtime: "0x615fff565b"
+      storage_init:
+        "0x0": "0x2a"
+        "0x1": "0xcafe"
+        "0x2": "0x000000000000000000000000000000000000abcd"
+
+  # 27. sequential_eoas — fans out `count` plain EOAs at consecutive
+  # addresses starting at the entity's resolved address. `balance` is
+  # OMITTED on purpose: the template defaults to 1 wei (the minimum that
+  # keeps a code-less, nonce-0 EOA off EIP-161's pruning path). This is
+  # the only fixture entity that ships that 1-wei default through every
+  # client writer — a client that prunes/normalizes such accounts at
+  # genesis init would diverge the cross-client root.
+  - kind: contract
+    template: sequential_eoas
+    name: ci-sequential-eoas
+    address: 0x0000000000000000000000000000000000005000
+    parameters:
+      count: 3
+
+  # 28. sequential_pkey_eoas — fans out `count` plain EOAs at addresses
+  # derived from successive secp256k1 private keys starting at
+  # `start_pkey`. Unlike sequential_eoas (sequential addresses), the
+  # caller knows the pkey for each planted account.
+  - kind: contract
+    template: sequential_pkey_eoas
+    name: ci-sequential-pkey-eoas
+    parameters:
+      start_pkey: "0x2222222222222222222222222222222222222222222222222222222222222222"
+      count: 3
+      balance: "1000000000000000000"
+
+  # 29. create2_deploys in code_pattern mode — the ONLY entity that
+  # drives a large, byte-UNIQUE-per-address code blob through every
+  # client writer's code store. salt_count: 2 → two 24_576-byte runtimes
+  # (the unique_jumpdest_pre_amsterdam pattern, each embedding its own
+  # derived address) at the externally-pinned CREATE2 addresses
+  # 0xEC9B…aAd8 (salt 0) and 0x59B3…c5Aa (salt 1). Uses the default
+  # Arachnid factory — satisfied by entity 24. This is the gap the
+  # cross-client root cannot close on its own: the root commits to
+  # CodeHash (computed in shared code), so a client persisting truncated
+  # or wrong code bytes still agrees on the root; only the byte-exact
+  # eth_getCode probe (CheckInjections) catches it. ~49 KB of state.
+  # APPENDED LAST so existing entities keep their 0-based index — and
+  # thus their seed-derived addresses — unchanged.
+  - kind: contract
+    template: create2_deploys
+    name: ci-create2-deploys-pattern
+    parameters:
+      code_pattern: unique_jumpdest_pre_amsterdam
+      salt_count: 2

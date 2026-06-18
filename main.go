@@ -1,6 +1,6 @@
 // Package main is the state-actor CLI: generates Ethereum client
-// databases (geth / besu / nethermind / reth) end-to-end without going
-// through the client binary's init path.
+// databases (geth / besu / nethermind / reth / ethrex) end-to-end without
+// going through the client binary's init path.
 package main
 
 import (
@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/ethereum/state-actor/client/besu"
+  clientethrex "github.com/ethereum/state-actor/client/ethrex"
 	"github.com/ethereum/state-actor/client/geth"
 	"github.com/ethereum/state-actor/client/nethermind"
 	"github.com/ethereum/state-actor/client/reth"
@@ -38,7 +39,7 @@ var (
 	benchmark  = flag.Bool("benchmark", false, "Run in benchmark mode (print detailed stats)")
 	binaryTrie = flag.Bool("binary-trie", false, "Generate state for binary trie mode (EIP-7864)")
 
-	targetSize = flag.String("target-size", "", "Advisory budget (e.g. '5GB', '500MB') that sizes the auto-fill of 20/10/70 mainnet-shaped synthetic state. Required unless --spec is set. With --spec, fills the headroom after the spec's projected cost; if the spec already meets the target, no auto-fill runs. Not a hard on-disk cap — actual size may vary per client. Honored by geth, besu, nethermind, and reth.")
+	targetSize = flag.String("target-size", "", "Advisory budget (e.g. '5GB', '500MB') that sizes the auto-fill of 20/10/70 mainnet-shaped synthetic state. Required unless --spec is set. With --spec, fills the headroom after the spec's projected cost; if the spec already meets the target, no auto-fill runs. Not a hard on-disk cap — actual size may vary per client. Honored by geth, besu, nethermind, reth, and ethrex.")
 
 	fork      = flag.String("fork", "", "Hard fork active at genesis. Empty (default) resolves to the latest fork the chosen --client can write. Use --list-forks to see all values.")
 	listForks = flag.Bool("list-forks", false, "Print the list of accepted --fork values and exit.")
@@ -51,7 +52,7 @@ var (
 
 	groupDepth = flag.Int("group-depth", 8, "Binary trie group depth (1-8, default 8). Controls serialization unit size.")
 
-	client = flag.String("client", "geth", "Target Ethereum client: 'geth' (default), 'nethermind', 'besu', or 'reth'.")
+	client = flag.String("client", "geth", "Target Ethereum client: 'geth' (default), 'nethermind', 'besu', 'reth', or 'ethrex'.")
 
 	archive = flag.Bool("archive", false, "Configure the generated DB for archive-mode operation.\n"+
 		"  reth: writes StoragesHistory + AccountsHistory + StorageChangeSets + AccountChangeSets at genesis.\n"+
@@ -120,6 +121,9 @@ func main() {
 			log.Fatalf("--archive is only supported on geth and reth; got --client=%s. Re-run without --archive.", *client)
 		}
 	}
+
+	// ethrex shares the common fork ceiling (osaka per MaxForkForClient).
+	// The chosenFork resolution below handles this uniformly.
 
 	config := generator.Config{
 		DBPath:         *dbPath,
@@ -299,6 +303,13 @@ func main() {
 		stats, err = reth.RunCgo(context.Background(), config, reth.Options{})
 		if err != nil {
 			log.Fatalf("Failed to populate Reth DB: %v", err)
+		}
+
+	case "ethrex":
+		var err error
+		stats, err = clientethrex.Run(context.Background(), config, clientethrex.Options{})
+		if err != nil {
+			log.Fatalf("Failed to populate ethrex DB: %v", err)
 		}
 	}
 

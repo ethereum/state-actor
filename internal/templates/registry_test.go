@@ -5,7 +5,17 @@ import "testing"
 // TestRegistryHasExpectedTemplates pins the registered template set.
 // New templates land here when they ship.
 func TestRegistryHasExpectedTemplates(t *testing.T) {
-	want := []string{"eoa", "erc20", "raw"} // sorted
+	want := []string{
+		"create2_deploys",
+		"create2_factory",
+		"create_preimage_deploys",
+		"eoa",
+		"erc20",
+		"raw",
+		"sequential_eoas",
+		"sequential_pkey_eoas",
+		"storage_pattern",
+	} // sorted
 	got := Names()
 	if len(got) != len(want) {
 		t.Fatalf("registry has %d templates %v, want %d %v", len(got), got, len(want), want)
@@ -18,7 +28,11 @@ func TestRegistryHasExpectedTemplates(t *testing.T) {
 }
 
 func TestLookupHit(t *testing.T) {
-	for _, name := range []string{"eoa", "erc20", "raw"} {
+	for _, name := range []string{
+		"create2_deploys", "create2_factory", "create_preimage_deploys",
+		"eoa", "erc20", "raw",
+		"sequential_eoas", "sequential_pkey_eoas", "storage_pattern",
+	} {
 		if _, ok := Lookup(name); !ok {
 			t.Errorf("Lookup(%q) = false, want true", name)
 		}

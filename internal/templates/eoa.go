@@ -16,8 +16,15 @@ func init() {
 // code (23-byte 0xef0100<addr> marker) and custom storage.
 type eoaTemplate struct{}
 
-func (eoaTemplate) Name() string      { return "eoa" }
+// TemplateNameEOA is the registry key for this template; Name() returns
+// this constant so cross-package consumers (specbuild's pickTemplate)
+// can never drift from the registered name.
+const TemplateNameEOA = "eoa"
+
+func (eoaTemplate) Name() string      { return TemplateNameEOA }
 func (eoaTemplate) UserVisible() bool { return false }
+
+func (eoaTemplate) HonoredEntityFields() EntityFieldSet { return AllEntityFieldsHonored() }
 
 func (eoaTemplate) ValidateParameters(params map[string]any) error {
 	if len(params) > 0 {

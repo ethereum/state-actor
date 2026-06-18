@@ -1,6 +1,6 @@
 # Runbook: booting each client against a state-actor database
 
-state-actor writes a client-native database. The boot command for that database differs by client. This file lists the four CI-verified recipes — one per client — extracted from `client/<c>/e2e_test.go` (and `client/reth/oracle_test.go`).
+state-actor writes a client-native database. The boot command for that database differs by client. This file lists the five CI-verified recipes — one per client — extracted from `client/<c>/e2e_test.go` (and `client/reth/oracle_test.go`).
 
 Every section here is size-agnostic. `--target-size=10MB` and `--target-size=1TB` invoke the same code path, and the boot commands are the same in both cases.
 
@@ -275,11 +275,44 @@ Like besu, Nethermind has no native post-Merge dev mode in our setup — `Merge.
 cast chain-id --rpc-url http://<container-ip>:8545   # → 0x539
 ```
 
+## Ethrex
+
+Reference: `client/ethrex/e2e_test.go` (`TestE2ESuite`).
+
+**Generate.** ethrex uses cgo (RocksDB bindings via grocksdb) — build via Docker.
+
+```bash
+docker build -f Dockerfile.ethrex -t state-actor-ethrex .
+docker run --rm \
+  -v /tmp/sa-ethrex:/data \
+  state-actor-ethrex \
+  ./state-actor \
+  --client=ethrex --db=/data \
+  --target-size=100MB \
+  --seed=42 \
+  --chain-id=1337 --gas-limit=60000000 \
+  --timestamp=1700000000 --extra-data=0xdeadbeef
+```
+
+**On-disk layout:**
+
+- `/data/` — single RocksDB instance with 20 column families (see `internal/ethrex/constants.go` for the full list)
+- `/data/metadata.json` — `{"schema_version": 2}`, required by ethrex `Store::new`
+- `/data/ethrex-genesis.json` — full genesis JSON; pass via `--network` when booting
+
+**Boot path.** ethrex's `add_initial_state` short-circuits when `canonical_block_hashes[0]` already resolves to a matching genesis header hash — state-actor writes that row, so ethrex skips state-trie recomputation at boot. Required boot flags (validated by the e2e suite, Phase 4): `--network <ethrex-genesis.json>`, `--datadir <dir>`, `--skip-genesis-validation` (trust the written stateRoot rather than recompute from the empty-alloc sidecar; needs lambdaclass/ethrex#6783, in releases ≥ v16.0.0), and `--syncmode full`. The `--syncmode full` flag is mandatory for engine-driven block production: in the default snap mode ethrex's fork-choice handler returns `SYNCING` with a null `payloadId` for every `engine_forkchoiceUpdated`, so the mock CL can never obtain a payload to build. The pattern follows the besu/nethermind Engine API approach: boot the node, then drive blocks via `engine_forkchoiceUpdated` (ethrex also mandates an authrpc JWT, signed by the driver).
+
+**Verify.**
+
+```bash
+cast chain-id --rpc-url http://<container-ip>:8545   # → 0x539
+```
+
 ## Troubleshooting
 
 | Symptom | Likely cause | Fix |
 |---|---|---|
-| `missing librocksdb` at build | cgo client built without the system RocksDB | Build via the per-client `Dockerfile.<client>` (see [Besu](#besu) / [Nethermind](#nethermind) / [Reth](#reth)) |
+| `missing librocksdb` at build | cgo client built without the system RocksDB | Build via the per-client `Dockerfile.<client>` (see [Besu](#besu) / [Nethermind](#nethermind) / [Reth](#reth) / [Ethrex](#ethrex)) |
 | Reth: `mmap: cannot allocate memory` | `vm.max_map_count` too low | `sudo sysctl -w vm.max_map_count=1048576` (see [Reth](#reth) operational hygiene) |
 | Besu / Neth: empty `eth_blockNumber` indefinitely | No consensus layer driving the Engine API | Run a mock CL (see `internal/engineapi/`) or use `internal/e2e_testing.StartEngineDriver` ([Besu engine-API note](#besu), [Nethermind engine-API note](#nethermind)) |
 | `eth_getCode` returns `0x` for a name-derived spec entity | Auto-fill collided with the derived address | Re-run without `--target-size` (no auto-fill) or with a smaller `--target-size` |
