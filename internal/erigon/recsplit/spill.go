@@ -1,7 +1,6 @@
 package recsplit
 
 import (
-	"bytes"
 	"encoding/binary"
 	"sort"
 )
@@ -80,7 +79,3 @@ func EncodeKey(bucketIdx uint32, fingerprintLo uint64) []byte {
 	binary.BigEndian.PutUint64(buf[4:], fingerprintLo)
 	return buf[:]
 }
-
-// keyLess is a helper used by tests to verify our sort matches the
-// lexicographic byte ordering Erigon's etl.Collector imposes.
-func keyLess(a, b []byte) bool { return bytes.Compare(a, b) < 0 }

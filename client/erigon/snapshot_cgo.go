@@ -66,7 +66,6 @@ var fullRange = snap.StepRange{From: 0, To: 1}
 // Defaults to min(NumCPU, 8) to match the proven cap from reth, besu,
 // and nethermind (client/reth/spec_storage_streaming_cgo.go:95-104,
 // client/besu/state_writer_cgo.go:298, client/nethermind/phase0_cgo.go).
-// Tests override via setErigonWorkers.
 var erigonWorkers = func() int {
 	n := runtime.NumCPU()
 	if n > 8 {
@@ -77,14 +76,6 @@ var erigonWorkers = func() int {
 	}
 	return n
 }()
-
-// setErigonWorkers swaps erigonWorkers for the duration of a test.
-// The returned function restores the previous value.
-func setErigonWorkers(n int) (restore func()) {
-	prev := erigonWorkers
-	erigonWorkers = n
-	return func() { erigonWorkers = prev }
-}
 
 // entityWork is one alloc entry queued for an encode-worker. The main
 // goroutine fills these and sends them on entityCh; workers consume

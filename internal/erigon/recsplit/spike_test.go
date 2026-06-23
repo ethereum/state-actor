@@ -44,12 +44,13 @@ type fixture struct {
 // extends coverage to the recursive-split path (bucketSize=100 → ~10
 // buckets, each ~100 keys → at least one level of splitParams recursion).
 func TestRecSplit_Spike(t *testing.T) {
-	// Note: spike_100000.json (12MB) is regenerated on demand and not
-	// checked in — plan Task 28 covers the 100K/1M cases under build-tag
-	// `recsplit_large`. The 100 / 1000 / 10000 trio is enough to exercise
-	// all algorithmic paths: leaf bijection (100), recursive split (1000),
-	// and the EliasFano accumulator at scale (10000).
-	for _, name := range []string{"spike_100.json", "spike_1000.json", "spike_10000.json"} {
+	// The 100 / 1000 pair exercises the structurally-distinct encoder
+	// paths: leaf bijection (100) and recursive split (1000). The larger
+	// spike_10000.json (1.2 MB) was dropped from the checked-in trio — its
+	// at-scale coverage is provided end-to-end by TestE2ESuite, which boots
+	// the real erigon daemon to read the .kvi. spike_100.json is also
+	// consumed by hash_test.go (TestKeyHashAgainstFixture).
+	for _, name := range []string{"spike_100.json", "spike_1000.json"} {
 		name := name
 		t.Run(name, func(t *testing.T) {
 			runSpikeFixture(t, filepath.Join("testdata", name))
