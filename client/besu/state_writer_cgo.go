@@ -135,7 +135,15 @@ func writeStateAndCollectRoot(
 	}
 
 	// --- Phase 2: iterate sorted, drive Builder + flat-state writes. ---
+	// entitiesQueued is the exact count Put into the sorter above (synthetic
+	// EOAs/contracts + deduped genesis allocs) — the Phase-2 progress total.
+	var entitiesQueued int64
+	if plan != nil {
+		entitiesQueued += int64(plan.NumEOAs + plan.NumContracts)
+	}
+	entitiesQueued += int64(len(seenAlloc))
 	cfg.Progress.Stage("besu: phase 2/2 — building state trie")
+	var phase2Count int64
 	if err := sorter.Iterate(func(key, value []byte) error {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -218,6 +226,8 @@ func writeStateAndCollectRoot(
 			stats.ContractsCreated++
 		}
 		stats.AccountBytes += uint64(32 + len(accountRLP))
+		phase2Count++
+		cfg.Progress.Tick(phase2Count, entitiesQueued, "accounts")
 		return nil
 	}); err != nil {
 		return common.Hash{}, nil, nil, err
@@ -319,6 +329,13 @@ func runPhase0(ctx context.Context, cfg generator.Config, db *besuDB, stats *gen
 		return nil
 	}
 
+	// Phase 0 streams each spec entity's storage slots and is otherwise silent
+	// for hours on bloat specs. The count-only slot heartbeat funnels every
+	// worker's per-slot count through one SlotMeter; each worker holds its own
+	// SlotWorker so the hot per-slot path stays cheap (one non-atomic add + mask).
+	cfg.Progress.Stage("besu: phase 0 — spec storage")
+	slotMeter := cfg.Progress.SlotMeter()
+
 	workers := runtime.NumCPU()
 	if workers < 1 {
 		workers = 1
@@ -348,6 +365,7 @@ func runPhase0(ctx context.Context, cfg generator.Config, db *besuDB, stats *gen
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
+			slotW := slotMeter.Worker()
 			workerSink := newNodeSink(db)
 			defer func() {
 				// Best-effort flush at worker exit. Errors surface through
@@ -368,6 +386,7 @@ func runPhase0(ctx context.Context, cfg generator.Config, db *besuDB, stats *gen
 				sb := besutrie.NewStreamingStorageBuilder(workerSink, addrHash)
 				var entityStorageBytes uint64
 				streamSink := func(keyHash, _rawKey, value common.Hash) error {
+					slotW.Slot()
 					trimmed := besurlp.TrimStorageValue(value)
 					entityStorageBytes += uint64(len(trimmed))
 					return workerSink.PutFlatStorage(addrHash, keyHash, trimmed)

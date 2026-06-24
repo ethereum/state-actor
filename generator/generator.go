@@ -20,7 +20,42 @@ import (
 	"github.com/ethereum/go-ethereum/rlp"
 
 	"github.com/ethereum/state-actor/internal/entitygen"
+	"github.com/ethereum/state-actor/internal/progress"
 )
+
+// phase2TickStride gates how often the binary Phase-2 iterator samples the
+// wall clock for a progress heartbeat. Phase 2 streams one Next() per trie
+// entry (accounts×2 + every storage slot + code chunks → billions on bench
+// workloads), so calling progress.Tick — which reads time.Now() — on every
+// entry would add billions of clock reads to the hottest loop. Sampling once
+// per 2^16 entries bounds that overhead to a rounding error; the Reporter's
+// own 15 s throttle still decides when a line is actually printed.
+const phase2TickStride = 1 << 16
+
+// tickingIterator wraps an ethdb.Iterator to emit a throttled Phase-2 progress
+// heartbeat as entries stream past. It is observation-only: Key, Value, and
+// iteration order are forwarded verbatim, so the computed root is byte-
+// identical. total is the Phase-1 entry count — an upper bound when
+// --target-size stops the underlying iterator early (the bar just won't reach
+// 100%). A nil progress reporter makes Tick a no-op, so this stays silent for
+// library/test callers.
+type tickingIterator struct {
+	ethdb.Iterator
+	progress *progress.Reporter
+	total    int64
+	n        int64
+}
+
+func (it *tickingIterator) Next() bool {
+	ok := it.Iterator.Next()
+	if ok {
+		it.n++
+		if it.n&(phase2TickStride-1) == 0 {
+			it.progress.Tick(it.n, it.total, "entries")
+		}
+	}
+	return ok
+}
 
 // Generator handles state generation.
 type Generator struct {
@@ -445,6 +480,9 @@ func (g *Generator) generateStreamingBinary() (retStats *Stats, retErr error) {
 			shouldStop: tracker.ShouldStop,
 		}
 	}
+	// Outermost wrap: heartbeat on entries actually yielded to the builder
+	// (after any target-size early-stop), so Phase 2 isn't silent on long runs.
+	iter = &tickingIterator{Iterator: iter, progress: g.config.Progress, total: totalEntries}
 
 	// afterStem runs in the builder goroutine (the goroutine that owns the
 	// sbw + tnw Pebble batches) so MaybeCalibrate's synchronous flush

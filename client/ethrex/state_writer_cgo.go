@@ -202,6 +202,13 @@ func writeState(
 	//   (or build inline for big accounts); (2) dedup and write code; (3) add
 	//   account leaf to accountBuilder; (4) accumulate stats.
 
+	// entitiesQueued is the exact count Put into the sorter above (synthetic
+	// EOAs/contracts + deduped genesis allocs) — the Phase-2 progress total.
+	var entitiesQueued int64
+	if plan != nil {
+		entitiesQueued += int64(plan.NumEOAs + plan.NumContracts)
+	}
+	entitiesQueued += int64(len(seenAlloc))
 	cfg.Progress.Stage("ethrex: phase 2/2 — building state trie")
 
 	accountBuilder := ethrexinternal.NewBuilder(accountTrieNodeSink)
@@ -394,6 +401,7 @@ func writeState(
 				break
 			}
 			nextSeq++
+			cfg.Progress.Tick(int64(nextSeq), entitiesQueued, "accounts")
 		}
 	}
 

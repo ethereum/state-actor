@@ -571,6 +571,14 @@ func runPhase0(ctx context.Context, cfg generator.Config, w *Writer) error {
 		return nil
 	}
 
+	// Phase 0 streams each spec entity's storage slots (100M–1B per bloat
+	// entity) and is otherwise silent for hours. The count-only slot heartbeat
+	// funnels every worker's per-slot count through one SlotMeter; each worker
+	// holds its own SlotWorker so the hot per-slot path stays cheap (one
+	// non-atomic add + mask).
+	cfg.Progress.Stage("geth: phase 0 — spec storage")
+	slotMeter := cfg.Progress.SlotMeter()
+
 	workers := runtime.NumCPU()
 	if workers < 1 {
 		workers = 1
@@ -599,6 +607,7 @@ func runPhase0(ctx context.Context, cfg generator.Config, w *Writer) error {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
+			slotW := slotMeter.Worker()
 			sbw := newScratchBatchWriter(w, scratchBatchFlushBytes)
 			defer func() {
 				if err := sbw.Close(); err != nil {
@@ -620,6 +629,7 @@ func runPhase0(ctx context.Context, cfg generator.Config, w *Writer) error {
 					return
 				}
 				sink := func(keyHash, _rawKey, value common.Hash) error {
+					slotW.Slot()
 					valueRLP, encErr := encodeStorageValue(value)
 					if encErr != nil {
 						return encErr

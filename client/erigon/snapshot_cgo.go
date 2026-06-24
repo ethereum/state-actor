@@ -352,6 +352,11 @@ func writeSnapshots(
 	// have their per-domain writer goroutines reading (they exit on
 	// close(chans.*) below).
 	if pipelineErr == nil {
+		// Count-only heartbeat for the spec-storage drain — the dominant phase
+		// on bloat specs (millions of slots), otherwise silent under the
+		// "building snapshots & commitment" banner above. Single goroutine here,
+		// so one SlotWorker; nil-safe when progress is unwired.
+		slotW := cfg.Progress.SlotMeter().Worker()
 		for i := range cfg.PreAlloc {
 			pe := &cfg.PreAlloc[i]
 			if pe.Storage == nil {
@@ -362,6 +367,7 @@ func writeSnapshots(
 					pipelineErr = err
 					return false
 				}
+				slotW.Slot()
 				// trimLeadingZeros may filter zero values; conservatively
 				// count by the unfiltered slot. Storage byte tally for
 				// stats includes raw 32-byte value capacity (matching

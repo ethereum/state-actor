@@ -40,6 +40,13 @@ func runPhase0(
 		return nil
 	}
 
+	// Phase 0 streams each spec entity's storage slots and is otherwise silent
+	// for hours on bloat specs. The count-only slot heartbeat funnels every
+	// worker's per-slot count through one SlotMeter; each worker holds its own
+	// SlotWorker so the hot per-slot path stays cheap (one non-atomic add + mask).
+	cfg.Progress.Stage("nethermind: phase 0 — spec storage")
+	slotMeter := cfg.Progress.SlotMeter()
+
 	// TODO: long-pole-first scheduling — pe.Storage is iter.Seq2 so len() is
 	// unavailable without consuming the iterator.
 
@@ -71,6 +78,7 @@ func runPhase0(
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
+			slotW := slotMeter.Worker()
 			workerSink := newStateDBSink(dbs.state)
 			defer func() {
 				if err := workerSink.close(); err != nil {
@@ -91,6 +99,7 @@ func runPhase0(
 
 				var entityStorageBytes uint64
 				statSink := func(_, _, value common.Hash) error {
+					slotW.Slot()
 					// RLP-of-trimmed-value byte count (1 prefix + len(trimmed)).
 					v := value[:]
 					for len(v) > 0 && v[0] == 0 {

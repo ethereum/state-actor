@@ -15,6 +15,7 @@ import (
 	"github.com/holiman/uint256"
 
 	"github.com/ethereum/state-actor/generator"
+	"github.com/ethereum/state-actor/internal/progress"
 	iReth "github.com/ethereum/state-actor/internal/reth"
 	"github.com/ethereum/state-actor/internal/streamingtrie"
 )
@@ -92,6 +93,13 @@ func streamSpecStorage(ctx context.Context, envs *Envs, cfg *generator.Config, s
 		return nil
 	}
 
+	// Phase 0 streams each spec entity's storage slots and is otherwise silent
+	// for hours on bloat specs. The count-only slot heartbeat funnels every
+	// worker's per-slot count through one SlotMeter; each worker holds its own
+	// SlotWorker so the hot per-slot path stays cheap (one non-atomic add + mask).
+	cfg.Progress.Stage("reth: phase 0 — spec storage")
+	slotMeter := cfg.Progress.SlotMeter()
+
 	workers := runtime.NumCPU()
 	if workers < 1 {
 		workers = 1
@@ -117,11 +125,12 @@ func streamSpecStorage(ctx context.Context, envs *Envs, cfg *generator.Config, s
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
+			slotW := slotMeter.Worker()
 			for i := range entityCh {
 				if drainCtx.Err() != nil {
 					return
 				}
-				if err := drainAndEncodeEntity(drainCtx, cfg, i, preparedCh); err != nil {
+				if err := drainAndEncodeEntity(drainCtx, cfg, i, preparedCh, slotW); err != nil {
 					cancelDrain(err)
 					return
 				}
@@ -200,6 +209,7 @@ func drainAndEncodeEntity(
 	cfg *generator.Config,
 	idx int,
 	preparedCh chan<- *preparedEntity,
+	slotW *progress.SlotWorker,
 ) error {
 	pe := &cfg.PreAlloc[idx]
 	addr := pe.Address
@@ -273,6 +283,7 @@ func drainAndEncodeEntity(
 	}
 
 	sink := func(keyHash, rawKey, value common.Hash) error {
+		slotW.Slot()
 		slotValueU256 := uint256.NewInt(0).SetBytes(value[:])
 
 		prep := slotPrepared{rawKey: rawKey}

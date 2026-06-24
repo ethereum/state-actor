@@ -207,6 +207,9 @@ func RunCgo(ctx context.Context, cfg generator.Config, opts Options) (*generator
 		// state-root computation so reth's payload builder finds them on
 		// boot. Keys use the 33-byte PackedStoredNibbles form (reth v2);
 		// cursor.Put is correct regardless of emission order.
+		cfg.Progress.Stage("reth: phase 2/2 — building account trie")
+		phase2Total := int64(accountsCreated + contractsCreated)
+		var phase2Count int64
 		var root common.Hash
 		err := envs.Mdbx.Update(func(txn *mdbx.Txn) error {
 			cur, cerr := txn.OpenCursor(envs.MdbxDBIs["AccountsTrie"])
@@ -226,7 +229,19 @@ func RunCgo(ctx context.Context, cfg generator.Config, opts Options) (*generator
 				node.EncodeCompact(&valBuf)
 				return cur.Put(keyBuf.Bytes(), valBuf.Bytes(), 0)
 			}
-			r, rerr := ComputeStateRootStreaming(sorter.Iterate, emit)
+			// Count-and-tick wrapper around the sorted account stream so the
+			// pure-Go account-trie build shows live progress. Single-goroutine
+			// (HashBuilder consumes the yield sequentially), so phase2Count is
+			// race-free; it forwards every pair unchanged, so the root is
+			// identical.
+			countingIter := func(yield func(addrHash, accountRLP []byte) error) error {
+				return sorter.Iterate(func(addrHash, accountRLP []byte) error {
+					phase2Count++
+					cfg.Progress.Tick(phase2Count, phase2Total, "accounts")
+					return yield(addrHash, accountRLP)
+				})
+			}
+			r, rerr := ComputeStateRootStreaming(countingIter, emit)
 			if rerr != nil {
 				return rerr
 			}

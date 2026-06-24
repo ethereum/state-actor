@@ -60,6 +60,13 @@ func runPhase0Storage(
 		return nil
 	}
 
+	// Phase 0 streams each spec entity's storage slots and is otherwise silent
+	// for hours on bloat specs. The count-only slot heartbeat funnels every
+	// worker's per-slot count through one SlotMeter; each worker holds its own
+	// SlotWorker so the hot per-slot path stays cheap (one non-atomic add + mask).
+	cfg.Progress.Stage("ethrex: phase 0 — spec storage")
+	slotMeter := cfg.Progress.SlotMeter()
+
 	workers := runtime.NumCPU()
 	if workers < 1 {
 		workers = 1
@@ -86,6 +93,7 @@ func runPhase0Storage(
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
+			slotW := slotMeter.Worker()
 
 			// Each worker owns its own write batches targeting the two storage CFs.
 			// Per-worker batches avoid contention and keep each worker's writes
@@ -137,6 +145,7 @@ func runPhase0Storage(
 				var localSlots int
 				var localBytes uint64
 				statSink := func(_, _, value common.Hash) error {
+					slotW.Slot()
 					enc := ethrexinternal.EncodeStorageValue(new(uint256.Int).SetBytes32(value[:]))
 					localSlots++
 					localBytes += uint64(len(enc))
