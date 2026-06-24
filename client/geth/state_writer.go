@@ -81,6 +81,8 @@ func writeStateAndCollectRoot(
 	// pre-allocated genesis addresses.
 	genesisAddrs := make(map[common.Address]struct{}, len(cfg.GenesisAccounts))
 
+	cfg.Progress.Stage("geth: phase 1/2 — generating accounts")
+
 	for addr, acc := range cfg.GenesisAccounts {
 		genesisAddrs[addr] = struct{}{}
 		addrHash := crypto.Keccak256Hash(addr[:])
@@ -135,6 +137,7 @@ func writeStateAndCollectRoot(
 			if len(stats.SampleEOAs) < 3 {
 				stats.SampleEOAs = append(stats.SampleEOAs, acc.Address)
 			}
+			cfg.Progress.Tick(int64(i+1), int64(plan.NumEOAs), "EOAs")
 		}
 
 		for i := 0; i < plan.NumContracts; i++ {
@@ -166,6 +169,8 @@ func writeStateAndCollectRoot(
 			if len(stats.SampleContracts) < 3 {
 				stats.SampleContracts = append(stats.SampleContracts, contract.Address)
 			}
+			cfg.Progress.Tick(int64(i+1), int64(plan.NumContracts),
+				fmt.Sprintf("contracts · %d slots", stats.StorageSlotsCreated))
 		}
 	}
 
@@ -177,6 +182,9 @@ func writeStateAndCollectRoot(
 	}
 
 	phase2Start := time.Now()
+
+	cfg.Progress.Stage("geth: phase 2/2 — building account trie")
+	phase2Total := int64(stats.AccountsCreated + stats.ContractsCreated)
 
 	// Outer account trie nodes are persisted under TrieNodeAccountPrefix.
 	// Geth's PathDB boot derives the trie root via
@@ -272,6 +280,7 @@ func writeStateAndCollectRoot(
 		}
 
 		count++
+		cfg.Progress.Tick(int64(count), phase2Total, "accounts")
 		return nil
 	})
 	if iterErr != nil {
@@ -534,17 +543,17 @@ func (g *gethStorageHashBuilder) Root() (common.Hash, error) {
 // runPhase0 drives the spec-PreAlloc streaming-trie phase in parallel.
 //
 // For every cfg.PreAlloc entity with pe.Storage != nil, a worker:
-//   1. Drains the entity's storage iter into a per-call streamsort.Store
-//      (rooted under cfg.DBPath so the temp lives on the production
-//      filesystem, not the docker container's /tmp overlay).
-//   2. Iterates the sorted store, building a per-account storage MPT
-//      via a scratch-batch HashBuilder. Per-slot snapshot rows and
-//      per-storage-trie-node writes go to the worker's own *pebble.Batch
-//      — no contention on the shared w.batch+batchMu hot path.
-//   3. Flushes its batch via w.CommitScratchBatch when it crosses
-//      scratchBatchFlushBytes, and one final flush at worker exit.
-//   4. Reports the computed storage root through preparedCh to the main
-//      goroutine, which assigns it to cfg.GenesisAccounts[addr].Root.
+//  1. Drains the entity's storage iter into a per-call streamsort.Store
+//     (rooted under cfg.DBPath so the temp lives on the production
+//     filesystem, not the docker container's /tmp overlay).
+//  2. Iterates the sorted store, building a per-account storage MPT
+//     via a scratch-batch HashBuilder. Per-slot snapshot rows and
+//     per-storage-trie-node writes go to the worker's own *pebble.Batch
+//     — no contention on the shared w.batch+batchMu hot path.
+//  3. Flushes its batch via w.CommitScratchBatch when it crosses
+//     scratchBatchFlushBytes, and one final flush at worker exit.
+//  4. Reports the computed storage root through preparedCh to the main
+//     goroutine, which assigns it to cfg.GenesisAccounts[addr].Root.
 //
 // Root assignment is single-writer on the main goroutine; workers
 // never touch cfg.GenesisAccounts. Across-entity Pebble keyspaces are

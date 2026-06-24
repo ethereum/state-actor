@@ -122,6 +122,7 @@ func writeState(
 
 	plan := cfg.AutoFill
 	if plan != nil {
+		cfg.Progress.Stage("ethrex: phase 1/2 — generating accounts")
 		for i := 0; i < plan.NumEOAs; i++ {
 			if ctx.Err() != nil {
 				return common.Hash{}, nil, ctx.Err()
@@ -131,6 +132,7 @@ func writeState(
 			if err := sorter.Put(acc.AddrHash[:], blob); err != nil {
 				return common.Hash{}, nil, err
 			}
+			cfg.Progress.Tick(int64(i+1), int64(plan.NumEOAs), "EOAs")
 		}
 	}
 
@@ -157,6 +159,7 @@ func writeState(
 	}
 
 	if plan != nil {
+		cfg.Progress.Stage("ethrex: phase 1/2 — generating contracts")
 		for i := 0; i < plan.NumContracts; i++ {
 			if ctx.Err() != nil {
 				return common.Hash{}, nil, ctx.Err()
@@ -170,6 +173,7 @@ func writeState(
 			if err := sorter.Put(contract.AddrHash[:], blob); err != nil {
 				return common.Hash{}, nil, err
 			}
+			cfg.Progress.Tick(int64(i+1), int64(plan.NumContracts), "contracts")
 		}
 	}
 
@@ -197,6 +201,8 @@ func writeState(
 	//   Per account: (1) replay buffered storage rows into storageSink/storageFkvSink
 	//   (or build inline for big accounts); (2) dedup and write code; (3) add
 	//   account leaf to accountBuilder; (4) accumulate stats.
+
+	cfg.Progress.Stage("ethrex: phase 2/2 — building state trie")
 
 	accountBuilder := ethrexinternal.NewBuilder(accountTrieNodeSink)
 

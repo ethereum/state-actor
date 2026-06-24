@@ -125,6 +125,8 @@ func RunCgo(ctx context.Context, cfg generator.Config, opts Options) (*generator
 	if plan != nil && (plan.NumEOAs > 0 || plan.NumContracts > 0) {
 		rng := mrand.New(mrand.NewSource(cfg.Seed))
 
+		cfg.Progress.Stage("reth: generating accounts")
+
 		remaining := plan.NumEOAs
 		for remaining > 0 {
 			b := batchSize
@@ -168,6 +170,7 @@ func RunCgo(ctx context.Context, cfg generator.Config, opts Options) (*generator
 			}
 			accountsCreated += b
 			remaining -= b
+			cfg.Progress.Tick(int64(plan.NumEOAs-remaining), int64(plan.NumEOAs), "EOAs")
 		}
 
 		if plan.NumContracts > 0 {
@@ -194,6 +197,7 @@ func RunCgo(ctx context.Context, cfg generator.Config, opts Options) (*generator
 				}
 				contractsCreated += b
 				remaining -= b
+				cfg.Progress.Tick(int64(plan.NumContracts-remaining), int64(plan.NumContracts), "contracts")
 			}
 		}
 	}

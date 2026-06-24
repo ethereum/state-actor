@@ -9,6 +9,7 @@ import (
 
 	"github.com/ethereum/state-actor/genesis"
 	"github.com/ethereum/state-actor/internal/autofill"
+	"github.com/ethereum/state-actor/internal/progress"
 	"github.com/ethereum/state-actor/internal/templates"
 )
 
@@ -40,6 +41,11 @@ type Config struct {
 
 	// Verbose enables verbose logging.
 	Verbose bool
+
+	// Progress, when non-nil, receives throttled heartbeat updates from each
+	// client's generation loop so a long run never looks frozen. main.go always
+	// wires a live reporter; library/test callers leave it nil for silence.
+	Progress *progress.Reporter
 
 	// TrieMode selects the trie algorithm for state root computation.
 	// Defaults to TrieModeMPT if empty.

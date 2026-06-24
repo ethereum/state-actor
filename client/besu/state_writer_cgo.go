@@ -68,6 +68,7 @@ func writeStateAndCollectRoot(
 
 	plan := cfg.AutoFill
 	if plan != nil {
+		cfg.Progress.Stage("besu: phase 1/2 — generating accounts")
 		for i := 0; i < plan.NumEOAs; i++ {
 			if err := ctx.Err(); err != nil {
 				return common.Hash{}, nil, nil, err
@@ -83,6 +84,7 @@ func writeStateAndCollectRoot(
 			if err := sorter.Put(addrHash[:], blob); err != nil {
 				return common.Hash{}, nil, nil, err
 			}
+			cfg.Progress.Tick(int64(i+1), int64(plan.NumEOAs), "EOAs")
 		}
 	}
 
@@ -113,6 +115,7 @@ func writeStateAndCollectRoot(
 	}
 
 	if plan != nil {
+		cfg.Progress.Stage("besu: phase 1/2 — generating contracts")
 		for i := 0; i < plan.NumContracts; i++ {
 			if err := ctx.Err(); err != nil {
 				return common.Hash{}, nil, nil, err
@@ -127,10 +130,12 @@ func writeStateAndCollectRoot(
 			if err := sorter.Put(addrHash[:], blob); err != nil {
 				return common.Hash{}, nil, nil, err
 			}
+			cfg.Progress.Tick(int64(i+1), int64(plan.NumContracts), "contracts")
 		}
 	}
 
 	// --- Phase 2: iterate sorted, drive Builder + flat-state writes. ---
+	cfg.Progress.Stage("besu: phase 2/2 — building state trie")
 	if err := sorter.Iterate(func(key, value []byte) error {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -286,20 +291,20 @@ func encodeEntityContract(nonce uint64, balance *uint256.Int, code []byte, slots
 // runPhase0 drives the spec-PreAlloc streaming-trie phase in parallel.
 //
 // For every entity with pe.Storage != nil, a worker:
-//   1. Owns its own *nodeSink wrapping a per-worker *grocksdb.WriteBatch.
-//      Flushes at flushThresholdBytes (64 MiB) via db.db.Write — Pebble's
-//      WAL is disabled on the bulk path, and grocksdb's Write is safe to
-//      call concurrently across workers (RocksDB serialises the commit
-//      pipeline internally).
-//   2. Constructs its own besutrie.StreamingStorageBuilder via
-//      NewStreamingStorageBuilder so trie-node writes route through the
-//      per-worker sink, not the shared outer-builder sink.
-//   3. Calls streamingtrie.StorageRoot to drain the iter into a per-call
-//      streamsort.Store (rooted under cfg.DBPath, not /tmp), walk it
-//      sorted, drive the streaming builder, and emit flat-state writes
-//      via a closure that calls workerSink.PutFlatStorage.
-//   4. Reports the computed storage root to the main goroutine via
-//      preparedCh; main assigns cfg.GenesisAccounts[addr].Root.
+//  1. Owns its own *nodeSink wrapping a per-worker *grocksdb.WriteBatch.
+//     Flushes at flushThresholdBytes (64 MiB) via db.db.Write — Pebble's
+//     WAL is disabled on the bulk path, and grocksdb's Write is safe to
+//     call concurrently across workers (RocksDB serialises the commit
+//     pipeline internally).
+//  2. Constructs its own besutrie.StreamingStorageBuilder via
+//     NewStreamingStorageBuilder so trie-node writes route through the
+//     per-worker sink, not the shared outer-builder sink.
+//  3. Calls streamingtrie.StorageRoot to drain the iter into a per-call
+//     streamsort.Store (rooted under cfg.DBPath, not /tmp), walk it
+//     sorted, drive the streaming builder, and emit flat-state writes
+//     via a closure that calls workerSink.PutFlatStorage.
+//  4. Reports the computed storage root to the main goroutine via
+//     preparedCh; main assigns cfg.GenesisAccounts[addr].Root.
 //
 // Across-entity Bonsai keyspaces are disjoint (every key prefixed by
 // addrHash for trie + flat), so parallel writes don't conflict.
@@ -444,4 +449,3 @@ func decodeEntity(blob []byte) entity {
 	}
 	return e
 }
-

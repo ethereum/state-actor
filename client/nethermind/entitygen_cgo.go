@@ -170,6 +170,7 @@ func writeSyntheticAccounts(
 	plan := cfg.AutoFill
 
 	if plan != nil {
+		cfg.Progress.Stage("nethermind: phase 1/2 — generating accounts")
 		for i := 0; i < plan.NumEOAs; i++ {
 			acc := plan.DrawEOA(rng)
 			data, err := gethrlp.EncodeToBytes(acc.StateAccount)
@@ -191,12 +192,16 @@ func writeSyntheticAccounts(
 					stats.CodeBytes += uint64(len(acc.Code))
 				}
 			}
+			cfg.Progress.Tick(int64(i+1), int64(plan.NumEOAs), "EOAs")
 		}
 	}
 
 	plannedContracts := 0
 	if plan != nil {
 		plannedContracts = plan.NumContracts
+	}
+	if plannedContracts > 0 {
+		cfg.Progress.Stage("nethermind: phase 1/2 — generating contracts")
 	}
 	for i := 0; i < plannedContracts; i++ {
 		contract := plan.DrawContract(rng)
@@ -257,8 +262,10 @@ func writeSyntheticAccounts(
 			stats.ContractsCreated++
 			stats.StorageSlotsCreated += numSlots
 		}
+		cfg.Progress.Tick(int64(i+1), int64(plannedContracts), "contracts")
 	}
 
+	cfg.Progress.Stage("nethermind: phase 2/2 — building state trie")
 	if err := sorter.Iterate(func(key, value []byte) error {
 		var ah [32]byte
 		copy(ah[:], key)

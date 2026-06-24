@@ -227,17 +227,7 @@ func (g *Generator) generateStreamingBinary() (retStats *Stats, retErr error) {
 		return nil
 	}
 
-	var lastLogTime = time.Now()
-	logProgress := func(phase string, current, total int, slots int64) {
-		if time.Since(lastLogTime) < 20*time.Second {
-			return
-		}
-		lastLogTime = time.Now()
-		totalEntries := preambleEntries + contractEntries
-		pct := float64(current) / float64(total) * 100
-		log.Printf("[%s] %d/%d (%.1f%%), %d storage slots, %d trie entries",
-			phase, current, total, pct, slots, totalEntries)
-	}
+	g.config.Progress.Stage("binary: phase 1/2 — generating accounts")
 
 	// Track genesis addresses for collision avoidance.
 	genesisAddrs := make(map[common.Address]bool, len(g.config.GenesisAccounts))
@@ -304,7 +294,8 @@ func (g *Generator) generateStreamingBinary() (retStats *Stats, retErr error) {
 			if len(stats.SampleEOAs) < 3 {
 				stats.SampleEOAs = append(stats.SampleEOAs, acc.address)
 			}
-			logProgress("EOA", i+1, plan.NumEOAs, 0)
+			g.config.Progress.Tick(int64(i+1), int64(plan.NumEOAs),
+				fmt.Sprintf("EOAs · %d trie entries", preambleEntries+contractEntries))
 		}
 	}
 
@@ -352,7 +343,8 @@ func (g *Generator) generateStreamingBinary() (retStats *Stats, retErr error) {
 		}
 		contractIdx++
 		if plan != nil {
-			logProgress("Contract", contractIdx, plan.NumContracts, int64(stats.StorageSlotsCreated))
+			g.config.Progress.Tick(int64(contractIdx), int64(plan.NumContracts),
+				fmt.Sprintf("contracts · %d slots", stats.StorageSlotsCreated))
 		}
 
 		// Phase 1 raw-byte safety cap: stop generating more entries once
@@ -389,6 +381,9 @@ func (g *Generator) generateStreamingBinary() (retStats *Stats, retErr error) {
 	// --- Phase 2: Stream sorted entries from temp DB → compute root hash ---
 
 	totalEntries := preambleEntries + contractEntries
+
+	g.config.Progress.Stage(fmt.Sprintf(
+		"binary: phase 2/2 — computing trie root from %d entries", totalEntries))
 
 	// Compact the temp DB to flatten LSM levels into a single sorted run.
 	// This makes the sequential iteration single-pass I/O instead of a
@@ -613,7 +608,6 @@ func trimLeftZeroes(s []byte) []byte {
 	}
 	return nil
 }
-
 
 func formatBytesInternal(b uint64) string {
 	const unit = 1024

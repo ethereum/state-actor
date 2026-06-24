@@ -26,6 +26,7 @@ import (
 	"github.com/ethereum/state-actor/genesis"
 	"github.com/ethereum/state-actor/internal/autofill"
 	"github.com/ethereum/state-actor/internal/clientpolicy"
+	"github.com/ethereum/state-actor/internal/progress"
 	"github.com/ethereum/state-actor/internal/sizecal"
 	"github.com/ethereum/state-actor/internal/spec"
 	"github.com/ethereum/state-actor/internal/specbuild"
@@ -139,6 +140,9 @@ func main() {
 		TargetSize:     parsedTargetSize,
 		GroupDepth:     *groupDepth,
 		Archive:        *archive,
+		// Always-on heartbeat: long runs would otherwise print nothing between
+		// the startup banner and the final summary. Throttled internally.
+		Progress: progress.New(),
 	}
 
 	extraDataBytes := []byte{}
