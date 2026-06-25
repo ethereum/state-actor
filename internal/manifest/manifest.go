@@ -26,13 +26,21 @@ const SchemaVersion = 1
 
 // Manifest is the full reproducibility record for one state-actor run.
 type Manifest struct {
-	SchemaVersion int       `json:"schema_version"`
-	StateActor    Build     `json:"state_actor"`
-	GeneratedAt   string    `json:"generated_at"`
-	Command       []string  `json:"command"`
-	Flags         Flags     `json:"flags"`
-	Spec          *SpecFile `json:"spec,omitempty"`
-	Result        *Result   `json:"result,omitempty"`
+	SchemaVersion int    `json:"schema_version"`
+	StateActor    Build  `json:"state_actor"`
+	GeneratedAt   string `json:"generated_at"`
+	// Command is os.Args as the process was invoked. argv[0] is the launcher
+	// path (e.g. a go-run temp binary or ./state-actor), not a canonicalized
+	// program name.
+	Command []string  `json:"command"`
+	Flags   Flags     `json:"flags"`
+	Spec    *SpecFile `json:"spec,omitempty"`
+	Result  *Result   `json:"result,omitempty"`
+	// ReproducedFrom is set when this run was produced by the `reproduce`
+	// subcommand; it holds the manifest path that was replayed. Empty for an
+	// original run. (Command stays the literal reproduce invocation, so this is
+	// what links a reproduced datadir back to its source manifest.)
+	ReproducedFrom string `json:"reproduced_from,omitempty"`
 }
 
 // Build identifies the binary that produced the run. Version comes from the
@@ -46,7 +54,9 @@ type Build struct {
 	Arch        string `json:"arch"`
 	VCSRevision string `json:"vcs_revision,omitempty"`
 	VCSTime     string `json:"vcs_time,omitempty"`
-	VCSModified bool   `json:"vcs_modified,omitempty"`
+	// VCSModified is emitted even when false: for a provenance record, "built
+	// from a clean tree" (false) must be distinguishable from "unknown".
+	VCSModified bool `json:"vcs_modified"`
 }
 
 // Flags is the resolved configuration. Seed and Fork hold the values actually
@@ -86,13 +96,14 @@ type SpecFile struct {
 const SpecFilePrefix = "state-actor-spec-"
 
 // Result records the run's output for verification: a reproduction should
-// land on the same StateRoot.
+// land on the same StateRoot. The counters are always emitted (no omitempty)
+// so a legitimate zero is distinguishable from an omitted field.
 type Result struct {
 	StateRoot        string `json:"state_root"`
 	AccountsCreated  uint64 `json:"accounts_created"`
 	ContractsCreated uint64 `json:"contracts_created"`
-	StorageSlots     uint64 `json:"storage_slots,omitempty"`
-	TotalDBSizeBytes uint64 `json:"total_db_size_bytes,omitempty"`
+	StorageSlots     uint64 `json:"storage_slots"`
+	TotalDBSizeBytes uint64 `json:"total_db_size_bytes"`
 	ElapsedMS        int64  `json:"elapsed_ms"`
 }
 
@@ -122,10 +133,12 @@ func NewBuild(version string) Build {
 
 // resolveVersion picks the version string. An explicit -X main.Version (e.g. a
 // release tag passed via the Docker build-arg) always wins. Otherwise it falls
-// back to the short commit that Go automatically embeds when building from a
-// git checkout — so `go run` and Docker builds without the build-arg still
-// record a meaningful, reproducible version (the .git is in the build context).
-// Only when there is no VCS info at all does it report "dev".
+// back to the short commit that Go automatically embeds for `go build` /
+// `go install` from a git checkout — so Docker builds without the build-arg
+// still record a meaningful, reproducible version (the .git is in the build
+// context and git is installed in the builder images). Note: `go run` does NOT
+// embed VCS info, so an un-stamped `go run` reports "dev"; likewise when there
+// is no VCS info at all.
 func resolveVersion(version, revision string, modified bool) string {
 	if version != "" && version != "dev" {
 		return version
@@ -168,6 +181,24 @@ func WriteSpecSidecar(dir, inputPath string) (*SpecFile, error) {
 	}, nil
 }
 
+// Verify recomputes the sha256 of the sidecar file (OutputFile, located in dir)
+// and checks it against the recorded SHA256. This guards a reproduction against
+// a tampered or corrupted spec sidecar before it is replayed: without it, a
+// changed sidecar would silently alter the reproduced state and surface only as
+// a confusing state-root mismatch.
+func (s *SpecFile) Verify(dir string) error {
+	path := filepath.Join(dir, s.OutputFile)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("manifest: read spec sidecar %q: %w", path, err)
+	}
+	sum := sha256.Sum256(data)
+	if got := hex.EncodeToString(sum[:]); got != s.SHA256 {
+		return fmt.Errorf("manifest: spec sidecar %q sha256 mismatch: recorded %s, got %s", path, s.SHA256, got)
+	}
+	return nil
+}
+
 // Load reads and parses a manifest JSON file (used by the reproduce path).
 func Load(path string) (*Manifest, error) {
 	data, err := os.ReadFile(path)
@@ -177,6 +208,12 @@ func Load(path string) (*Manifest, error) {
 	var m Manifest
 	if err := json.Unmarshal(data, &m); err != nil {
 		return nil, fmt.Errorf("manifest: parse %q: %w", path, err)
+	}
+	// Refuse a schema this binary cannot safely consume: a newer (breaking)
+	// schema may rename/move fields we'd otherwise silently read as zero, and a
+	// missing/zero version means the file is not a v1 manifest at all.
+	if m.SchemaVersion == 0 || m.SchemaVersion > SchemaVersion {
+		return nil, fmt.Errorf("manifest: unsupported schema_version %d in %q (this binary supports %d)", m.SchemaVersion, path, SchemaVersion)
 	}
 	return &m, nil
 }

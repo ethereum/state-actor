@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"testing"
 
@@ -143,4 +144,97 @@ func TestWriteRoundTrips(t *testing.T) {
 	assert.Equal(t, "0xabc", got.Result.StateRoot)
 	// Spec omitted → must not appear.
 	assert.NotContains(t, string(data), "\"spec\"")
+}
+
+// TestLoadRejectsUnsupportedSchema pins the schema-compatibility guard in Load:
+// a missing/zero version (not a v1 manifest) and a newer version (potentially
+// breaking) must both be refused rather than silently mis-read.
+func TestLoadRejectsUnsupportedSchema(t *testing.T) {
+	dir := t.TempDir()
+	write := func(name, body string) string {
+		p := filepath.Join(dir, name)
+		require.NoError(t, os.WriteFile(p, []byte(body), 0o644))
+		return p
+	}
+
+	// schema_version 0 / missing.
+	_, err := Load(write("zero.json", `{"schema_version":0}`))
+	assert.Error(t, err)
+	_, err = Load(write("missing.json", `{"command":["state-actor"]}`))
+	assert.Error(t, err)
+
+	// schema_version newer than this binary supports.
+	_, err = Load(write("future.json", `{"schema_version":999}`))
+	assert.Error(t, err)
+
+	// Current schema loads fine.
+	p, err := (&Manifest{SchemaVersion: SchemaVersion, StateActor: NewBuild("v1"), Result: &Result{StateRoot: "0x1"}}).Write(dir)
+	require.NoError(t, err)
+	_, err = Load(p)
+	assert.NoError(t, err)
+}
+
+// TestSpecFileVerify covers the content-address check used before a reproduce
+// replays a spec sidecar: the matching file passes, a tampered file and a
+// missing file both error.
+func TestSpecFileVerify(t *testing.T) {
+	srcDir, outDir := t.TempDir(), t.TempDir()
+	inputPath := filepath.Join(srcDir, "spec.yaml")
+	require.NoError(t, os.WriteFile(inputPath, []byte("entities:\n  - kind: eoa\n"), 0o644))
+
+	s, err := WriteSpecSidecar(outDir, inputPath)
+	require.NoError(t, err)
+	require.NotNil(t, s)
+
+	// Matching sidecar verifies.
+	require.NoError(t, s.Verify(outDir))
+
+	// Tampered sidecar fails.
+	require.NoError(t, os.WriteFile(filepath.Join(outDir, s.OutputFile), []byte("tampered\n"), 0o644))
+	assert.Error(t, s.Verify(outDir))
+
+	// Missing sidecar fails.
+	require.NoError(t, os.Remove(filepath.Join(outDir, s.OutputFile)))
+	assert.Error(t, s.Verify(outDir))
+}
+
+// TestManifestFlagsRoundTripAllFields is the drift guard for Flags: every field
+// is set to a distinct non-zero value and must survive Write→Load unchanged.
+// The reflection sweep fails if a newly added Flags field is left unset here,
+// forcing whoever adds it to also confirm reproduce() restores it (otherwise a
+// new state-affecting flag would silently break reproducibility).
+func TestManifestFlagsRoundTripAllFields(t *testing.T) {
+	flags := Flags{
+		Client:     "geth",
+		DB:         "/data/geth/chaindata",
+		Seed:       42,
+		SeedInput:  7,
+		Fork:       "osaka",
+		ForkInput:  "prague",
+		ChainID:    1337,
+		GasLimit:   30_000_000,
+		Timestamp:  1_700_000_000,
+		ExtraData:  "0xdeadbeef",
+		TargetSize: "2GB",
+		BinaryTrie: true,
+		GroupDepth: 8,
+		Archive:    true,
+		SpecPath:   "/in/spec.yaml",
+	}
+	rv := reflect.ValueOf(flags)
+	for i := range rv.NumField() {
+		if rv.Field(i).IsZero() {
+			t.Fatalf("Flags.%s is zero in this fixture — set it, and make sure reproduce() restores it from the manifest",
+				rv.Type().Field(i).Name)
+		}
+	}
+
+	dir := t.TempDir()
+	m := &Manifest{SchemaVersion: SchemaVersion, StateActor: NewBuild("v1"), Flags: flags, Result: &Result{StateRoot: "0x1"}}
+	path, err := m.Write(dir)
+	require.NoError(t, err)
+
+	got, err := Load(path)
+	require.NoError(t, err)
+	assert.Equal(t, flags, got.Flags)
 }
