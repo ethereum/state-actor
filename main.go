@@ -69,6 +69,13 @@ var (
 )
 
 func main() {
+	// Subcommands are dispatched on the first positional arg before the global
+	// flags are parsed. `reproduce` regenerates a run from its manifest.
+	if len(os.Args) >= 2 && os.Args[1] == "reproduce" {
+		reproduce(os.Args[2:])
+		return
+	}
+
 	flag.Parse()
 
 	if *listForks {
@@ -91,6 +98,14 @@ func main() {
 		os.Exit(1)
 	}
 
+	generate()
+}
+
+// generate runs the full state-generation pipeline from the resolved global
+// flags, prints the summary, writes the manifest, and returns the run stats.
+// Shared by the default command and the `reproduce` subcommand, which populates
+// the same globals from a manifest before calling it.
+func generate() *generator.Stats {
 	// seedInput preserves the raw --seed for the manifest; *seed below is
 	// resolved to a concrete value (wall-clock when 0) and is what actually
 	// reproduces the run.
@@ -453,6 +468,93 @@ func main() {
 			fmt.Printf("  Contract #%d: %s\n", i+1, addr.Hex())
 		}
 	}
+
+	return stats
+}
+
+// reproduce regenerates a prior run from its state-actor-manifest.json into a
+// fresh --db, then verifies the resulting state root against the manifest
+// (exiting non-zero on mismatch). It populates the same global flags the
+// default command uses, so generation goes through the identical pipeline.
+func reproduce(args []string) {
+	fs := flag.NewFlagSet("reproduce", flag.ExitOnError)
+	manifestPath := fs.String("manifest", "", "Path to the state-actor-manifest.json to reproduce (required)")
+	outDB := fs.String("db", "", "Output database directory for the reproduced run (required; must differ from the original)")
+	fs.Usage = func() {
+		fmt.Fprintln(os.Stderr, "Usage: state-actor reproduce --manifest <manifest.json> --db <new-output-dir>")
+		fs.PrintDefaults()
+	}
+	_ = fs.Parse(args)
+
+	if *manifestPath == "" || *outDB == "" {
+		fs.Usage()
+		os.Exit(1)
+	}
+
+	m, err := manifest.Load(*manifestPath)
+	if err != nil {
+		log.Fatalf("reproduce: %v", err)
+	}
+
+	if m.StateActor.Version != Version {
+		log.Printf("warning: manifest was produced by state-actor %q but this binary is %q; reproduction may differ",
+			m.StateActor.Version, Version)
+	}
+
+	// Never clobber the original datadir.
+	if samePath(*outDB, m.Flags.DB) {
+		log.Fatalf("reproduce: --db %q is the manifest's original datadir; choose a different output directory", *outDB)
+	}
+
+	// Populate the generation globals from the manifest's RESOLVED flags. The
+	// concrete seed + fork are what make the run deterministic regardless of
+	// when or where it is reproduced.
+	*client = m.Flags.Client
+	*seed = m.Flags.Seed
+	*fork = m.Flags.Fork
+	*chainID = m.Flags.ChainID
+	*gasLimit = m.Flags.GasLimit
+	*timestamp = m.Flags.Timestamp
+	*extraData = m.Flags.ExtraData
+	*targetSize = m.Flags.TargetSize
+	*binaryTrie = m.Flags.BinaryTrie
+	*groupDepth = m.Flags.GroupDepth
+	*archive = m.Flags.Archive
+	*dbPath = *outDB
+
+	// Reproduce from the content-addressed spec sidecar next to the manifest —
+	// guaranteed present and hash-named, unlike the original input path which
+	// may not exist on this machine.
+	if m.Spec != nil {
+		*specFile = filepath.Join(filepath.Dir(*manifestPath), m.Spec.OutputFile)
+	}
+
+	fmt.Printf("Reproducing run from %s\n", *manifestPath)
+	fmt.Printf("  client=%s seed=%d fork=%s → %s\n\n", *client, *seed, *fork, *dbPath)
+
+	stats := generate()
+
+	// Fail-on-mismatch verification against the recorded state root.
+	if m.Result != nil && m.Result.StateRoot != "" {
+		got := stats.StateRoot.Hex()
+		if got == m.Result.StateRoot {
+			fmt.Printf("\nReproduction: PASS — state root matches %s\n", got)
+			return
+		}
+		fmt.Printf("\nReproduction: MISMATCH\n  expected: %s\n  got:      %s\n", m.Result.StateRoot, got)
+		os.Exit(1)
+	}
+	fmt.Printf("\nReproduction: complete (manifest recorded no state root to verify against)\n")
+}
+
+// samePath reports whether a and b resolve to the same filesystem location.
+func samePath(a, b string) bool {
+	aa, err1 := filepath.Abs(a)
+	bb, err2 := filepath.Abs(b)
+	if err1 != nil || err2 != nil {
+		return filepath.Clean(a) == filepath.Clean(b)
+	}
+	return aa == bb
 }
 
 func formatBytes(b uint64) string {

@@ -78,6 +78,32 @@ func TestWriteSpecSidecarMissingFile(t *testing.T) {
 	assert.Error(t, err)
 }
 
+func TestWriteThenLoad(t *testing.T) {
+	dir := t.TempDir()
+	m := &Manifest{
+		SchemaVersion: SchemaVersion,
+		StateActor:    NewBuild("v7"),
+		Command:       []string{"state-actor", "--client", "reth"},
+		Flags:         Flags{Client: "reth", Seed: 99, Fork: "prague"},
+		Result:        &Result{StateRoot: "0xdead"},
+	}
+	path, err := m.Write(dir)
+	require.NoError(t, err)
+
+	got, err := Load(path)
+	require.NoError(t, err)
+	assert.Equal(t, "v7", got.StateActor.Version)
+	assert.Equal(t, "reth", got.Flags.Client)
+	assert.Equal(t, int64(99), got.Flags.Seed)
+	assert.Equal(t, "prague", got.Flags.Fork)
+	assert.Equal(t, "0xdead", got.Result.StateRoot)
+}
+
+func TestLoadMissingFile(t *testing.T) {
+	_, err := Load(filepath.Join(t.TempDir(), "nope.json"))
+	assert.Error(t, err)
+}
+
 func TestWriteRoundTrips(t *testing.T) {
 	dir := t.TempDir()
 	m := &Manifest{

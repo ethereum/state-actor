@@ -168,6 +168,19 @@ func WriteSpecSidecar(dir, inputPath string) (*SpecFile, error) {
 	}, nil
 }
 
+// Load reads and parses a manifest JSON file (used by the reproduce path).
+func Load(path string) (*Manifest, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("manifest: read %q: %w", path, err)
+	}
+	var m Manifest
+	if err := json.Unmarshal(data, &m); err != nil {
+		return nil, fmt.Errorf("manifest: parse %q: %w", path, err)
+	}
+	return &m, nil
+}
+
 // Write marshals the manifest and writes it to <dir>/state-actor-manifest.json,
 // returning the path written.
 func (m *Manifest) Write(dir string) (string, error) {

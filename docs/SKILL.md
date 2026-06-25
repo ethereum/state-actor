@@ -127,6 +127,18 @@ cast balance 0x<a-known-spec-address> --rpc-url ... # → the spec's balance
 cast code    0x<a-known-spec-contract> --rpc-url ... # → the spec's bytecode
 ```
 
+### Reproduce a run from its manifest
+
+Every run drops a `state-actor-manifest.json` at the datadir root (two levels up from `--db` for geth; the `--db` dir itself for the other clients) recording everything needed to reproduce it: the resolved flags — note the **resolved** seed (`--seed=0` expands to a wall-clock seed) and the **resolved** fork (empty `--fork` resolves to the client's max) — the build version + git revision, the run's state root, and, when `--spec` is used, a content-addressed `state-actor-spec-<sha256>.yaml` sidecar written alongside it.
+
+Re-run it into a fresh directory with the `reproduce` subcommand:
+
+```bash
+go run . reproduce --manifest /tmp/sa-geth/state-actor-manifest.json --db /tmp/sa-geth-repro/geth/chaindata
+```
+
+It replays the manifest's resolved flags (reading any spec from the sidecar, not the original path), regenerates into `--db` (which must differ from the original), and verifies the new state root against the recorded one — exiting non-zero on mismatch. This works even for runs created with `--seed=0`, since the manifest captured the concrete seed.
+
 ### Reproduce a CI failure locally
 
 CI loads `examples/full-matrix-spec-feature.yaml` on top of `--seed=42 --target-size=100MB` (mirrored across all five `TestE2ESuite` constants). The auto-fill (mainnet-shaped 20 / 10 / 70 split) emits synthetic state to fill the headroom between the spec's projected cost and `--target-size` — the spec entities are written first, the auto-fill fills the gap. Re-run:
