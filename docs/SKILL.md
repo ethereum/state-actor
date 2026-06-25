@@ -137,7 +137,7 @@ Re-run it into a fresh directory with the `reproduce` subcommand:
 go run . reproduce --manifest /tmp/sa-geth/state-actor-manifest.json --db /tmp/sa-geth-repro/geth/chaindata
 ```
 
-It replays the manifest's resolved flags (reading any spec from the sidecar, not the original path), regenerates into `--db` (which must differ from the original), and verifies the new state root against the recorded one — exiting non-zero on mismatch. This works even for runs created with `--seed=0`, since the manifest captured the concrete seed.
+It replays the manifest's resolved flags (reading any spec from the sidecar — whose sha256 is verified first — not the original path), regenerates into `--db` (which must be a **fresh, empty or nonexistent** directory, distinct from the original), and verifies the new state root against the recorded one — exiting non-zero on mismatch. This works even for runs created with `--seed=0`, since the manifest captured the concrete seed. The reproduced datadir gets its own manifest too, with a `reproduced_from` field pointing back at the source manifest.
 
 ### Reproduce a CI failure locally
 
