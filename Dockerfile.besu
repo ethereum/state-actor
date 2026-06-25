@@ -99,10 +99,20 @@ RUN go mod download
 
 COPY . .
 
-RUN go build -tags cgo_besu -ldflags "-s -w" -o /out/state-actor .
+ARG STATE_ACTOR_VERSION=dev
+RUN go build -tags cgo_besu -ldflags "-s -w -X main.Version=${STATE_ACTOR_VERSION}" -o /out/state-actor .
 
 # ---------- Stage 2: minimal runtime image ----------
 FROM debian:bookworm-slim AS runtime
+
+ARG STATE_ACTOR_VERSION=dev
+ARG STATE_ACTOR_REVISION=
+LABEL org.opencontainers.image.title="State Actor (besu)" \
+      org.opencontainers.image.description="Ethereum state generator targeting --client=besu" \
+      org.opencontainers.image.source="https://github.com/ethereum/state-actor" \
+      org.opencontainers.image.licenses="MIT" \
+      org.opencontainers.image.version="${STATE_ACTOR_VERSION}" \
+      org.opencontainers.image.revision="${STATE_ACTOR_REVISION}"
 
 # Compression libs (rocksdb runtime links against these). RocksDB's own
 # .so comes from the builder stage. libgflags2.2 is a static transitive

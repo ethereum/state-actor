@@ -26,6 +26,7 @@ import (
 	"github.com/ethereum/state-actor/genesis"
 	"github.com/ethereum/state-actor/internal/autofill"
 	"github.com/ethereum/state-actor/internal/clientpolicy"
+	"github.com/ethereum/state-actor/internal/manifest"
 	"github.com/ethereum/state-actor/internal/progress"
 	"github.com/ethereum/state-actor/internal/sizecal"
 	"github.com/ethereum/state-actor/internal/spec"
@@ -33,6 +34,11 @@ import (
 	"github.com/ethereum/state-actor/internal/syscontracts"
 	"github.com/ethereum/state-actor/internal/templates"
 )
+
+// Version is the state-actor build version, injected via
+// -ldflags "-X main.Version=..." (see Makefile). Defaults to "dev" for
+// `go run` / un-stamped builds. Recorded in the run manifest.
+var Version = "dev"
 
 var (
 	dbPath     = flag.String("db", "", "Path to the database directory (required)")
@@ -85,6 +91,10 @@ func main() {
 		os.Exit(1)
 	}
 
+	// seedInput preserves the raw --seed for the manifest; *seed below is
+	// resolved to a concrete value (wall-clock when 0) and is what actually
+	// reproduces the run.
+	seedInput := *seed
 	if *seed == 0 {
 		*seed = time.Now().UnixNano()
 	}
@@ -329,6 +339,7 @@ func main() {
 	}
 
 	elapsed := time.Since(start)
+	dbSize, dbSizeErr := dirSize(config.DBPath)
 
 	fmt.Printf("\n=== State Generation Complete ===\n")
 	fmt.Printf("Total Time:        %v\n", elapsed.Round(time.Millisecond))
@@ -346,7 +357,7 @@ func main() {
 	if stats.StemBlobBytes > 0 {
 		fmt.Printf("Stem Blob Bytes:   %s\n", formatBytes(stats.StemBlobBytes))
 	}
-	if dbSize, err := dirSize(config.DBPath); err == nil {
+	if dbSizeErr == nil {
 		fmt.Printf("Total DB Size:     %s\n", formatBytes(dbSize))
 	}
 	if stats.StorageSlotsCreated > 0 {
@@ -356,6 +367,62 @@ func main() {
 
 	if genesisConfig != nil {
 		fmt.Printf("Genesis:           included (ready to use without geth init)\n")
+	}
+
+	// Write the reproducibility manifest to the datadir root. For geth that is
+	// two levels up from --db (<datadir>/geth/chaindata → <datadir>), matching
+	// where geth-genesis.json lands; for the other clients --db IS the datadir,
+	// alongside their chainspec/genesis sidecars.
+	manifestDir := *dbPath
+	if *client == "geth" {
+		manifestDir = geth.DatadirRoot(*dbPath)
+	}
+	// Manifest failures are warnings, not fatal: the DB is already fully
+	// written and valid, so a missing manifest must not turn a successful
+	// run into a non-zero exit.
+	specFileEntry, err := manifest.WriteSpecSidecar(manifestDir, *specFile)
+	if err != nil {
+		log.Printf("warning: manifest spec sidecar failed: %v", err)
+	}
+	man := &manifest.Manifest{
+		SchemaVersion: manifest.SchemaVersion,
+		StateActor:    manifest.NewBuild(Version),
+		GeneratedAt:   start.UTC().Format(time.RFC3339),
+		Command:       os.Args,
+		Flags: manifest.Flags{
+			Client:     *client,
+			DB:         *dbPath,
+			Seed:       *seed,
+			SeedInput:  seedInput,
+			Fork:       chosenFork,
+			ForkInput:  *fork,
+			ChainID:    *chainID,
+			GasLimit:   *gasLimit,
+			Timestamp:  *timestamp,
+			ExtraData:  *extraData,
+			TargetSize: *targetSize,
+			BinaryTrie: *binaryTrie,
+			GroupDepth: *groupDepth,
+			Archive:    *archive,
+			SpecPath:   *specFile,
+		},
+		Spec: specFileEntry,
+		Result: &manifest.Result{
+			StateRoot:        stats.StateRoot.Hex(),
+			AccountsCreated:  uint64(stats.AccountsCreated),
+			ContractsCreated: uint64(stats.ContractsCreated),
+			StorageSlots:     uint64(stats.StorageSlotsCreated),
+			ElapsedMS:        elapsed.Milliseconds(),
+		},
+	}
+	if dbSizeErr == nil {
+		man.Result.TotalDBSizeBytes = dbSize
+	}
+	manifestPath, err := man.Write(manifestDir)
+	if err != nil {
+		log.Printf("warning: manifest write failed: %v", err)
+	} else {
+		fmt.Printf("Manifest:          %s\n", manifestPath)
 	}
 
 	if *benchmark {

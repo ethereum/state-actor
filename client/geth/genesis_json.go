@@ -60,6 +60,14 @@ func writeGenesisJSON(dbPath string, g *genesis.Genesis) (string, error) {
 	return outPath, nil
 }
 
+// DatadirRoot returns the geth datadir root for a given --db chaindata path
+// (<datadir>/geth/chaindata → <datadir>). Exported so callers that drop
+// sidecars at the datadir root (e.g. the run manifest) resolve the same
+// location as the geth-genesis.json sidecar.
+func DatadirRoot(dbPath string) string {
+	return gethDatadir(dbPath)
+}
+
 // gethDatadir derives the geth datadir root from the chaindata path. By
 // convention state-actor's --db ends in <datadir>/geth/chaindata, so the
 // datadir is two levels up. If dbPath does not follow that layout, the sidecar

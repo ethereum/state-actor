@@ -43,6 +43,8 @@ jobs:
       sha_short: ${{ steps.vars.outputs.sha_short }}
       tag_prefix: ${{ steps.vars.outputs.tag_prefix }}
       additional_tags: ${{ steps.vars.outputs.additional_tags }}
+      version: ${{ steps.vars.outputs.version }}
+      revision: ${{ steps.vars.outputs.revision }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -52,6 +54,13 @@ jobs:
         run: |
           SHA_SHORT=$(git rev-parse --short HEAD)
           echo "sha_short=$SHA_SHORT" >> $GITHUB_OUTPUT
+          # Version stamped into the binary via -X main.Version (build-arg
+          # below). Mirrors the Makefile's git-describe so manifests written
+          # by the published images carry a meaningful version.
+          VERSION=$(git describe --tags --always --dirty 2>/dev/null || echo "dev")
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          # Full commit for the org.opencontainers.image.revision label.
+          echo "revision=$(git rev-parse HEAD)" >> $GITHUB_OUTPUT
           if [[ "${{ github.ref }}" == refs/tags/v*.*.* ]]; then
             VERSION_TAG="${GITHUB_REF#refs/tags/}"
             echo "tag_prefix=$VERSION_TAG" >> $GITHUB_OUTPUT
@@ -102,8 +111,12 @@ jobs:
         env:
           PREFIX: ${{ needs.meta.outputs.tag_prefix }}
           SHA: ${{ needs.meta.outputs.sha_short }}
+          VERSION: ${{ needs.meta.outputs.version }}
+          REVISION: ${{ needs.meta.outputs.revision }}
         run: |
           docker build . --file "$DOCKERFILE" \
+            --build-arg "STATE_ACTOR_VERSION=${VERSION}" \
+            --build-arg "STATE_ACTOR_REVISION=${REVISION}" \
             --tag "${GHCR_REPO}:${PREFIX}-amd64" \
             --tag "${GHCR_REPO}:${PREFIX}-${SHA}-amd64" \
             --platform=linux/amd64
@@ -157,8 +170,12 @@ jobs:
         env:
           PREFIX: ${{ needs.meta.outputs.tag_prefix }}
           SHA: ${{ needs.meta.outputs.sha_short }}
+          VERSION: ${{ needs.meta.outputs.version }}
+          REVISION: ${{ needs.meta.outputs.revision }}
         run: |
           docker build . --file "$DOCKERFILE" \
+            --build-arg "STATE_ACTOR_VERSION=${VERSION}" \
+            --build-arg "STATE_ACTOR_REVISION=${REVISION}" \
             --tag "${GHCR_REPO}:${PREFIX}-arm64" \
             --tag "${GHCR_REPO}:${PREFIX}-${SHA}-arm64" \
             --platform=linux/arm64

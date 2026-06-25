@@ -75,10 +75,20 @@ WORKDIR /app
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-RUN mkdir -p /out && go build -tags cgo_reth -o /out/state-actor ./
+ARG STATE_ACTOR_VERSION=dev
+RUN mkdir -p /out && go build -tags cgo_reth -ldflags "-X main.Version=${STATE_ACTOR_VERSION}" -o /out/state-actor ./
 
 # ---------- Stage 2: minimal runtime image ----------
 FROM debian:bookworm-slim AS runtime
+
+ARG STATE_ACTOR_VERSION=dev
+ARG STATE_ACTOR_REVISION=
+LABEL org.opencontainers.image.title="State Actor (reth)" \
+      org.opencontainers.image.description="Ethereum state generator targeting --client=reth" \
+      org.opencontainers.image.source="https://github.com/ethereum/state-actor" \
+      org.opencontainers.image.licenses="MIT" \
+      org.opencontainers.image.version="${STATE_ACTOR_VERSION}" \
+      org.opencontainers.image.revision="${STATE_ACTOR_REVISION}"
 
 # Compression libs (rocksdb runtime links against these). RocksDB's own
 # .so comes from the builder stage.

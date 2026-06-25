@@ -32,7 +32,8 @@ COPY . .
 
 # Pure-Go build — no cgo, no rocksdb, no mdbx. The client/geth path is
 # self-contained on cockroachdb/pebble.
-RUN CGO_ENABLED=0 GOOS=linux go build -ldflags "-s -w" -o /out/state-actor .
+ARG STATE_ACTOR_VERSION=dev
+RUN CGO_ENABLED=0 GOOS=linux go build -ldflags "-s -w -X main.Version=${STATE_ACTOR_VERSION}" -o /out/state-actor .
 
 # ---------- Stage 2: minimal runtime image ----------
 FROM alpine:3.19
@@ -40,6 +41,11 @@ FROM alpine:3.19
 LABEL org.opencontainers.image.title="State Actor (geth)"
 LABEL org.opencontainers.image.description="Ethereum state generator targeting --client=geth (direct cockroachdb/pebble)"
 LABEL org.opencontainers.image.source="https://github.com/ethereum/state-actor"
+LABEL org.opencontainers.image.licenses="MIT"
+ARG STATE_ACTOR_VERSION=dev
+ARG STATE_ACTOR_REVISION=
+LABEL org.opencontainers.image.version="${STATE_ACTOR_VERSION}"
+LABEL org.opencontainers.image.revision="${STATE_ACTOR_REVISION}"
 
 # ca-certificates for HTTPS RPC; curl for the smoke target's RPC probes
 # (validate-big-db-geth.sh runs eth_chainId / eth_getBalance from inside

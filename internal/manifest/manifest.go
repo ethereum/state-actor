@@ -1,0 +1,183 @@
+// Package manifest writes a state-actor-manifest.json into a generated
+// datadir capturing everything needed to reproduce the run: the exact
+// command, the resolved flags (note: the *resolved* seed and fork, not the
+// raw inputs — see Flags), any embedded --spec config, the state-actor
+// build, and the run's result. It is a leaf package: it imports only the
+// standard library so any caller can populate and write it.
+package manifest
+
+import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
+	"runtime"
+	"runtime/debug"
+)
+
+// FileName is the manifest dropped at the datadir root.
+const FileName = "state-actor-manifest.json"
+
+// SchemaVersion is bumped on any breaking change to the manifest shape so
+// consumers can detect format drift.
+const SchemaVersion = 1
+
+// Manifest is the full reproducibility record for one state-actor run.
+type Manifest struct {
+	SchemaVersion int       `json:"schema_version"`
+	StateActor    Build     `json:"state_actor"`
+	GeneratedAt   string    `json:"generated_at"`
+	Command       []string  `json:"command"`
+	Flags         Flags     `json:"flags"`
+	Spec          *SpecFile `json:"spec,omitempty"`
+	Result        *Result   `json:"result,omitempty"`
+}
+
+// Build identifies the binary that produced the run. Version comes from the
+// -X main.Version ldflag; the VCS fields and GoVersion come from the embedded
+// build info, so a binary built outside the Makefile (e.g. inside a client
+// Docker image) still records its provenance when built from a VCS checkout.
+type Build struct {
+	Version     string `json:"version"`
+	GoVersion   string `json:"go_version"`
+	OS          string `json:"os"`
+	Arch        string `json:"arch"`
+	VCSRevision string `json:"vcs_revision,omitempty"`
+	VCSTime     string `json:"vcs_time,omitempty"`
+	VCSModified bool   `json:"vcs_modified,omitempty"`
+}
+
+// Flags is the resolved configuration. Seed and Fork hold the values actually
+// used, which may differ from the command line: --seed=0 expands to a
+// wall-clock seed, and an empty --fork resolves to the client's maximum fork.
+// ForkInput / SeedInput preserve what the user passed for auditing.
+type Flags struct {
+	Client     string `json:"client"`
+	DB         string `json:"db"`
+	Seed       int64  `json:"seed"`
+	SeedInput  int64  `json:"seed_input"`
+	Fork       string `json:"fork"`
+	ForkInput  string `json:"fork_input"`
+	ChainID    int64  `json:"chain_id"`
+	GasLimit   uint64 `json:"gas_limit"`
+	Timestamp  uint64 `json:"timestamp"`
+	ExtraData  string `json:"extra_data,omitempty"`
+	TargetSize string `json:"target_size,omitempty"`
+	BinaryTrie bool   `json:"binary_trie"`
+	GroupDepth int    `json:"group_depth"`
+	Archive    bool   `json:"archive"`
+	SpecPath   string `json:"spec_path,omitempty"`
+}
+
+// SpecFile references the --spec config used for the run. The raw spec is
+// written verbatim to a content-addressed sidecar (OutputFile) next to the
+// manifest rather than inlined, so the manifest stays readable and the spec is
+// directly reusable: --spec=<OutputFile>. SHA256 names the sidecar and lets a
+// consumer verify it. InputPath records the original --spec path for auditing.
+type SpecFile struct {
+	InputPath  string `json:"input_path"`
+	SHA256     string `json:"sha256"`
+	OutputFile string `json:"output_file"`
+}
+
+// SpecFilePrefix + <sha256> + ".yaml" is the content-addressed sidecar name.
+const SpecFilePrefix = "state-actor-spec-"
+
+// Result records the run's output for verification: a reproduction should
+// land on the same StateRoot.
+type Result struct {
+	StateRoot        string `json:"state_root"`
+	AccountsCreated  uint64 `json:"accounts_created"`
+	ContractsCreated uint64 `json:"contracts_created"`
+	StorageSlots     uint64 `json:"storage_slots,omitempty"`
+	TotalDBSizeBytes uint64 `json:"total_db_size_bytes,omitempty"`
+	ElapsedMS        int64  `json:"elapsed_ms"`
+}
+
+// NewBuild assembles the Build record from the linked-in version and the
+// embedded build info.
+func NewBuild(version string) Build {
+	b := Build{
+		GoVersion: runtime.Version(),
+		OS:        runtime.GOOS,
+		Arch:      runtime.GOARCH,
+	}
+	if info, ok := debug.ReadBuildInfo(); ok {
+		for _, s := range info.Settings {
+			switch s.Key {
+			case "vcs.revision":
+				b.VCSRevision = s.Value
+			case "vcs.time":
+				b.VCSTime = s.Value
+			case "vcs.modified":
+				b.VCSModified = s.Value == "true"
+			}
+		}
+	}
+	b.Version = resolveVersion(version, b.VCSRevision, b.VCSModified)
+	return b
+}
+
+// resolveVersion picks the version string. An explicit -X main.Version (e.g. a
+// release tag passed via the Docker build-arg) always wins. Otherwise it falls
+// back to the short commit that Go automatically embeds when building from a
+// git checkout — so `go run` and Docker builds without the build-arg still
+// record a meaningful, reproducible version (the .git is in the build context).
+// Only when there is no VCS info at all does it report "dev".
+func resolveVersion(version, revision string, modified bool) string {
+	if version != "" && version != "dev" {
+		return version
+	}
+	if revision != "" {
+		short := revision
+		if len(short) > 12 {
+			short = short[:12]
+		}
+		if modified {
+			short += "-dirty"
+		}
+		return short
+	}
+	return "dev"
+}
+
+// WriteSpecSidecar reads the --spec file at inputPath, writes it verbatim to a
+// content-addressed sidecar (<dir>/state-actor-spec-<sha256>.yaml), and returns
+// a SpecFile referencing it. Returns nil when inputPath is empty (no --spec).
+// The sidecar is byte-identical to the input so its sha matches the filename.
+func WriteSpecSidecar(dir, inputPath string) (*SpecFile, error) {
+	if inputPath == "" {
+		return nil, nil
+	}
+	data, err := os.ReadFile(inputPath)
+	if err != nil {
+		return nil, fmt.Errorf("manifest: read spec %q: %w", inputPath, err)
+	}
+	sum := sha256.Sum256(data)
+	hexSum := hex.EncodeToString(sum[:])
+	outFile := SpecFilePrefix + hexSum + ".yaml"
+	if err := os.WriteFile(filepath.Join(dir, outFile), data, 0o644); err != nil {
+		return nil, fmt.Errorf("manifest: write spec sidecar: %w", err)
+	}
+	return &SpecFile{
+		InputPath:  inputPath,
+		SHA256:     hexSum,
+		OutputFile: outFile,
+	}, nil
+}
+
+// Write marshals the manifest and writes it to <dir>/state-actor-manifest.json,
+// returning the path written.
+func (m *Manifest) Write(dir string) (string, error) {
+	out, err := json.MarshalIndent(m, "", "  ")
+	if err != nil {
+		return "", fmt.Errorf("manifest: marshal: %w", err)
+	}
+	outPath := filepath.Join(dir, FileName)
+	if err := os.WriteFile(outPath, append(out, '\n'), 0o644); err != nil {
+		return "", fmt.Errorf("manifest: write %q: %w", outPath, err)
+	}
+	return outPath, nil
+}

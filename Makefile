@@ -10,6 +10,7 @@
 # Binary name
 BINARY=state-actor
 VERSION?=$(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
+REVISION?=$(shell git rev-parse HEAD 2>/dev/null || echo "unknown")
 LDFLAGS=-ldflags "-X main.Version=$(VERSION)"
 
 # Go parameters
@@ -121,7 +122,7 @@ spamoor-install:
 
 ## docker-nethermind: Build the runtime image (state-actor + nethermind smoke)
 docker-nethermind:
-	docker build -f Dockerfile.nethermind -t state-actor-nethermind:latest -t state-actor-nethermind:$(VERSION) .
+	docker build -f Dockerfile.nethermind --build-arg STATE_ACTOR_VERSION=$(VERSION) --build-arg STATE_ACTOR_REVISION=$(REVISION) -t state-actor-nethermind:latest -t state-actor-nethermind:$(VERSION) .
 
 ## image-nethermind: Build the builder stage so we can run cgo_neth go tests inside it.
 ##   Used by test-nethermind-suite. Also reused by CI's per-job docker build.
@@ -175,7 +176,7 @@ smoke-nethermind-spamoor: docker-nethermind
 
 ## docker-besu: Build the runtime image (state-actor + besu smoke)
 docker-besu:
-	docker build -f Dockerfile.besu -t state-actor-besu:latest -t state-actor-besu:$(VERSION) .
+	docker build -f Dockerfile.besu --build-arg STATE_ACTOR_VERSION=$(VERSION) --build-arg STATE_ACTOR_REVISION=$(REVISION) -t state-actor-besu:latest -t state-actor-besu:$(VERSION) .
 
 ## image-besu: Build the builder stage so we can run cgo_besu go tests inside it.
 ##   Used by test-besu-suite. Also reused by CI's per-job docker build.
@@ -241,7 +242,7 @@ smoke-besu-spamoor: docker-besu
 
 ## docker-geth: Build the Geth-capable image (state-actor only; no cgo)
 docker-geth:
-	docker build -f Dockerfile.geth -t state-actor-geth:latest -t state-actor-geth:$(VERSION) .
+	docker build -f Dockerfile.geth --build-arg STATE_ACTOR_VERSION=$(VERSION) --build-arg STATE_ACTOR_REVISION=$(REVISION) -t state-actor-geth:latest -t state-actor-geth:$(VERSION) .
 
 ## smoke-geth: End-to-end smoke for the geth direct-Pebble MPT path.
 ##   Builds the state-actor-geth image, generates a small DB at $(SA_DB_GETH),
@@ -384,6 +385,8 @@ image-erigon:
 ##   which references `state-actor:$client`).
 docker-erigon:
 	docker build -f Dockerfile.erigon \
+	  --build-arg STATE_ACTOR_VERSION=$(VERSION) \
+	  --build-arg STATE_ACTOR_REVISION=$(REVISION) \
 	  -t state-actor-erigon:latest \
 	  -t state-actor-erigon:$(VERSION) \
 	  -t state-actor:erigon .

@@ -103,7 +103,8 @@ RUN go mod tidy -e
 # `-mod=mod` allows the build to fetch any remaining transitive deps
 # tidy could not resolve; in strict readonly mode an unresolved
 # transitive would re-trigger "updates to go.mod needed".
-RUN mkdir -p /out && go build -mod=mod -tags "cgo_erigon cgo_erigon_commitment gofuzz" -ldflags "-s -w" -o /out/state-actor ./
+ARG STATE_ACTOR_VERSION=dev
+RUN mkdir -p /out && go build -mod=mod -tags "cgo_erigon cgo_erigon_commitment gofuzz" -ldflags "-s -w -X main.Version=${STATE_ACTOR_VERSION}" -o /out/state-actor ./
 
 # Also build the erigon binary from /erigon-src (stock upstream, no
 # patches). The daemon launched by scripts/run-bloatnet.sh uses THIS
@@ -135,6 +136,15 @@ FROM erigontech/erigon@sha256:bac6b266367ec59f82576cd8cef047171601fce3f0bbbef36e
 
 # ---------- Stage 3: minimal runtime image ----------
 FROM debian:bookworm-slim AS runtime
+
+ARG STATE_ACTOR_VERSION=dev
+ARG STATE_ACTOR_REVISION=
+LABEL org.opencontainers.image.title="State Actor (erigon)" \
+      org.opencontainers.image.description="Ethereum state generator targeting --client=erigon" \
+      org.opencontainers.image.source="https://github.com/ethereum/state-actor" \
+      org.opencontainers.image.licenses="MIT" \
+      org.opencontainers.image.version="${STATE_ACTOR_VERSION}" \
+      org.opencontainers.image.revision="${STATE_ACTOR_REVISION}"
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
