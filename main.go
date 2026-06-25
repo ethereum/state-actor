@@ -98,14 +98,24 @@ func main() {
 		os.Exit(1)
 	}
 
-	generate()
+	generate("")
 }
 
 // generate runs the full state-generation pipeline from the resolved global
 // flags, prints the summary, writes the manifest, and returns the run stats.
 // Shared by the default command and the `reproduce` subcommand, which populates
-// the same globals from a manifest before calling it.
-func generate() *generator.Stats {
+// the same globals from a manifest before calling it. reproducedFrom is the
+// source manifest path when invoked via `reproduce` (recorded in the new
+// manifest's reproduced_from), and "" for an original run.
+func generate(reproducedFrom string) *generator.Stats {
+	// Defense-in-depth: main() enforces this for the default command, but
+	// reproduce() calls generate() directly. With neither --spec nor
+	// --target-size there is nothing to emit but the injected system contracts
+	// — a degenerate state that the empty-state guard in Config.Validate does
+	// NOT catch (those contracts populate GenesisAccounts). Fail loudly instead.
+	if *specFile == "" && *targetSize == "" {
+		log.Fatalf("generate: neither --spec nor --target-size is set; nothing to generate")
+	}
 	// seedInput preserves the raw --seed for the manifest; *seed below is
 	// resolved to a concrete value (wall-clock when 0) and is what actually
 	// reproduces the run.
@@ -397,7 +407,11 @@ func generate() *generator.Stats {
 	// run into a non-zero exit.
 	specFileEntry, err := manifest.WriteSpecSidecar(manifestDir, *specFile)
 	if err != nil {
-		log.Printf("warning: manifest spec sidecar failed: %v", err)
+		// Non-fatal (the DB is valid), but a failed sidecar on a --spec run
+		// means reproduce() — which reads the spec from the sidecar, not the
+		// original path — cannot regenerate this run. Warn unmistakably.
+		log.Printf("WARNING: manifest spec sidecar failed: %v\n"+
+			"         this run is NOT reproducible from its manifest (the --spec sidecar is missing)", err)
 	}
 	man := &manifest.Manifest{
 		SchemaVersion: manifest.SchemaVersion,
@@ -429,6 +443,7 @@ func generate() *generator.Stats {
 			StorageSlots:     uint64(stats.StorageSlotsCreated),
 			ElapsedMS:        elapsed.Milliseconds(),
 		},
+		ReproducedFrom: reproducedFrom,
 	}
 	if dbSizeErr == nil {
 		man.Result.TotalDBSizeBytes = dbSize
@@ -482,6 +497,7 @@ func reproduce(args []string) {
 	outDB := fs.String("db", "", "Output database directory for the reproduced run (required; must differ from the original)")
 	fs.Usage = func() {
 		fmt.Fprintln(os.Stderr, "Usage: state-actor reproduce --manifest <manifest.json> --db <new-output-dir>")
+		fmt.Fprintln(os.Stderr, "Flags must follow the 'reproduce' subcommand.")
 		fs.PrintDefaults()
 	}
 	_ = fs.Parse(args)
@@ -496,14 +512,31 @@ func reproduce(args []string) {
 		log.Fatalf("reproduce: %v", err)
 	}
 
-	if m.StateActor.Version != Version {
+	// Compare the manifest's RESOLVED version against this binary's resolved
+	// version — NewBuild applies the same go-build VCS fallback that produced
+	// the recorded value, so an identical binary doesn't spuriously warn (the
+	// raw Version var is "dev" for any un-stamped go build).
+	localVersion := manifest.NewBuild(Version).Version
+	if m.StateActor.Version != localVersion {
 		log.Printf("warning: manifest was produced by state-actor %q but this binary is %q; reproduction may differ",
-			m.StateActor.Version, Version)
+			m.StateActor.Version, localVersion)
+	}
+
+	// A --spec run whose sidecar failed to write (a warning at generation time)
+	// records SpecPath but no Spec entry: it cannot be reproduced. Refuse
+	// clearly rather than regenerating a spec-less (wrong) state → MISMATCH.
+	if m.Spec == nil && m.Flags.SpecPath != "" {
+		log.Fatalf("reproduce: manifest references --spec %q but has no spec sidecar (the original run failed to write it); this manifest is not reproducible", m.Flags.SpecPath)
 	}
 
 	// Never clobber the original datadir.
 	if samePath(*outDB, m.Flags.DB) {
 		log.Fatalf("reproduce: --db %q is the manifest's original datadir; choose a different output directory", *outDB)
+	}
+	// Require a fresh output dir: refuse a pre-existing non-empty directory so a
+	// reproduction can't interleave with or overwrite unrelated client state.
+	if dirExistsNonEmpty(*outDB) {
+		log.Fatalf("reproduce: --db %q must be a fresh (empty or nonexistent) directory", *outDB)
 	}
 
 	// Populate the generation globals from the manifest's RESOLVED flags. The
@@ -524,27 +557,34 @@ func reproduce(args []string) {
 
 	// Reproduce from the content-addressed spec sidecar next to the manifest —
 	// guaranteed present and hash-named, unlike the original input path which
-	// may not exist on this machine.
+	// may not exist on this machine. Verify its sha256 first so a tampered or
+	// corrupted sidecar fails fast instead of silently changing the result.
+	manifestRoot := filepath.Dir(*manifestPath)
 	if m.Spec != nil {
-		*specFile = filepath.Join(filepath.Dir(*manifestPath), m.Spec.OutputFile)
+		if err := m.Spec.Verify(manifestRoot); err != nil {
+			log.Fatalf("reproduce: %v", err)
+		}
+		*specFile = filepath.Join(manifestRoot, m.Spec.OutputFile)
 	}
 
 	fmt.Printf("Reproducing run from %s\n", *manifestPath)
 	fmt.Printf("  client=%s seed=%d fork=%s → %s\n\n", *client, *seed, *fork, *dbPath)
 
-	stats := generate()
+	stats := generate(*manifestPath)
 
-	// Fail-on-mismatch verification against the recorded state root.
-	if m.Result != nil && m.Result.StateRoot != "" {
-		got := stats.StateRoot.Hex()
-		if got == m.Result.StateRoot {
-			fmt.Printf("\nReproduction: PASS — state root matches %s\n", got)
-			return
-		}
-		fmt.Printf("\nReproduction: MISMATCH\n  expected: %s\n  got:      %s\n", m.Result.StateRoot, got)
-		os.Exit(1)
+	// Fail-on-mismatch verification against the recorded state root. A valid
+	// (schema-checked) manifest always records one; its absence means a corrupt
+	// or hand-edited file, which must not silently pass a verification command.
+	if m.Result == nil || m.Result.StateRoot == "" {
+		log.Fatalf("reproduce: manifest recorded no state root to verify against (corrupt manifest?)")
 	}
-	fmt.Printf("\nReproduction: complete (manifest recorded no state root to verify against)\n")
+	got := stats.StateRoot.Hex()
+	if got == m.Result.StateRoot {
+		fmt.Printf("\nReproduction: PASS — state root matches %s\n", got)
+		return
+	}
+	fmt.Printf("\nReproduction: MISMATCH\n  expected: %s\n  got:      %s\n", m.Result.StateRoot, got)
+	os.Exit(1)
 }
 
 // samePath reports whether a and b resolve to the same filesystem location.
@@ -555,6 +595,17 @@ func samePath(a, b string) bool {
 		return filepath.Clean(a) == filepath.Clean(b)
 	}
 	return aa == bb
+}
+
+// dirExistsNonEmpty reports whether path is an existing directory with at least
+// one entry. A nonexistent path, an empty directory, or an unreadable/non-dir
+// path all report false (treated as "not an obstacle" for a fresh reproduce).
+func dirExistsNonEmpty(path string) bool {
+	entries, err := os.ReadDir(path)
+	if err != nil {
+		return false
+	}
+	return len(entries) > 0
 }
 
 func formatBytes(b uint64) string {
