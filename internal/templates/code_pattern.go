@@ -32,6 +32,11 @@ const (
 	// share one code hash (no embedded address). Used by
 	// AccountMode.EXISTING_CONTRACT_SAME; CodePatternRuntimeSize = 0.
 	CodePatternMaxSamePreAmsterdam = "max_same_pre_amsterdam"
+
+	// CodePatternMaxDiffPreAmsterdam — 24576-byte runtime with embedded
+	// address at bytes 0x0C..0x20 (STOP + padding + address + JUMPDESTs).
+	// Byte-unique per contract. Used by AccountMode.EXISTING_CONTRACT_DIFF.
+	CodePatternMaxDiffPreAmsterdam = "max_diff_pre_amsterdam"
 )
 
 // preAmsterdamMaxCodeSize is the EIP-170 contract-code limit applied
@@ -43,6 +48,7 @@ const preAmsterdamMaxCodeSize = 0x6000 // 24576 bytes.
 var knownCodePatterns = []string{
 	CodePatternUniqueJumpdestPreAmsterdam,
 	CodePatternMaxSamePreAmsterdam,
+	CodePatternMaxDiffPreAmsterdam,
 }
 
 // IsKnownCodePattern reports whether the given string is one of the
@@ -56,6 +62,8 @@ func IsKnownCodePattern(name string) bool {
 func CodePatternRuntimeSize(name string) uint64 {
 	switch name {
 	case CodePatternUniqueJumpdestPreAmsterdam:
+		return preAmsterdamMaxCodeSize
+	case CodePatternMaxDiffPreAmsterdam:
 		return preAmsterdamMaxCodeSize
 	case CodePatternMaxSamePreAmsterdam:
 		return 0
@@ -239,6 +247,45 @@ func BuildMaxSameInitcodePreAmsterdam() []byte {
 	return buf
 }
 
+// BuildMaxDiffRuntimePreAmsterdam returns the 24576-byte runtime with
+// embedded address (STOP + padding + address + JUMPDESTs at 0x0C..0x20).
+// Byte-unique per contract. Matches UniqueMaxContractInitcode(diff=True).
+func BuildMaxDiffRuntimePreAmsterdam(addr common.Address) []byte {
+	out := make([]byte, preAmsterdamMaxCodeSize)
+	for i := range out {
+		out[i] = 0x5B // JUMPDEST
+	}
+	// Bytes 0x00..0x0C — STOP at byte 0 plus 11 zero padding bytes
+	// (MSTORE(0, ADDRESS) writes the address right-aligned in 32 bytes).
+	for i := 0; i < 0x0C; i++ {
+		out[i] = 0x00
+	}
+	// Bytes 0x0C..0x20 — the 20-byte address.
+	copy(out[0x0C:0x20], addr[:])
+	// Bytes 0x20..0x6000 stay JUMPDEST from the fill.
+	return out
+}
+
+// BuildMaxDiffInitcodePreAmsterdam returns initcode with embedded ADDRESS.
+// Vendored for CREATE2; only hash used (never executes).
+func BuildMaxDiffInitcodePreAmsterdam() []byte {
+	// 1+2. Seed mem[0:0x8000] with JUMPDEST (shared prologue).
+	buf := appendJumpdestFillSeed(nil)
+
+	// 3. MSTORE(0, ADDRESS): MSTORE pops (offset, value) with offset on
+	// top, so push value (ADDRESS) first, then offset.
+	buf = append(buf, 0x30)       // ADDRESS (value)
+	buf = append(buf, 0x60, 0x00) // PUSH1 0 (offset)
+	buf = append(buf, 0x52)       // MSTORE
+
+	// 4. PUSH2 0x6000; PUSH1 0x00; RETURN.
+	buf = append(buf, 0x61, 0x60, 0x00) // PUSH2 0x6000 (length)
+	buf = append(buf, 0x60, 0x00)       // PUSH1 0 (offset)
+	buf = append(buf, 0xF3)             // RETURN
+
+	return buf
+}
+
 // pushImmediate emits the smallest PUSHN + immediate bytes that pushes
 // `v` onto the EVM stack. Used by the initcode builder to keep the
 // emitted blob compact (32 → PUSH1, 256 → PUSH2, …, up to PUSH8 since
@@ -270,6 +317,8 @@ func codePatternRuntimeFor(name string, addr common.Address) ([]byte, error) {
 		return BuildUniqueJumpdestRuntimePreAmsterdam(addr), nil
 	case CodePatternMaxSamePreAmsterdam:
 		return maxSameRuntimePreAmsterdam, nil
+	case CodePatternMaxDiffPreAmsterdam:
+		return BuildMaxDiffRuntimePreAmsterdam(addr), nil
 	}
 	return nil, fmt.Errorf("unknown code_pattern %q", name)
 }
@@ -285,6 +334,8 @@ func codePatternInitcodeFor(name string) ([]byte, error) {
 		return BuildUniqueJumpdestInitcodePreAmsterdam(), nil
 	case CodePatternMaxSamePreAmsterdam:
 		return BuildMaxSameInitcodePreAmsterdam(), nil
+	case CodePatternMaxDiffPreAmsterdam:
+		return BuildMaxDiffInitcodePreAmsterdam(), nil
 	}
 	return nil, fmt.Errorf("unknown code_pattern %q", name)
 }
