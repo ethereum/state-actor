@@ -2,6 +2,7 @@ package templates
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
@@ -93,8 +94,8 @@ func parseCreatePreimageDeploysParams(params map[string]any) (createPreimageDepl
 			return pp, fmt.Errorf("create_preimage_deploys: code_pattern must be a string (got %T)", v)
 		}
 		if !IsKnownCodePattern(name) {
-			return pp, fmt.Errorf("create_preimage_deploys: unknown code_pattern %q (known: %q)",
-				name, CodePatternUniqueJumpdestPreAmsterdam)
+			return pp, fmt.Errorf("create_preimage_deploys: unknown code_pattern %q (known: %s)",
+				name, strings.Join(knownCodePatterns, ", "))
 		}
 		if _, has := params["runtime"]; has {
 			return pp, fmt.Errorf("create_preimage_deploys: `runtime` is forbidden when `code_pattern` is set (the pattern generates per-address runtime)")

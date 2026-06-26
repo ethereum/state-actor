@@ -3,6 +3,7 @@ package templates
 import (
 	"encoding/binary"
 	"fmt"
+	"strings"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
@@ -98,8 +99,8 @@ func parseCreate2DeploysParams(params map[string]any) (create2DeploysParams, err
 			return pp, fmt.Errorf("create2_deploys: code_pattern must be a string (got %T)", v)
 		}
 		if !IsKnownCodePattern(name) {
-			return pp, fmt.Errorf("create2_deploys: unknown code_pattern %q (known: %q)",
-				name, CodePatternUniqueJumpdestPreAmsterdam)
+			return pp, fmt.Errorf("create2_deploys: unknown code_pattern %q (known: %s)",
+				name, strings.Join(knownCodePatterns, ", "))
 		}
 		if _, has := params["initcode"]; has {
 			return pp, fmt.Errorf("create2_deploys: `initcode` is forbidden when `code_pattern` is set (the pattern owns the initcode)")
