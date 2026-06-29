@@ -18,9 +18,9 @@ func init() {
 	Register(&sequentialPkeyDelegationsTemplate{})
 }
 
-// delegationDesignatorPrefix is the EIP-7702 marker; full code is the
-// 23-byte prefix || 20-byte delegate target.
-var delegationDesignatorPrefix = []byte{0xEF, 0x01, 0x00}
+// delegationDesignatorPrefix is the 3-byte EIP-7702 marker; the full code
+// is the prefix || 20-byte delegate target (23 bytes total).
+const delegationDesignatorPrefix = "\xef\x01\x00"
 
 // sequentialPkeyDelegationsTemplate handles
 // `kind: contract, template: sequential_pkey_delegations`. One entity
@@ -69,7 +69,7 @@ type sequentialPkeyDelegationsParams struct {
 	balance   *uint256.Int   // never nil, never zero; defaults to 1 wei
 	factory   common.Address // target CREATE2 factory; defaults to Arachnid
 	saltStart uint64         // first target salt
-	initHash  []byte         // keccak256 of the target initcode
+	initHash  common.Hash    // keccak256 of the target initcode
 }
 
 // parseSequentialPkeyDelegationsParams is the single validation+parse
@@ -124,7 +124,7 @@ func parseSequentialPkeyDelegationsParams(params map[string]any) (sequentialPkey
 			return pp, fmt.Errorf("sequential_pkey_delegations: %w", err)
 		}
 		if b.IsZero() {
-			return pp, fmt.Errorf("sequential_pkey_delegations: balance must be > 0 (zero-balance accounts are pruned by EIP-161)")
+			return pp, fmt.Errorf("sequential_pkey_delegations: balance must be > 0 (omit balance to use the 1 wei default)")
 		}
 		pp.balance = b
 	}
@@ -135,7 +135,7 @@ func parseSequentialPkeyDelegationsParams(params map[string]any) (sequentialPkey
 	if err != nil {
 		return pp, err
 	}
-	pp.initHash = crypto.Keccak256(initcode)
+	pp.initHash = crypto.Keccak256Hash(initcode)
 
 	pp.factory = CanonicalCREATE2FactoryAddress
 	if v, has := params["factory"]; has {
@@ -220,7 +220,7 @@ func (sequentialPkeyDelegationsTemplate) Expand(ctx Context, e spec.Entity) ([]P
 		// Target #i: CREATE2 address for salt = salt_start + i.
 		var salt [32]byte
 		binary.BigEndian.PutUint64(salt[24:], pp.saltStart+i)
-		target := crypto.CreateAddress2(pp.factory, salt, pp.initHash)
+		target := crypto.CreateAddress2(pp.factory, salt, pp.initHash[:])
 
 		// Code = 0xef0100 || target (23 bytes).
 		code := make([]byte, 0, len(delegationDesignatorPrefix)+common.AddressLength)

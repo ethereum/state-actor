@@ -125,8 +125,8 @@ func BuildUniqueJumpdestRuntimePreAmsterdam(addr common.Address) []byte {
 
 // appendJumpdestFillSeed appends the shared initcode prologue for
 // pre-Amsterdam max-size patterns: fills mem[0:0x8000] with JUMPDESTs
-// via PUSH32 + MCOPY loop. Both unique and max-same patterns build on
-// this prefix; kept centralized to prevent hash drift.
+// via PUSH32 + MCOPY loop. The unique, max-same, and max-diff patterns
+// all build on this prefix; kept centralized to prevent hash drift.
 func appendJumpdestFillSeed(buf []byte) []byte {
 	// PUSH32 (32 × JUMPDEST); PUSH1 0x00; MSTORE.
 	buf = append(buf, 0x7F) // PUSH32
@@ -224,7 +224,8 @@ func buildMaxSameRuntimePreAmsterdam() []byte {
 	return out
 }
 
-// BuildMaxSameInitcodePreAmsterdam returns initcode: STOP + JUMPDEST sea.
+// BuildMaxSameInitcodePreAmsterdam returns initcode that deploys a
+// STOP + JUMPDEST-sea runtime.
 // Vendored to match bench test CREATE2 derivation. Only the hash is used
 // (initcode never executes).
 //
