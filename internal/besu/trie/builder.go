@@ -84,10 +84,7 @@ func (b *Builder) BeginStorage(addrHash common.Hash) *StorageBuilder {
 // right-spine algorithm. Required for entities with millions of slots
 // where the non-streaming StorageBuilder OOMs.
 func (b *Builder) BeginStreamingStorage(addrHash common.Hash) *StreamingStorageBuilder {
-	return &StreamingStorageBuilder{
-		addrHash: addrHash,
-		sink:     b.sink,
-	}
+	return NewStreamingStorageBuilder(b.sink, addrHash)
 }
 
 // Commit finalizes the account-state trie and emits all non-inline nodes via
