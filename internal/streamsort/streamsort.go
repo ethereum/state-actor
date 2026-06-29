@@ -146,12 +146,19 @@ func NewWithOptions(workDir string, opts Options) (*Store, error) {
 		MemTableStopWritesThreshold: 2,
 		L0CompactionThreshold:       math.MaxInt32,
 		L0StopWritesThreshold:       math.MaxInt32,
-		MaxConcurrentCompactions:    func() int { return runtime.NumCPU() },
-		BytesPerSync:                0,
-		WALBytesPerSync:             0,
-		NoSyncOnClose:               true,
-		FormatMajorVersion:          pebble.FormatNewest,
-		Cache:                       cache,
+		// Cap compaction concurrency at 8. runtime.NumCPU() on a high-core box
+		// spawns one compactor goroutine per core, each with transient
+		// per-compaction buffers — GiBs of extra RAM during flush/compact that
+		// scales with core count (this is why reducing --cores eased the Besu
+		// generation OOM). 8 keeps compaction off the write path without the
+		// per-core blow-up. Mirrors the cap on geth's production Pebble
+		// (client/geth/writer.go).
+		MaxConcurrentCompactions: func() int { return min(runtime.NumCPU(), 8) },
+		BytesPerSync:             0,
+		WALBytesPerSync:          0,
+		NoSyncOnClose:            true,
+		FormatMajorVersion:       pebble.FormatNewest,
+		Cache:                    cache,
 		Levels: []pebble.LevelOptions{
 			{Compression: sstable.NoCompression},
 		},
