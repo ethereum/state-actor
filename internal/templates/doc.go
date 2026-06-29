@@ -21,6 +21,10 @@
 //   - sequential_pkey_eoas.go — kind: contract, template:
 //     sequential_pkey_eoas. N pre-funded EOAs at addresses derived from
 //     sequential private keys; backs the EEST sender-pool layout.
+//   - sequential_pkey_delegations.go — kind: contract, template:
+//     sequential_pkey_delegations. N EIP-7702 delegated EOAs (authority
+//     from sequential pkey, code = 0xef0100||CREATE2 target by index);
+//     backs the EEST yield_distinct_delegate_receiver layout.
 //   - storage_pattern.go  — kind: contract, template: storage_pattern. Plants
 //     slot 0 = final+1 plus slot k = k for k in 1..final; backs the
 //     existing_slots=True path of test_sload_bloated / test_sstore_bloated.

@@ -15,15 +15,16 @@ import (
 func TestHonoredEntityFieldsMatrix(t *testing.T) {
 	type row struct{ balance, nonce, code, approxSize bool }
 	want := map[string]row{
-		TemplateNameEOA:                   {true, true, true, true},
-		TemplateNameRaw:                   {true, true, true, true},
-		TemplateNameERC20:                 {true, true, false, true},
-		TemplateNameStoragePattern:        {true, true, false, false},
-		TemplateNameSequentialEOAs:        {false, false, false, false},
-		TemplateNameSequentialPkeyEOAs:    {false, false, false, false},
-		TemplateNameCreate2Factory:        {false, false, false, false},
-		TemplateNameCreate2Deploys:        {false, false, false, false},
-		TemplateNameCreatePreimageDeploys: {false, false, false, false},
+		TemplateNameEOA:                       {true, true, true, true},
+		TemplateNameRaw:                       {true, true, true, true},
+		TemplateNameERC20:                     {true, true, false, true},
+		TemplateNameStoragePattern:            {true, true, false, false},
+		TemplateNameSequentialEOAs:            {false, false, false, false},
+		TemplateNameSequentialPkeyEOAs:        {false, false, false, false},
+		TemplateNameSequentialPkeyDelegations: {false, false, false, false},
+		TemplateNameCreate2Factory:            {false, false, false, false},
+		TemplateNameCreate2Deploys:            {false, false, false, false},
+		TemplateNameCreatePreimageDeploys:     {false, false, false, false},
 	}
 	for _, name := range Names() {
 		tmpl, ok := Lookup(name)

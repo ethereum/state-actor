@@ -13,6 +13,7 @@ func TestRegistryHasExpectedTemplates(t *testing.T) {
 		"erc20",
 		"raw",
 		"sequential_eoas",
+		"sequential_pkey_delegations",
 		"sequential_pkey_eoas",
 		"storage_pattern",
 	} // sorted
@@ -31,7 +32,7 @@ func TestLookupHit(t *testing.T) {
 	for _, name := range []string{
 		"create2_deploys", "create2_factory", "create_preimage_deploys",
 		"eoa", "erc20", "raw",
-		"sequential_eoas", "sequential_pkey_eoas", "storage_pattern",
+		"sequential_eoas", "sequential_pkey_delegations", "sequential_pkey_eoas", "storage_pattern",
 	} {
 		if _, ok := Lookup(name); !ok {
 			t.Errorf("Lookup(%q) = false, want true", name)
