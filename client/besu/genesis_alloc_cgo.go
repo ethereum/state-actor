@@ -45,7 +45,7 @@ func writeGenesisAllocAccounts(
 		return bytes.Compare(entries[i].addrHash[:], entries[j].addrHash[:]) < 0
 	})
 
-	builder := besutrie.New(sink)
+	builder := besutrie.NewStreamingAccountBuilder(sink)
 
 	for _, e := range entries {
 		if err := ctx.Err(); err != nil {
@@ -57,7 +57,7 @@ func writeGenesisAllocAccounts(
 
 		// Per-account storage trie via the streaming builder (O(depth) memory).
 		if len(e.acc.Storage) > 0 {
-			sb := builder.BeginStreamingStorage(e.addrHash)
+			sb := besutrie.NewStreamingStorageBuilder(sink, e.addrHash)
 			// Sort slots by slotHash — the streaming builder requires
 			// keccak-ascending input.
 			type slotKV struct {

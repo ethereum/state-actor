@@ -43,9 +43,12 @@ func writeStateAndCollectRoot(
 ) (common.Hash, []byte, *generator.Stats, error) {
 	stats := &generator.Stats{}
 
-	// builder is created up-front so Phase 0 can drive per-account
-	// BeginStorage sub-builders before Phase 1 queues account leaves.
-	builder := besutrie.New(sink)
+	// builder streams the account-state trie: it emits trie nodes as the
+	// right-spine collapses (O(trie depth) memory) rather than holding the
+	// entire account MPT resident until Commit (O(accounts) — which OOMs on
+	// large datadirs). Fed in Phase 2 in sorted addrHash order, matching how
+	// geth/reth/neth build their account trie via StackTrie / HashBuilder.
+	builder := besutrie.NewStreamingAccountBuilder(sink)
 
 	// hashToAddr lets Phase 2 read cfg.GenesisAccounts[addr].Root (set
 	// by Phase 0) when encoding spec-entity account leaves.
@@ -163,7 +166,10 @@ func writeStateAndCollectRoot(
 		codeHash := besu.EmptyCodeHash
 		if entity.kind == entityContract {
 			if len(entity.slots) > 0 {
-				sb := builder.BeginStorage(addrHash)
+				// Streaming storage builder: O(depth) like the account trie.
+				// Fed below in sorted-by-slotHash order (slot hashes are unique
+				// within a contract, so insertion is strictly ascending).
+				sb := besutrie.NewStreamingStorageBuilder(sink, addrHash)
 				// Storage trie requires sorted-by-slotHash insertion.
 				type kv struct {
 					slotHash common.Hash
