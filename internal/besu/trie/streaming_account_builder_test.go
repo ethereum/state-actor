@@ -2,6 +2,7 @@ package trie
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"sort"
 	"testing"
@@ -47,6 +48,48 @@ func makeSortedAccounts(t *testing.T, n int) []acctEntry {
 	return dedup
 }
 
+// assertAccountEquivalence builds the same sorted account set with the in-memory
+// Builder (the trusted oracle) and the streaming builder, asserting a
+// byte-identical trie: same root hash, same root RLP, and the same set of
+// emitted nodes.
+func assertAccountEquivalence(t *testing.T, accts []acctEntry) {
+	t.Helper()
+
+	// Reference: non-streaming in-memory Builder.
+	refSink := &recordingSink{}
+	ref := New(refSink)
+	for _, a := range accts {
+		if err := ref.AddAccount(a.hash, a.rlp); err != nil {
+			t.Fatalf("ref AddAccount: %v", err)
+		}
+	}
+	refHash, refRLP, err := ref.Commit()
+	if err != nil {
+		t.Fatalf("ref Commit: %v", err)
+	}
+
+	// Under test: streaming builder.
+	strSink := &recordingSink{}
+	str := NewStreamingAccountBuilder(strSink)
+	for _, a := range accts {
+		if err := str.AddAccount(a.hash, a.rlp); err != nil {
+			t.Fatalf("streaming AddAccount: %v", err)
+		}
+	}
+	strHash, strRLP, err := str.Commit()
+	if err != nil {
+		t.Fatalf("streaming Commit: %v", err)
+	}
+
+	if refHash != strHash {
+		t.Errorf("root hash mismatch: ref %x, streaming %x", refHash, strHash)
+	}
+	if !bytes.Equal(refRLP, strRLP) {
+		t.Errorf("root RLP mismatch: ref %x, streaming %x", refRLP, strRLP)
+	}
+	assertSameStateNodes(t, refSink.stateNodes, strSink.stateNodes)
+}
+
 // TestStreamingAccountBuilder_MatchesInMemoryBuilder is the correctness gate for
 // the OOM fix: the streaming account builder must produce a byte-identical trie
 // — same root hash, same root RLP, and the same set of emitted nodes — as the
@@ -54,43 +97,61 @@ func makeSortedAccounts(t *testing.T, n int) []acctEntry {
 func TestStreamingAccountBuilder_MatchesInMemoryBuilder(t *testing.T) {
 	for _, n := range []int{0, 1, 2, 17, 256, 5000} {
 		t.Run(fmt.Sprintf("n=%d", n), func(t *testing.T) {
-			accts := makeSortedAccounts(t, n)
-
-			// Reference: non-streaming in-memory Builder.
-			refSink := &recordingSink{}
-			ref := New(refSink)
-			for _, a := range accts {
-				if err := ref.AddAccount(a.hash, a.rlp); err != nil {
-					t.Fatalf("ref AddAccount: %v", err)
-				}
-			}
-			refHash, refRLP, err := ref.Commit()
-			if err != nil {
-				t.Fatalf("ref Commit: %v", err)
-			}
-
-			// Under test: streaming builder.
-			strSink := &recordingSink{}
-			str := NewStreamingAccountBuilder(strSink)
-			for _, a := range accts {
-				if err := str.AddAccount(a.hash, a.rlp); err != nil {
-					t.Fatalf("streaming AddAccount: %v", err)
-				}
-			}
-			strHash, strRLP, err := str.Commit()
-			if err != nil {
-				t.Fatalf("streaming Commit: %v", err)
-			}
-
-			if refHash != strHash {
-				t.Errorf("root hash mismatch: ref %x, streaming %x", refHash, strHash)
-			}
-			if !bytes.Equal(refRLP, strRLP) {
-				t.Errorf("root RLP mismatch: ref %x, streaming %x", refRLP, strRLP)
-			}
-			assertSameStateNodes(t, refSink.stateNodes, strSink.stateNodes)
+			assertAccountEquivalence(t, makeSortedAccounts(t, n))
 		})
 	}
+}
+
+// TestStreamingAccountBuilder_ContractLeaves feeds contract-shaped account
+// leaves (non-empty storageRoot + codeHash). makeSortedAccounts only produces
+// EOA-shaped leaves (empty storage/code); the builder treats the leaf value as
+// opaque bytes, so this pins that contract leaves stream identically to the
+// oracle without relying on the Docker E2E suite.
+func TestStreamingAccountBuilder_ContractLeaves(t *testing.T) {
+	const n = 512
+	accts := make([]acctEntry, 0, n)
+	for i := 0; i < n; i++ {
+		h := crypto.Keccak256Hash([]byte{byte(i), byte(i >> 8), 0xc0, 0x17})
+		storageRoot, codeHash := besu.EmptyTrieNodeHash, besu.EmptyCodeHash
+		if i%3 == 0 {
+			// Distinct non-empty roots/hashes — opaque to the builder, need not
+			// be real trie roots.
+			storageRoot = crypto.Keccak256Hash([]byte{byte(i), 0x5a})
+			codeHash = crypto.Keccak256Hash([]byte{byte(i), 0xc0})
+		}
+		rlp, err := besurlp.EncodeAccount(uint64(i+1), uint256.NewInt(uint64(i)+1), storageRoot, codeHash)
+		if err != nil {
+			t.Fatalf("EncodeAccount: %v", err)
+		}
+		accts = append(accts, acctEntry{hash: h, rlp: rlp})
+	}
+	sort.Slice(accts, func(i, j int) bool { return bytes.Compare(accts[i].hash[:], accts[j].hash[:]) < 0 })
+	assertAccountEquivalence(t, accts)
+}
+
+// TestStreamingAccountBuilder_RootExtension pins the one root shape the random-
+// key equivalence test never produces: a root that is an EXTENSION node. All
+// keys share a long leading prefix (30 identical bytes, distinct 2-byte suffix),
+// so the trie root is an extension over the shared prefix. This exercises the
+// streaming builder's root-RLP capture for an extension root.
+func TestStreamingAccountBuilder_RootExtension(t *testing.T) {
+	const n = 64
+	accts := make([]acctEntry, 0, n)
+	for i := 0; i < n; i++ {
+		var h common.Hash
+		for k := 0; k < 30; k++ {
+			h[k] = 0xAB // shared 30-byte (60-nibble) prefix → extension root
+		}
+		h[30] = byte(i >> 8)
+		h[31] = byte(i)
+		rlp, err := besurlp.EncodeAccount(uint64(i+1), uint256.NewInt(uint64(i)+1), besu.EmptyTrieNodeHash, besu.EmptyCodeHash)
+		if err != nil {
+			t.Fatalf("EncodeAccount: %v", err)
+		}
+		accts = append(accts, acctEntry{hash: h, rlp: rlp})
+	}
+	sort.Slice(accts, func(i, j int) bool { return bytes.Compare(accts[i].hash[:], accts[j].hash[:]) < 0 })
+	assertAccountEquivalence(t, accts)
 }
 
 // TestStreamingAccountBuilder_RejectsOutOfOrder pins the strict-ascending input
@@ -105,8 +166,8 @@ func TestStreamingAccountBuilder_RejectsOutOfOrder(t *testing.T) {
 	if err := b.AddAccount(hi, []byte{0x11}); err != nil {
 		t.Fatalf("first AddAccount: %v", err)
 	}
-	if err := b.AddAccount(lo, []byte{0x22}); err == nil {
-		t.Fatalf("expected ErrSlotsOutOfOrder for descending addrHash, got nil")
+	if err := b.AddAccount(lo, []byte{0x22}); !errors.Is(err, ErrSlotsOutOfOrder) {
+		t.Fatalf("expected ErrSlotsOutOfOrder for descending addrHash, got %v", err)
 	}
 }
 
