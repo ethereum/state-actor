@@ -3,6 +3,7 @@ package trie
 import (
 	"bytes"
 	"errors"
+	"fmt"
 
 	"github.com/ethereum/go-ethereum/common"
 	gethrlp "github.com/ethereum/go-ethereum/rlp"
@@ -92,8 +93,11 @@ func (c *streamingBuilder) finalize() (common.Hash, []byte, error) {
 		c.prevValue = nil
 	}
 	if len(c.stack) == 0 {
-		// Defensive — leafCount > 0 implies stack is non-empty after update(nil).
-		return besu.EmptyTrieNodeHash, []byte{0x80}, nil
+		// leafCount > 0 implies a non-empty stack after update(nil); an empty
+		// stack here means the spine-collapse invariant is broken. Fail loudly
+		// rather than return a valid-looking empty root — a silent wrong root
+		// would surface only as a cross-client state-root divergence later.
+		return common.Hash{}, nil, fmt.Errorf("besu/trie: finalize: empty stack with leafCount=%d (builder invariant violated)", c.leafCount)
 	}
 	rootRef := c.stack[len(c.stack)-1]
 	if len(rootRef) == 33 && rootRef[0] == 0xa0 {
@@ -243,11 +247,10 @@ type StreamingStorageBuilder struct {
 }
 
 // NewStreamingStorageBuilder constructs a streaming storage builder that emits
-// trie nodes through the caller-supplied sink. Use this when parallel workers
-// each need their own builder pointing at their own per-worker node sink —
-// `Builder.BeginStreamingStorage` is fine for the single-goroutine path, but its
-// returned builder writes through the parent Builder's shared sink and is unsafe
-// under concurrent use.
+// trie nodes through the caller-supplied sink. This is the production
+// constructor — each phase-0/phase-2 worker builds its own per-worker sink and
+// builder. (Builder.BeginStreamingStorage wraps this for the in-memory Builder
+// API and tests.)
 //
 // addrHash must be the keccak256(address) the storage trie belongs to; it's used
 // as the prefix on every emitted trie-node write.

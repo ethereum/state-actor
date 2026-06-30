@@ -34,7 +34,10 @@ const maxPhase0Workers = 8
 // sorted, builds per-account storage tries, writes flat state and
 // code, and feeds the outer account trie.
 //
-// Memory bound: O(max storage slots in any single contract).
+// Both the account-state trie and each per-account storage trie are built
+// streaming (O(trie depth)), so account/contract count does not drive peak RAM.
+// Memory bound: O(max storage slots in any single contract) — the per-contract
+// slot map + sort buffer materialized in Phase 2.
 func writeStateAndCollectRoot(
 	ctx context.Context,
 	cfg generator.Config,

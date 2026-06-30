@@ -149,10 +149,11 @@ func NewWithOptions(workDir string, opts Options) (*Store, error) {
 		// Cap compaction concurrency at 8. runtime.NumCPU() on a high-core box
 		// spawns one compactor goroutine per core, each with transient
 		// per-compaction buffers — GiBs of extra RAM during flush/compact that
-		// scales with core count (this is why reducing --cores eased the Besu
-		// generation OOM). 8 keeps compaction off the write path without the
-		// per-core blow-up. Mirrors the cap on geth's production Pebble
-		// (client/geth/writer.go).
+		// scales with core count. This is a secondary memory contributor,
+		// consistent with reducing --cores easing the Besu generation OOM,
+		// though the dominant cause there was the non-streaming account trie.
+		// 8 keeps compaction off the write path without the per-core blow-up.
+		// Mirrors the cap on geth's production Pebble (client/geth/writer.go:116-124).
 		MaxConcurrentCompactions: func() int { return min(runtime.NumCPU(), 8) },
 		BytesPerSync:             0,
 		WALBytesPerSync:          0,

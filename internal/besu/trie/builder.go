@@ -36,13 +36,14 @@ type NodeSink interface {
 	SaveWorldState(blockHash common.Hash, rootHash common.Hash, rootRLP []byte) error
 }
 
-// Builder is a streaming Bonsai-trie builder for the account-state trie.
-// It is insert-only and assumes inputs arrive in keccak-sorted addrHash
-// order (this is what the Phase 2 pipeline guarantees by iterating a
-// sorted Pebble database).
+// Builder is the in-memory (non-streaming) Bonsai account-state trie builder.
+// It maintains the entire account MPT resident (functional inserts) and emits
+// non-inline nodes via the NodeSink only at Commit time (post-order traversal),
+// so its memory is O(accounts). Production bulk generation uses
+// StreamingAccountBuilder (O(trie depth), in streaming_account_builder.go);
+// Builder is retained as the byte-identical reference oracle in tests.
 //
-// The builder maintains an in-memory MPT and emits non-inline nodes via the
-// NodeSink at Commit time (post-order traversal).
+// It is insert-only and assumes inputs arrive in keccak-sorted addrHash order.
 type Builder struct {
 	sink  NodeSink
 	root  Node
@@ -78,11 +79,11 @@ func (b *Builder) BeginStorage(addrHash common.Hash) *StorageBuilder {
 	}
 }
 
-// BeginStreamingStorage returns a StreamingStorageBuilder for the
-// per-account storage trie. Like BeginStorage, but builds in O(depth)
-// memory by consuming AddSlot calls in keccak-ascending order via a
-// right-spine algorithm. Required for entities with millions of slots
-// where the non-streaming StorageBuilder OOMs.
+// BeginStreamingStorage returns a StreamingStorageBuilder bound to this
+// Builder's sink. Retained for the in-memory Builder API and tests — production
+// code constructs NewStreamingStorageBuilder directly. Builds in O(trie depth)
+// memory by consuming AddSlot calls in keccak-ascending order via a right-spine
+// algorithm.
 func (b *Builder) BeginStreamingStorage(addrHash common.Hash) *StreamingStorageBuilder {
 	return NewStreamingStorageBuilder(b.sink, addrHash)
 }
