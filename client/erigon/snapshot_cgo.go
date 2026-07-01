@@ -6,7 +6,9 @@ import (
 	"context"
 	"fmt"
 	mrand "math/rand"
+	"os"
 	"runtime"
+	"strconv"
 	"sync"
 	"sync/atomic"
 
@@ -63,10 +65,17 @@ import (
 var fullRange = snap.StepRange{From: 0, To: 1}
 
 // erigonWorkers is the size of the Phase 1 autofill encode-worker pool.
-// Defaults to min(NumCPU, 8) to match the proven cap from reth, besu,
-// and nethermind (client/reth/spec_storage_streaming_cgo.go:95-104,
-// client/besu/state_writer_cgo.go:298, client/nethermind/phase0_cgo.go).
+// Defaults to min(NumCPU, 8) to match the proven cap from reth, besu, and
+// nethermind, but is overridable via STATE_ACTOR_ERIGON_WORKERS to exploit
+// many-core hosts (the RNG draw stays single-threaded on the main goroutine
+// for cross-client invariance; only the CPU-bound encode is parallelised,
+// so a larger pool is safe for the root). Tests override via setErigonWorkers.
 var erigonWorkers = func() int {
+	if v := os.Getenv("STATE_ACTOR_ERIGON_WORKERS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 1 {
+			return n
+		}
+	}
 	n := runtime.NumCPU()
 	if n > 8 {
 		n = 8
@@ -76,6 +85,27 @@ var erigonWorkers = func() int {
 	}
 	return n
 }()
+
+// setErigonWorkers swaps erigonWorkers for the duration of a test.
+// The returned function restores the previous value.
+func setErigonWorkers(n int) (restore func()) {
+	prev := erigonWorkers
+	erigonWorkers = n
+	return func() { erigonWorkers = prev }
+}
+
+// envCacheBytes returns the byte size from a "<N> GiB" env var, or
+// defaultGB GiB if unset/invalid. Used to scale Pebble block caches to the
+// host's RAM for the read-heavy commitment phase.
+func envCacheBytes(envVar string, defaultGB int) int64 {
+	gb := defaultGB
+	if v := os.Getenv(envVar); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			gb = n
+		}
+	}
+	return int64(gb) << 30
+}
 
 // entityWork is one alloc entry queued for an encode-worker. The main
 // goroutine fills these and sends them on entityCh; workers consume
@@ -173,10 +203,11 @@ func writeSnapshots(
 	// cache the LSM SSTs miss on most reads. Bump the cache here so
 	// the Pebble block cache holds a non-trivial fraction of the
 	// working set; benchmarking showed 50+ min Phase 2 wall at default.
-	// Tunable via the environment-derived future Options if needed;
-	// 4 GiB is the floor that the bench host (240 GiB RAM) can spare.
+	// Tunable via STATE_ACTOR_COMMITMENT_CACHE_GB (default 4 GiB). On a
+	// many-core / large-RAM host, a bigger cache keeps the commitment walk's
+	// random Account/Storage Gets in RAM, which is the dominant Phase-2 cost.
 	commitmentInputStore, err := streamsort.NewWithOptions(cfg.DBPath, streamsort.Options{
-		BlockCacheBytes: 4 << 30,
+		BlockCacheBytes: envCacheBytes("STATE_ACTOR_COMMITMENT_CACHE_GB", 4),
 	})
 	if err != nil {
 		return common.Hash{}, fmt.Errorf("writeSnapshots: open commitmentInput streamsort: %w", err)
@@ -431,12 +462,87 @@ func writeSnapshots(
 	}
 
 	// -- Step 4: HPH commitment walk over commitmentInputStore.
-	// ctx.Account/Storage callbacks read from streamsort.Get
-	// (disk-backed). branches map stays in memory (bounded).
-	result, err := internalcommitment.ComputeGenesisRoot(commitmentInputStore)
+	// Create the commitment branchesStore (write-once .kv streamsort) BEFORE
+	// the walk: ComputeGenesisRoot streams the trie's branches straight into
+	// it (replacing the old in-memory mergedBranches map + the Step-5a copy
+	// loop). It is left WRITING for WriteCommitment's KeyCommitmentState Put
+	// + Finalize below.
+	branchesStore, err := streamsort.New(cfg.DBPath)
+	if err != nil {
+		return common.Hash{}, fmt.Errorf("writeSnapshots: open branches streamsort: %w", err)
+	}
+	defer branchesStore.Close()
+
+	// Overlap the Phase-5b accounts/storage/code snapshot-write with the
+	// commitment fold below. These three domains depend only on the finalized
+	// accountsStore/storageStore/codeStore + counts — NOT on the fold's result —
+	// so start them NOW and let their (mostly single-core) compression run on
+	// the cores the 16-way fold leaves idle. Only WriteCommitment needs the
+	// fold's branches + keyStateValue, so it is queued after the fold. The
+	// Writer is immutable and every domain writes its own files, so all these
+	// goroutines are race-free.
+	settings := snap.Settings{
+		Seed:              cfg.Seed,
+		StepSize:          internalerigon.StepSize,
+		StepsInFrozenFile: internalerigon.StepsInFrozenFile,
+		SnapshotVersion:   internalerigon.SnapshotFormatVersion,
+	}
+	w, err := snap.NewWriter(cfg.DBPath, settings)
+	if err != nil {
+		return common.Hash{}, fmt.Errorf("writeSnapshots: snap.NewWriter: %w", err)
+	}
+	defer w.Close()
+
+	type domainSpec struct {
+		domain snap.Domain
+		store  *streamsort.Store
+		count  uint64
+	}
+	domainSpecs := []domainSpec{
+		{snap.DomainAccounts, accountsStore, counts.accounts},
+		{snap.DomainStorage, storageStore, counts.storage},
+		{snap.DomainCode, codeStore, counts.code},
+	}
+	emitErrCh := make(chan error, len(domainSpecs)+1) // +1 for commitment
+	var emitWg sync.WaitGroup
+	sem := make(chan struct{}, runtime.NumCPU())
+	for _, ds := range domainSpecs {
+		sem <- struct{}{}
+		emitWg.Add(1)
+		go func(ds domainSpec) {
+			defer func() { <-sem; emitWg.Done() }()
+			if err := w.WriteDomain(ctx, ds.domain, fullRange, ds.count,
+				snap.FromStreamsort(ds.store)); err != nil {
+				select {
+				case emitErrCh <- fmt.Errorf("WriteDomain(%v): %w", ds.domain, err):
+				default:
+				}
+			}
+		}(ds)
+	}
+
+	// ctx.Account/Storage callbacks read from streamsort.Get (disk-backed).
+	// cfg.DBPath (real bind-mounted disk) is the etl spill dir (A1) AND the
+	// live branch-store dir; "" would spill the ~28 GB touched-key runs and
+	// the branches to tmpfs (RAM) on the bench host.
+	result, err := internalcommitment.ComputeGenesisRoot(commitmentInputStore, branchesStore, cfg.DBPath)
 	if err != nil {
 		return common.Hash{}, fmt.Errorf("writeSnapshots: ComputeGenesisRoot: %w", err)
 	}
+	// commitmentInputStore is not read after the commitment walk (Phase 5b
+	// reads accounts/storage/code + branchesStore only). Close it NOW —
+	// ahead of the deferred Close at function scope — to release its
+	// STATE_ACTOR_COMMITMENT_CACHE_GB block cache, 256 MiB memtable, and the
+	// ~tens-of-GB on-disk spill dir BEFORE the mmap-heavy Phase-5b snapshot
+	// write. Holding that cache through Phase 5b is what pushed the 100 GB
+	// run's RSS to the OOM edge; freeing it here lets the commitment walk use
+	// a large cache without compounding the snapshot-write footprint. Close is
+	// idempotent (streamsort guards on closed.Swap), so the deferred Close
+	// degrades to a no-op.
+	if err := commitmentInputStore.Close(); err != nil {
+		return common.Hash{}, fmt.Errorf("writeSnapshots: close commitmentInputStore: %w", err)
+	}
+	nBranches := result.BranchCount
 	// KeyCommitmentState encodes (txNum=StepSize-1, blockNum=0): the
 	// "fat genesis" anchor. Genesis is made to OCCUPY the entire frozen
 	// step 0 by writing MaxTxNum[0]=StepSize-1 (see genesis_patch.go), so
@@ -461,79 +567,34 @@ func writeSnapshots(
 		return common.Hash{}, fmt.Errorf("writeSnapshots: encode KeyCommitmentState: %w", err)
 	}
 
-	// -- Step 5a: marshal the global branches map into a streamsort
-	// keyed by branch prefix (sorted for deterministic .kv output).
-	branchesStore, err := streamsort.New(cfg.DBPath)
-	if err != nil {
-		return common.Hash{}, fmt.Errorf("writeSnapshots: open branches streamsort: %w", err)
-	}
-	defer branchesStore.Close()
-	var nBranches uint64
-	for prefix, data := range result.BranchNodes {
-		if err := branchesStore.Put([]byte(prefix), data); err != nil {
-			return common.Hash{}, fmt.Errorf("writeSnapshots: put branch %x: %w", []byte(prefix), err)
-		}
-		nBranches++
-	}
-
-	// -- Step 5b: snap.NewWriter + parallel multi-range emit.
-	settings := snap.Settings{
-		Seed:              cfg.Seed,
-		StepSize:          internalerigon.StepSize,
-		StepsInFrozenFile: internalerigon.StepsInFrozenFile,
-		SnapshotVersion:   internalerigon.SnapshotFormatVersion,
-	}
-	w, err := snap.NewWriter(cfg.DBPath, settings)
-	if err != nil {
-		return common.Hash{}, fmt.Errorf("writeSnapshots: snap.NewWriter: %w", err)
-	}
-	defer w.Close()
-
-	// Fan out 3 independent WriteDomain calls (accounts/storage/code,
-	// each at the single [0,1) fullRange). Each call has its own .kv +
-	// accessors output, its own streamsort input, and no shared mutable
-	// state — safe to run in parallel. Semaphore-bound at NumCPU keeps
-	// seg.Compressor pressure realistic on small hosts.
-	type domainSpec struct {
-		domain snap.Domain
-		store  *streamsort.Store
-		count  uint64
-	}
-	domainSpecs := []domainSpec{
-		{snap.DomainAccounts, accountsStore, counts.accounts},
-		{snap.DomainStorage, storageStore, counts.storage},
-		{snap.DomainCode, codeStore, counts.code},
-	}
-	emitErrCh := make(chan error, len(domainSpecs))
-	var emitWg sync.WaitGroup
-	sem := make(chan struct{}, runtime.NumCPU())
-	for _, ds := range domainSpecs {
-		sem <- struct{}{}
-		emitWg.Add(1)
-		go func(ds domainSpec) {
-			defer func() { <-sem; emitWg.Done() }()
-			if err := w.WriteDomain(ctx, ds.domain, fullRange, ds.count,
-				snap.FromStreamsort(ds.store)); err != nil {
-				select {
-				case emitErrCh <- fmt.Errorf("WriteDomain(%v): %w", ds.domain, err):
-				default:
-				}
+	// -- Step 5b: accounts/storage/code are already being written (fan-out
+	// started above, overlapping the fold). Queue the commitment domain now
+	// that the fold has produced its branches + keyStateValue.
+	//
+	// Commitment: single [0,1) range. It is the LARGEST domain (~44 GB .kv at
+	// 100 GB, plus the only recsplit MPHF over ~nBranches keys) yet depends only
+	// on branchesStore + keyStateValue — both ready from the fold, NOT on the
+	// other domains. Run it as a 4th goroutine in the SAME fan-out (the Writer
+	// is immutable and each domain writes its own files) so its long build
+	// overlaps accounts/storage/code instead of running serially after them.
+	// frozenSteps(commitment)=0 so the daemon's mem-tier KeyCommitmentState
+	// writes pass CheckDataAvailable trivially (see the fullRange doc above).
+	sem <- struct{}{}
+	emitWg.Add(1)
+	go func() {
+		defer func() { <-sem; emitWg.Done() }()
+		if err := snap.WriteCommitment(ctx, w, fullRange, keyStateValue, branchesStore, nBranches); err != nil {
+			select {
+			case emitErrCh <- fmt.Errorf("WriteCommitment: %w", err):
+			default:
 			}
-		}(ds)
-	}
+		}
+	}()
 	emitWg.Wait()
 	select {
 	case err := <-emitErrCh:
 		return common.Hash{}, fmt.Errorf("writeSnapshots: %w", err)
 	default:
-	}
-
-	// Commitment: single [0,1) range. frozenSteps(commitment)=0 so the
-	// daemon's mem-tier writes of KeyCommitmentState at txNum=blockTxNum
-	// (stored as step=0) pass CheckDataAvailable trivially (0 < 0 is
-	// false). See the fullRange doc above for the full rationale.
-	if err := snap.WriteCommitment(ctx, w, fullRange, keyStateValue, branchesStore, nBranches); err != nil {
-		return common.Hash{}, fmt.Errorf("writeSnapshots: WriteCommitment: %w", err)
 	}
 
 	if cfg.Verbose {
@@ -627,9 +688,14 @@ func encodeEntity(
 		acct.Balance = *b
 		balance = b
 	}
+	// Hash the code ONCE here (for the snapshot CodeHash) and reuse it for the
+	// commitment Update below — EncodeAccountUpdate would otherwise keccak the
+	// same bytes a second time (commitment.go). nil = no code.
+	var codeHash *common.Hash
 	if len(ew.entry.Code) > 0 {
 		h := crypto.Keccak256Hash(ew.entry.Code)
 		copy(acct.CodeHash[:], h[:])
+		codeHash = &h
 	}
 	if err := sendDomainWrite(ctx, out.accounts, domainWrite{key: addrKey, value: account.SerialiseV3(acct)}); err != nil {
 		return err
@@ -651,8 +717,9 @@ func encodeEntity(
 		}
 	}
 
-	// Commitment input: account-level Update keyed by plain addr.
-	commitBytes := internalcommitment.EncodeAccountUpdate(ew.entry.Nonce, balance, ew.entry.Code)
+	// Commitment input: account-level Update keyed by plain addr. Reuse the
+	// code hash computed above (no second keccak).
+	commitBytes := internalcommitment.EncodeAccountUpdateCodeHash(ew.entry.Nonce, balance, codeHash)
 	return sendDomainWrite(ctx, out.commitIn, domainWrite{key: addrKey, value: commitBytes})
 }
 

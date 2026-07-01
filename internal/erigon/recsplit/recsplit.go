@@ -147,12 +147,16 @@ func New(a Args) (*Writer, error) {
 	}
 
 	_, fname := filepath.Split(a.IndexFile)
+	collector, err := newBucketCollector(a.TmpDir)
+	if err != nil {
+		return nil, err
+	}
 	w := &Writer{
 		args:        a,
 		fileName:    fname,
 		filePath:    a.IndexFile,
 		startSeed:   DefaultStartSeed,
-		collector:   newBucketCollector(a.KeyCount),
+		collector:   collector,
 		bucketCount: uint64(bucketCount),
 	}
 
@@ -203,7 +207,9 @@ func (w *Writer) AddKey(key []byte, offset uint64) error {
 	if offset > w.maxOffset {
 		w.maxOffset = offset
 	}
-	w.collector.Add(bucketIdx, lo, offset)
+	if err := w.collector.Add(bucketIdx, lo, offset); err != nil {
+		return err
+	}
 	w.keysAdded++
 	return nil
 }
@@ -211,18 +217,21 @@ func (w *Writer) AddKey(key []byte, offset uint64) error {
 // Reset clears the buffered keys + accumulators in preparation for a
 // salt-bump retry. The caller is responsible for `*w.args.Salt++` before
 // calling this. Mirrors recsplit.go:437-461 (ResetNextSalt).
-func (w *Writer) Reset() {
+func (w *Writer) Reset() error {
 	w.built = false
 	w.collision = false
 	w.keysAdded = 0
 	w.maxOffset = 0
-	w.collector.Reset()
+	if err := w.collector.Reset(); err != nil {
+		return err
+	}
 	w.currentBucket = w.currentBucket[:0]
 	w.currentBucketOs = w.currentBucketOs[:0]
 	w.bucketSizeAcc = w.bucketSizeAcc[:1]
 	w.bucketPosAcc = w.bucketPosAcc[:1]
 	w.gr = GolombRice{}
 	w.ef = DoubleEliasFano{}
+	return nil
 }
 
 // Build runs the perfect-hash construction and writes the .kvi file
@@ -290,9 +299,11 @@ func (w *Writer) Build(ctx context.Context) error {
 	// Body: walk buckets in (bucketIdx, fingerprintLo) order; for each
 	// bucket, recsplit it, append fixed GolombRice + collect unary into
 	// w.gr; write the bucket's serialized offsets into indexW.
-	w.collector.SortByBucketThenFingerprint()
+	if err := w.collector.Finalize(); err != nil {
+		return err
+	}
 	prevBucketIdx := ^uint32(0) // sentinel for "first bucket"
-	for _, e := range w.collector.Iter() {
+	if err := w.collector.ForEach(func(e bucketEntry) error {
 		if e.bucketIdx != prevBucketIdx {
 			if prevBucketIdx != ^uint32(0) {
 				if err := w.flushCurrentBucket(uint64(prevBucketIdx)); err != nil {
@@ -309,6 +320,9 @@ func (w *Writer) Build(ctx context.Context) error {
 			return ctx.Err()
 		default:
 		}
+		return nil
+	}); err != nil {
+		return err
 	}
 	// Flush the final bucket.
 	if len(w.currentBucket) > 0 {
@@ -463,6 +477,9 @@ func (w *Writer) Close() error {
 		_ = w.indexF.Close()
 		_ = os.Remove(w.indexF.Name())
 		w.indexF = nil
+	}
+	if w.collector != nil {
+		_ = w.collector.Close()
 	}
 	return nil
 }

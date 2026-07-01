@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"iter"
 	"os"
+
+	"golang.org/x/sys/unix"
 )
 
 // OffsetEntry is one (key, value, keyOffset, valueOffset) tuple yielded
@@ -72,12 +74,15 @@ type OffsetEntry struct {
 // yield.
 var ErrCorruptedFile = errors.New("seg: corrupted file")
 
-// Decompressor opens a .kv-style file in memory (read via plain os.File
-// — no mmap; state-actor only iterates for offset discovery, not for
-// random access).
+// Decompressor opens a .kv-style file READ-ONLY via mmap. The .kv can be
+// tens of GiB at bench scale (e.g. a 44 GiB commitment.kv at 100 GB
+// account-heavy); os.ReadFile would pull the whole file into ANONYMOUS heap,
+// and Phase-5b builds two domains concurrently — that combination OOM-killed
+// a 100 GB run at ~120 GiB anon-rss. mmap keeps the bytes as reclaimable,
+// file-backed pages (file-rss), so anon stays O(1) regardless of .kv size.
 type Decompressor struct {
 	filePath   string
-	data       []byte // full file contents
+	data       []byte // mmap'd file contents (munmap on Close)
 	wordsCount uint64
 	emptyCount uint64
 	// Pattern Huffman tables are absent in v1's no-pattern fast path;
@@ -91,14 +96,41 @@ type Decompressor struct {
 // dictionary. The pattern dictionary MUST be empty (no-pattern fast
 // path); a non-zero patternsSize returns an error.
 func NewDecompressor(path string) (*Decompressor, error) {
-	data, err := os.ReadFile(path)
+	f, err := os.Open(path)
 	if err != nil {
 		return nil, err
 	}
-	if len(data) < compressedMinSize {
-		return nil, fmt.Errorf("%w: %s: file size %d < %d",
-			ErrCorruptedFile, path, len(data), compressedMinSize)
+	st, err := f.Stat()
+	if err != nil {
+		_ = f.Close()
+		return nil, err
 	}
+	size := int(st.Size())
+	if size < compressedMinSize {
+		_ = f.Close()
+		return nil, fmt.Errorf("%w: %s: file size %d < %d",
+			ErrCorruptedFile, path, size, compressedMinSize)
+	}
+	// READ-ONLY shared mmap; the mapping survives closing the fd.
+	data, err := unix.Mmap(int(f.Fd()), 0, size, unix.PROT_READ, unix.MAP_SHARED)
+	_ = f.Close()
+	if err != nil {
+		return nil, fmt.Errorf("seg: mmap %s: %w", path, err)
+	}
+	// The .kv is decoded strictly front-to-back exactly once (offset discovery
+	// in WriteDomain Pass 2). Hint the kernel: aggressive read-ahead for the
+	// sequential scan, and — importantly for the OOM-sensitive Phase 5b — let
+	// it drop already-read pages sooner, keeping file-RSS low on a 44 GiB .kv.
+	// Advisory only; best-effort, never changes decoded bytes.
+	_ = unix.Madvise(data, unix.MADV_SEQUENTIAL)
+	// Munmap on any parse error below so a rejected file doesn't leak the
+	// mapping.
+	ok := false
+	defer func() {
+		if !ok {
+			_ = unix.Munmap(data)
+		}
+	}()
 	d := &Decompressor{filePath: path, data: data}
 
 	// V1 header: byte[0]=version, byte[1]=featureFlagBitmask.
@@ -185,13 +217,17 @@ func NewDecompressor(path string) (*Decompressor, error) {
 	d.posList, d.pos2code = codesFromDepths(raw)
 
 	d.wordsStart = uint64(pos)
+	ok = true
 	return d, nil
 }
 
-// Close releases the file's backing memory. After Close, no further
-// Iterate calls are valid.
+// Close munmaps the file's backing pages. After Close, no further Iterate
+// calls are valid.
 func (d *Decompressor) Close() error {
-	d.data = nil
+	if d.data != nil {
+		_ = unix.Munmap(d.data)
+		d.data = nil
+	}
 	d.posList = nil
 	d.pos2code = nil
 	return nil

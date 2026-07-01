@@ -2,7 +2,9 @@ package recsplit
 
 import (
 	"encoding/binary"
-	"sort"
+	"fmt"
+
+	"github.com/ethereum/state-actor/internal/streamsort"
 )
 
 // bucketEntry is one record collected per AddKey call: the bucket index
@@ -11,68 +13,132 @@ import (
 // to.
 //
 // Wire-equivalent to Erigon's `bucketKeyBuf = bucketIdx (4 BE) ||
-// fingerprintLo (8 BE)`. We keep separate fields so the sort comparator
-// can index without re-parsing.
+// fingerprintLo (8 BE)`. We keep separate fields so the bucket walk can
+// index without re-parsing.
 type bucketEntry struct {
 	bucketIdx     uint32
 	fingerprintLo uint64
 	offset        uint64
 }
 
-// bucketCollector is the in-memory replacement for Erigon's
-// etl.Collector. For the spike scope (≤ 1M keys) we don't need
-// disk-spilling; a simple slice + sort is enough and avoids the etl
-// import chain (which pulls log/v3, dir, mmap, ...).
+// bucketSpillKeyLen is the spill-key width: bucketIdx(4) ||
+// fingerprintLo(8) || seq(8). See bucketCollector for why seq is here.
+const bucketSpillKeyLen = 4 + 8 + 8
+
+// bucketCollector is a DISK-BACKED external sort over bucketEntry,
+// replacing the original in-memory `[]bucketEntry` slice. That slice was
+// explicitly scoped to "≤ 1M keys" and held every key in RAM — at bench
+// scale (hundreds of millions of keys) it was an O(N) OOM. We now spill
+// to a streamsort (Pebble LSM): Add → Put, Finalize → seal, ForEach →
+// sorted Iterate. Peak RAM is the streamsort working set (~memtable),
+// independent of key count.
 //
-// CRITICAL: the sort comparator MUST match Erigon's etl.Collector byte
-// order — Erigon sorts `bucketKeyBuf = bucketIdx (4 BE) ||
-// fingerprintLo (8 BE)`. Lexicographic on BE bytes is identical to
-// `(bucketIdx, fingerprintLo)` int comparison since both fields are
-// fixed-width and non-negative.
+// Spill-key layout keeps streamsort's raw-byte order identical to
+// Erigon's etl.Collector order (lexicographic BE == (bucketIdx,
+// fingerprintLo) integer order, since both fields are fixed-width and
+// non-negative):
+//
+//	bucketIdx (4 BE) || fingerprintLo (8 BE) || seq (8 BE)   value = offset (8 BE)
+//
+// The 8-byte `seq` suffix is LOAD-BEARING. Two entries sharing the same
+// (bucketIdx, fingerprintLo) is exactly the collision that
+// flushCurrentBucket (recsplit.go) must DETECT. Pebble deduplicates
+// identical keys (last write wins), so without a unique suffix a
+// collision would be silently swallowed — keysAdded would exceed the
+// number of spilled records, AddKey-vs-KeyCount would mismatch, and a
+// structurally wrong .kvi could be emitted. `seq` (a per-Add counter)
+// makes every spill key unique, so both colliding records survive to the
+// sorted scan where the in-bucket fingerprint check fires.
+//
+// Byte-identity on a SUCCESSFUL (collision-free) build: all (bucketIdx,
+// fingerprintLo) pairs are distinct, so the 12-byte prefix already fully
+// orders the records and the seq suffix is never consulted for ordering.
+// The bucket walk, Golomb-Rice stream, offset emission, and
+// DoubleEliasFano are therefore identical to the old `sort.Slice` path.
 type bucketCollector struct {
-	entries []bucketEntry
+	tmpDir string
+	store  *streamsort.Store
+	seq    uint64
+	n      int
 }
 
-func newBucketCollector(hintCap int) *bucketCollector {
-	return &bucketCollector{entries: make([]bucketEntry, 0, hintCap)}
+// newBucketCollector opens a fresh streamsort under tmpDir (empty →
+// os.TempDir()). Returns an error if the backing store can't be created.
+func newBucketCollector(tmpDir string) (*bucketCollector, error) {
+	store, err := streamsort.New(tmpDir)
+	if err != nil {
+		return nil, fmt.Errorf("recsplit: open bucket streamsort: %w", err)
+	}
+	return &bucketCollector{tmpDir: tmpDir, store: store}, nil
 }
 
-// Add records one (bucketIdx, fingerprintLo, offset) triple.
-func (c *bucketCollector) Add(bucketIdx uint32, fingerprintLo, offset uint64) {
-	c.entries = append(c.entries, bucketEntry{
-		bucketIdx:     bucketIdx,
-		fingerprintLo: fingerprintLo,
-		offset:        offset,
+// Add spills one (bucketIdx, fingerprintLo, offset) record.
+func (c *bucketCollector) Add(bucketIdx uint32, fingerprintLo, offset uint64) error {
+	var key [bucketSpillKeyLen]byte
+	binary.BigEndian.PutUint32(key[0:4], bucketIdx)
+	binary.BigEndian.PutUint64(key[4:12], fingerprintLo)
+	binary.BigEndian.PutUint64(key[12:20], c.seq)
+	c.seq++
+	var val [8]byte
+	binary.BigEndian.PutUint64(val[:], offset)
+	if err := c.store.Put(key[:], val[:]); err != nil {
+		return fmt.Errorf("recsplit: bucket spill Put: %w", err)
+	}
+	c.n++
+	return nil
+}
+
+// Finalize seals the store for reading. streamsort is already sorted by
+// key bytes, so this is the disk-backed replacement for the old in-memory
+// SortByBucketThenFingerprint.
+func (c *bucketCollector) Finalize() error { return c.store.Finalize() }
+
+// ForEach yields each entry in (bucketIdx, fingerprintLo) order. Must be
+// called after Finalize.
+func (c *bucketCollector) ForEach(fn func(bucketEntry) error) error {
+	return c.store.Iterate(func(k, v []byte) error {
+		return fn(bucketEntry{
+			bucketIdx:     binary.BigEndian.Uint32(k[0:4]),
+			fingerprintLo: binary.BigEndian.Uint64(k[4:12]),
+			offset:        binary.BigEndian.Uint64(v),
+		})
 	})
 }
 
-// Reset clears the buffer for a salt-bump retry. Capacity is preserved.
-func (c *bucketCollector) Reset() {
-	c.entries = c.entries[:0]
+// Reset discards the spilled records for a salt-bump retry by closing the
+// old store (which removes its temp dir) and opening a fresh one.
+func (c *bucketCollector) Reset() error {
+	if c.store != nil {
+		_ = c.store.Close()
+	}
+	store, err := streamsort.New(c.tmpDir)
+	if err != nil {
+		return fmt.Errorf("recsplit: reopen bucket streamsort: %w", err)
+	}
+	c.store = store
+	c.seq = 0
+	c.n = 0
+	return nil
 }
 
-// Len returns the current entry count.
-func (c *bucketCollector) Len() int { return len(c.entries) }
+// Len returns the number of spilled records.
+func (c *bucketCollector) Len() int { return c.n }
 
-// SortByBucketThenFingerprint sorts entries to match Erigon's
-// etl.Collector output order: lexicographic on `bucketIdx (4B BE) ||
-// fingerprintLo (8B BE)`.
-func (c *bucketCollector) SortByBucketThenFingerprint() {
-	sort.Slice(c.entries, func(i, j int) bool {
-		a, b := &c.entries[i], &c.entries[j]
-		if a.bucketIdx != b.bucketIdx {
-			return a.bucketIdx < b.bucketIdx
-		}
-		return a.fingerprintLo < b.fingerprintLo
-	})
+// Close releases the backing store and removes its temp dir. Idempotent.
+func (c *bucketCollector) Close() error {
+	if c.store == nil {
+		return nil
+	}
+	err := c.store.Close()
+	c.store = nil
+	return err
 }
-
-// Iter yields each entry in sort order. Must be called after Sort.
-func (c *bucketCollector) Iter() []bucketEntry { return c.entries }
 
 // EncodeKey serializes (bucketIdx, fingerprintLo) the way Erigon's
 // bucketKeyBuf does. Exported for fuzz / parity tests against Erigon's
-// own etl-collected output.
+// own etl-collected output. (The internal spill key adds an 8-byte seq
+// suffix on top of this — see bucketCollector — but the wire/sort order
+// over distinct keys is identical.)
 func EncodeKey(bucketIdx uint32, fingerprintLo uint64) []byte {
 	var buf [12]byte
 	binary.BigEndian.PutUint32(buf[:4], bucketIdx)

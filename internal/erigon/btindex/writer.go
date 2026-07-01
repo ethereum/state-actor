@@ -3,9 +3,12 @@ package btindex
 import (
 	"bufio"
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
+	"io"
 	"os"
+	"path/filepath"
 
 	"github.com/ethereum/state-actor/internal/erigon/eliasfano"
 )
@@ -28,10 +31,12 @@ type Args struct {
 	// first key) is cached as a Node in the sparse index. Default
 	// 256 (DefaultBtreeM); callers should generally not override.
 	M uint16
-	// TmpDir is reserved for the etl-Collector spill path Erigon uses
-	// for very large inputs. State-actor's v1 keeps offsets in memory
-	// (8 bytes × KeyCount) so this field is accepted for API parity
-	// but currently unused. Callers may pass "" until disk spill lands.
+	// TmpDir is the directory for the offsets spill file. AddKey streams
+	// every offset (8 bytes/key) to a temp file under TmpDir instead of
+	// an in-memory slice, so peak RAM stays O(bufio buffer) regardless of
+	// KeyCount (the offsets at 309M keys would otherwise be ~2.5 GiB).
+	// Build replays the file once into the EliasFano builder. If TmpDir
+	// is "", the spill file is created next to IndexFile.
 	TmpDir string
 	// IndexFile is the final destination path of the `.bt` file
 	// (e.g., `…/v1.0-accounts.0-256.bt`). The tmp file is created
@@ -71,11 +76,20 @@ type Writer struct {
 	args Args
 
 	// In-flight builder state.
-	offsets   []uint64 // every offset seen so far; fed to EF inside Build
-	nodes     []node   // sparse-index cache; one entry per M-th key + first key
+	nodes     []node // sparse-index cache; one entry per M-th key + first key
 	maxOffset uint64
 	prevOff   uint64
 	written   uint64 // count of AddKey calls so far
+
+	// offsets spill (B1): every offset is streamed (8-byte LE) to a temp
+	// file instead of an in-memory []uint64, then replayed once in Build.
+	// Lazily created on the first AddKey, so KeyCount==0 never opens a
+	// file (preserving the zero-byte-index path). offScratch is the
+	// reusable 8-byte encode buffer.
+	offsetsPath string
+	offsetsFile *os.File
+	offsetsW    *bufio.Writer
+	offScratch  [8]byte
 
 	// b0 mirrors `BuildBtreeIndexWithDecompressor`'s 256-element
 	// fresh-top-byte sentinel (`btree_index.go:424`). Encapsulated
@@ -111,11 +125,35 @@ func New(a Args) (*Writer, error) {
 		a.M = DefaultBtreeM
 	}
 	w := &Writer{
-		args:    a,
-		offsets: make([]uint64, 0, a.KeyCount),
-		nodes:   make([]node, 0, (a.KeyCount/int(a.M))+1),
+		args:  a,
+		nodes: make([]node, 0, (a.KeyCount/int(a.M))+1),
 	}
 	return w, nil
+}
+
+// appendOffset streams one offset to the spill file, lazily creating it
+// on the first call. The file lands under args.TmpDir (or next to
+// IndexFile when TmpDir is ""), matching where Build writes its own
+// .bt temp file.
+func (w *Writer) appendOffset(off uint64) error {
+	if w.offsetsW == nil {
+		dir := w.args.TmpDir
+		if dir == "" {
+			dir = filepath.Dir(w.args.IndexFile)
+		}
+		f, err := os.CreateTemp(dir, "btindex-offsets-*")
+		if err != nil {
+			return fmt.Errorf("btindex: create offsets spill: %w", err)
+		}
+		w.offsetsFile = f
+		w.offsetsPath = f.Name()
+		w.offsetsW = bufio.NewWriterSize(f, 1<<20)
+	}
+	binary.LittleEndian.PutUint64(w.offScratch[:], off)
+	if _, err := w.offsetsW.Write(w.offScratch[:]); err != nil {
+		return fmt.Errorf("btindex: write offsets spill: %w", err)
+	}
+	return nil
 }
 
 // AddKey records (key, offsetInDataFile) for the next ordinal. The
@@ -183,7 +221,9 @@ func (w *Writer) AddKey(key []byte, offsetInDataFile uint64) error {
 		w.nodes = append(w.nodes, node{key: cp, di: w.written})
 	}
 
-	w.offsets = append(w.offsets, offsetInDataFile)
+	if err := w.appendOffset(offsetInDataFile); err != nil {
+		return err
+	}
 	w.prevOff = offsetInDataFile
 	w.written++
 	return nil
@@ -238,8 +278,24 @@ func (w *Writer) Build(ctx context.Context) error {
 		if efErr != nil {
 			return fmt.Errorf("alloc eliasfano: %w", efErr)
 		}
-		for _, off := range w.offsets {
-			if addErr := ef.AddOffset(off); addErr != nil {
+		// Replay the spilled offsets in append order. A FIFO file
+		// preserves the exact sequence AddKey saw, so EliasFano output is
+		// byte-identical to the previous in-memory []uint64 path. The
+		// spill file is guaranteed open here because written>0 implies at
+		// least one appendOffset call.
+		if err := w.offsetsW.Flush(); err != nil {
+			return fmt.Errorf("flush offsets spill: %w", err)
+		}
+		if _, err := w.offsetsFile.Seek(0, io.SeekStart); err != nil {
+			return fmt.Errorf("seek offsets spill: %w", err)
+		}
+		or := bufio.NewReaderSize(w.offsetsFile, 1<<20)
+		var offBuf [8]byte
+		for i := uint64(0); i < w.written; i++ {
+			if _, err := io.ReadFull(or, offBuf[:]); err != nil {
+				return fmt.Errorf("read offsets spill (ordinal %d/%d): %w", i, w.written, err)
+			}
+			if addErr := ef.AddOffset(binary.LittleEndian.Uint64(offBuf[:])); addErr != nil {
 				return fmt.Errorf("ef.AddOffset: %w", addErr)
 			}
 		}
@@ -277,7 +333,15 @@ func (w *Writer) Build(ctx context.Context) error {
 // Mirrors `BtIndexWriter.Close` at btree_index.go:333-343, minus the
 // etl.Collector cleanup (we don't use one).
 func (w *Writer) Close() error {
-	w.offsets = nil
 	w.nodes = nil
+	w.offsetsW = nil
+	if w.offsetsFile != nil {
+		_ = w.offsetsFile.Close()
+		w.offsetsFile = nil
+	}
+	if w.offsetsPath != "" {
+		_ = os.Remove(w.offsetsPath)
+		w.offsetsPath = ""
+	}
 	return nil
 }

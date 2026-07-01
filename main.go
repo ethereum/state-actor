@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"runtime/pprof"
 	"strconv"
 	"strings"
 	"time"
@@ -49,6 +50,8 @@ var (
 
 	targetSize = flag.String("target-size", "", "Advisory budget (e.g. '5GB', '500MB') that sizes the auto-fill of 20/10/70 mainnet-shaped synthetic state. Required unless --spec is set. With --spec, fills the headroom after the spec's projected cost; if the spec already meets the target, no auto-fill runs. Not a hard on-disk cap — actual size may vary per client. Honored by geth, besu, nethermind, reth, ethrex, and erigon.")
 
+	autofillProfile = flag.String("autofill-profile", "mainnet", "Auto-fill byte-split profile: 'mainnet' (20/10/70 account/code/storage, default) or 'accounts' (account-trie only — all EOAs, no contracts/storage). 'accounts' generates account-dominated tries for low-memory big-trie validation; it stays on the streaming DrawEOA path, so all clients must use the same value + --seed for cross-client state-root invariance.")
+
 	fork      = flag.String("fork", "", "Hard fork active at genesis. Empty (default) resolves to the latest fork the chosen --client can write. Use --list-forks to see all values.")
 	listForks = flag.Bool("list-forks", false, "Print the list of accepted --fork values and exit.")
 	chainID   = flag.Int64("chain-id", 1337, "Chain ID embedded in the synthesized genesis chainspec (default 1337, the devnet convention).")
@@ -77,6 +80,22 @@ func main() {
 	}
 
 	flag.Parse()
+
+	// Optional CPU profile for the perf investigation (Tier B). Set
+	// STATE_ACTOR_CPUPROFILE=/path to capture the whole run; the generation,
+	// commitment, and snapshot phases are distinct call trees, so `pprof top`
+	// attributes cost per phase.
+	if p := os.Getenv("STATE_ACTOR_CPUPROFILE"); p != "" {
+		f, err := os.Create(p)
+		if err != nil {
+			log.Fatalf("cpuprofile create: %v", err)
+		}
+		defer f.Close()
+		if err := pprof.StartCPUProfile(f); err != nil {
+			log.Fatalf("cpuprofile start: %v", err)
+		}
+		defer pprof.StopCPUProfile()
+	}
 
 	if *listForks {
 		fmt.Println("Supported --fork values (default = latest):")
@@ -246,7 +265,11 @@ func generate(reproducedFrom string) *generator.Stats {
 			topUp = 0
 		}
 		if topUp > 0 {
-			plan, err := autofill.PlanForBudget(topUp)
+			profile, err := autofill.ParseProfile(*autofillProfile)
+			if err != nil {
+				log.Fatalf("auto-fill: %v", err)
+			}
+			plan, err := autofill.PlanForBudgetProfile(topUp, profile)
 			if err != nil {
 				log.Fatalf("auto-fill: %v", err)
 			}

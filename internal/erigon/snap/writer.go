@@ -214,6 +214,11 @@ func (w *Writer) WriteDomain(ctx context.Context, d Domain, r StepRange, keyCoun
 		if err != nil {
 			return fmt.Errorf("snap.WriteDomain: btindex.New: %w", err)
 		}
+		// Release the offsets spill file on every exit path. Close is
+		// idempotent, so the explicit Close after a successful Build is a
+		// no-op; this defer is what prevents a multi-GB spill-file leak
+		// when the iterate loop or Build below returns an error.
+		defer bt.Close()
 	}
 
 	var exist *existence.FilterBuilder
@@ -244,6 +249,10 @@ func (w *Writer) WriteDomain(ctx context.Context, d Domain, r StepRange, keyCoun
 		if err != nil {
 			return fmt.Errorf("snap.WriteDomain: recsplit.New: %w", err)
 		}
+		// recsplit.New opens its bucket streamsort (a Pebble dir) eagerly;
+		// this defer removes it on every exit path. Idempotent with the
+		// explicit Close after a successful Build.
+		defer hashm.Close()
 	}
 
 	// Salt-prehash for the existence filter (per Verifier B's note in

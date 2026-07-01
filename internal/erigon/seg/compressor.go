@@ -67,7 +67,13 @@ type Compressor struct {
 	outputFile       string
 	tmpDir           string
 	wordsCount       uint64
-	closed           bool
+	emptyWordsCount  uint64
+	// posMap is the word-length histogram (posMap[len+1] per word, posMap[0] =
+	// total words), maintained incrementally in AddWord so Compress needs no
+	// extra scan of the .idt to rebuild it. It fully determines the position
+	// Huffman tree, so the incremental value is byte-identical to a rescan.
+	posMap map[uint64]uint64
+	closed bool
 }
 
 // NewCompressor creates a Compressor writing to outputPath. tmpDir is
@@ -115,7 +121,18 @@ func NewCompressor(outputPath, tmpDir string, cfg Config) (*Compressor, error) {
 		uncompressedFile: rwf,
 		outputFile:       outputPath,
 		tmpDir:           tmpDir,
+		posMap:           make(map[uint64]uint64),
 	}, nil
+}
+
+// countWord folds one word's length into the incremental posMap +
+// emptyWordsCount that Compress would otherwise rebuild by rescanning the .idt.
+func (c *Compressor) countWord(l int) {
+	c.posMap[uint64(l)+1]++
+	c.posMap[0]++
+	if l == 0 {
+		c.emptyWordsCount++
+	}
 }
 
 // AddWord appends a word to the compressor's intermediate file. Words
@@ -132,6 +149,7 @@ func (c *Compressor) AddWord(word []byte) error {
 		return ErrAlreadyClosed
 	}
 	c.wordsCount++
+	c.countWord(len(word))
 	return c.uncompressedFile.Append(word)
 }
 
@@ -145,6 +163,7 @@ func (c *Compressor) AddUncompressedWord(word []byte) error {
 		return ErrAlreadyClosed
 	}
 	c.wordsCount++
+	c.countWord(len(word))
 	return c.uncompressedFile.AppendUncompressed(word)
 }
 
@@ -173,30 +192,11 @@ func (c *Compressor) Compress() error {
 		return fmt.Errorf("seg: flush .idt: %w", err)
 	}
 
-	// Pass A: build posMap.
-	var inCount, emptyWordsCount uint64
-	posMap := make(map[uint64]uint64)
-	if err := c.uncompressedFile.ForEach(func(v []byte, _ bool) error {
-		inCount++
-		l := uint64(len(v))
-		posMap[l+1]++
-		posMap[0]++
-		if l == 0 {
-			emptyWordsCount++
-		}
-		return nil
-	}); err != nil {
-		return fmt.Errorf("seg: scan .idt for posMap: %w", err)
-	}
-	if inCount != c.wordsCount {
-		// Defensive: the bookkeeping in AddWord and the on-disk record
-		// count must agree.
-		return fmt.Errorf(
-			"seg: inCount mismatch: file has %d, counter %d", inCount, c.wordsCount)
-	}
-
-	// Build position Huffman.
-	positionList, pos2code := buildPositionHuffman(posMap)
+	// posMap + emptyWordsCount were accumulated incrementally in AddWord, so
+	// there is no need to rescan the .idt to rebuild them — one fewer full pass
+	// over the 28-44 GiB intermediate per domain. The histogram fully determines
+	// the Huffman tree, so the output is byte-identical to the old Pass-A scan.
+	positionList, pos2code := buildPositionHuffman(c.posMap)
 
 	// Open a temp file in the same directory for atomic rename.
 	tmpFile, err := os.CreateTemp(filepath.Dir(c.outputFile), filepath.Base(c.outputFile)+".tmp.*")
@@ -231,12 +231,12 @@ func (c *Compressor) Compress() error {
 
 	var numBuf [8]byte
 	// 8B BE wordsCount.
-	binary.BigEndian.PutUint64(numBuf[:], inCount)
+	binary.BigEndian.PutUint64(numBuf[:], c.wordsCount)
 	if _, err := cw.Write(numBuf[:]); err != nil {
 		return fmt.Errorf("seg: write wordsCount: %w", err)
 	}
 	// 8B BE emptyWordsCount.
-	binary.BigEndian.PutUint64(numBuf[:], emptyWordsCount)
+	binary.BigEndian.PutUint64(numBuf[:], c.emptyWordsCount)
 	if _, err := cw.Write(numBuf[:]); err != nil {
 		return fmt.Errorf("seg: write emptyWordsCount: %w", err)
 	}
