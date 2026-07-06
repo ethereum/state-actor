@@ -2,10 +2,11 @@
 // vendored engine (see the sibling files' provenance headers) with a bulk,
 // from-empty fold driver that feeds followAndUpdate directly from sorted
 // per-nibble streams. It replicates Updates.ParallelHashSort's engine
-// choreography (hex_concurrent_patricia_hashed.go:212-300) verbatim — the
-// ONLY difference is the feed: a KeyStream instead of an etl collector, with
-// the Update passed inline instead of re-fetched via ctx.Account/Storage.
-// No Updates object, no Touch dedup map, no etl spill, no chunking.
+// choreography (hex_concurrent_patricia_hashed.go:212-300) — the only
+// semantic difference is the feed: a KeyStream instead of an etl collector,
+// with the Update passed inline instead of re-fetched via ctx.Account/
+// Storage (three inert trace prints are also dropped). No Updates object,
+// no Touch dedup map, no etl spill, no chunking.
 //
 //go:build cgo_erigon_commitment
 

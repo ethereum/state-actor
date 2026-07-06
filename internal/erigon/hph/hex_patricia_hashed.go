@@ -1,5 +1,5 @@
 // Vendored from github.com/erigontech/erigon execution/commitment/hex_patricia_hashed.go @ 14273f79a6 (production pin).
-// Modifications: package commitment -> hph; build tag; nibbles import rewrite; witness/trie surface stripped (4 funcs + 2 imports)
+// Modifications: package commitment -> hph; build tag; nibbles import rewrite; stripped 5 funcs (GenerateWitness, toWitnessTrie, witnessCreateAccountNode, witnessComputeCellHashWithStorage, PrintGrid — debug-only) + 4 imports (commitment/trie, witness, common/crypto, types/accounts)
 //
 //go:build cgo_erigon_commitment
 

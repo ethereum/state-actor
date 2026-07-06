@@ -72,8 +72,16 @@ func WriteCommitment(
 	// build a silently-short .kv (the bug class this repo bans).
 	var streamErr error
 	stateEmitted := false
+	var prevPrefix []byte
 	entries := func(yield func(DomainEntry) bool) {
 		streamErr = branches(func(prefix, data []byte) error {
+			// The .kv contract is ascending keys and WriteDomain does not
+			// check ("behaviour is undefined") — a mis-ordered producer would
+			// otherwise corrupt the snapshot silently.
+			if prevPrefix != nil && bytes.Compare(prefix, prevPrefix) <= 0 {
+				return fmt.Errorf("branch stream not ascending: %x after %x", prefix, prevPrefix)
+			}
+			prevPrefix = append(prevPrefix[:0], prefix...)
 			if !stateEmitted {
 				switch cmp := bytes.Compare(KeyCommitmentState, prefix); {
 				case cmp < 0:

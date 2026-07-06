@@ -128,9 +128,8 @@ type domainWrite struct {
 
 // perDomainChans is the 4 per-domain BATCH channels — one dedicated writer
 // goroutine drains each. Elements are []domainWrite batches (domainBatchSize
-// rows) built by worker-local batchedSenders; the 256-batch buffer holds the
-// same order of in-flight rows as the old 4096 per-item buffer at ~1/128th
-// the channel operations.
+// rows) built by worker-local batchedSenders; 256 batches hold up to 8× the
+// old 4096 per-item buffer's rows at ~1/128th the channel operations.
 type perDomainChans struct {
 	accounts chan []domainWrite
 	storage  chan []domainWrite
@@ -244,9 +243,10 @@ type domainCounts struct {
 //     drain channels into streamsort.Put. CPU encode and disk I/O
 //     overlap; RNG order stays on main thread for cross-client
 //     invariance.
-//  4. Run HPH commitment over the commitmentInputStore (disk-backed
-//     ctx.Account/Storage callbacks via streamsort.Get). The walk's live
-//     branch store is retained on the Result for direct streaming.
+//  4. Fold the commitment: the default Direct-Drive Fold streams the
+//     hashed-keyed sub-stores straight into the vendored engine (the
+//     Updates/etl engine path remains behind STATE_ACTOR_COMMITMENT_DIRECT=0).
+//     Branch rows are retained on the Result for direct streaming.
 //     5b. Snapshot writes FAN OUT into goroutines (semaphore-bounded at
 //     NumCPU): accounts/storage/code start BEFORE the fold (overlap);
 //     commitment queues after it, streaming Result.BranchIterate straight
@@ -403,14 +403,16 @@ func writeSnapshots(
 		// stores by plain address and re-derives the code hash on the parallel
 		// encode workers — see encodeEntity), so skip those keccaks on this
 		// single-threaded draw loop. RNG-draw-sequence-neutral (pinned by
-		// TestFlavoredDrawRNGSequenceInvariant) → cross-client roots unchanged.
-		cfg.AutoFill.SkipDerivedHashes = true
+		// TestFlavoredDrawRNGSequenceInvariant); set on a LOCAL copy so the
+		// shared Plan is never mutated.
+		autoFill := *cfg.AutoFill
+		autoFill.SkipDerivedHashes = true
 		rng := mrand.New(mrand.NewSource(cfg.Seed))
 		cfg.Progress.Stage("erigon: generating accounts")
-		for i := 0; i < cfg.AutoFill.NumEOAs && pipelineErr == nil; i++ {
-			acc := cfg.AutoFill.DrawEOA(rng)
+		for i := 0; i < autoFill.NumEOAs && pipelineErr == nil; i++ {
+			acc := autoFill.DrawEOA(rng)
 			for _, dup := genesisAddrs[acc.Address]; dup; {
-				acc = cfg.AutoFill.DrawEOA(rng)
+				acc = autoFill.DrawEOA(rng)
 				_, dup = genesisAddrs[acc.Address]
 			}
 			entry := &allocAccount{Nonce: acc.StateAccount.Nonce}
@@ -435,12 +437,12 @@ func writeSnapshots(
 				break
 			}
 			stats.AccountsCreated++
-			cfg.Progress.Tick(int64(i+1), int64(cfg.AutoFill.NumEOAs), "EOAs")
+			cfg.Progress.Tick(int64(i+1), int64(autoFill.NumEOAs), "EOAs")
 		}
-		for i := 0; i < cfg.AutoFill.NumContracts && pipelineErr == nil; i++ {
-			c := cfg.AutoFill.DrawContract(rng)
+		for i := 0; i < autoFill.NumContracts && pipelineErr == nil; i++ {
+			c := autoFill.DrawContract(rng)
 			for _, dup := genesisAddrs[c.Address]; dup; {
-				c = cfg.AutoFill.DrawContract(rng)
+				c = autoFill.DrawContract(rng)
 				_, dup = genesisAddrs[c.Address]
 			}
 			entry := &allocAccount{Nonce: c.StateAccount.Nonce}
@@ -464,7 +466,7 @@ func writeSnapshots(
 			stats.StorageSlotsCreated += len(c.Storage)
 			stats.StorageBytes += uint64(len(c.Storage)) * 64
 			stats.ContractsCreated++
-			cfg.Progress.Tick(int64(i+1), int64(cfg.AutoFill.NumContracts), "contracts")
+			cfg.Progress.Tick(int64(i+1), int64(autoFill.NumContracts), "contracts")
 		}
 	}
 	stats.TotalBytes = stats.StorageBytes + stats.CodeBytes
@@ -588,12 +590,11 @@ func writeSnapshots(
 		}
 	}
 
-	// -- Step 4: HPH commitment walk over commitmentInputStore.
-	// The walk's live branch store is RETAINED on the returned Result:
-	// WriteCommitment streams Result.BranchIterate directly (splicing the
-	// KeyCommitmentState row at its sort position), so the old intermediate
-	// branchesStore re-sort — a full extra Pebble write+compaction+read of
-	// the ~44 GB branch set at 100 GB scale — no longer exists.
+	// -- Step 4: the commitment fold over the commit-input sub-stores.
+	// Branch rows are RETAINED on the returned Result (DDF: per-worker
+	// write-once sinks; engine fallback: the live branch store) and
+	// WriteCommitment streams Result.BranchIterate directly — the old
+	// intermediate branchesStore re-sort no longer exists.
 
 	// Overlap the Phase-5b accounts/storage/code snapshot-write with the
 	// commitment fold below. These three domains depend only on the finalized
@@ -643,10 +644,9 @@ func writeSnapshots(
 		}(ds)
 	}
 
-	// ctx.Account/Storage callbacks read from streamsort.Get (disk-backed).
-	// cfg.DBPath (real bind-mounted disk) is the etl spill dir (A1) AND the
-	// live branch-store dir; "" would spill the ~28 GB touched-key runs and
-	// the branches to tmpfs (RAM) on the bench host.
+	// cfg.DBPath (real bind-mounted disk) hosts the branch sinks/store and,
+	// on the engine fallback, the etl spill; "" would put tens of GB of
+	// scratch on tmpfs (RAM) on the bench host.
 	keying := internalcommitment.KeyingPlain
 	if internalcommitment.HashedInput() {
 		keying = internalcommitment.KeyingHashed
@@ -655,10 +655,10 @@ func writeSnapshots(
 	if err != nil {
 		return common.Hash{}, fmt.Errorf("writeSnapshots: ComputeGenesisRoot: %w", err)
 	}
-	// The retained branch store outlives the fold: the WriteCommitment
-	// fan-out goroutine below streams it, and emitWg.Wait() precedes every
-	// return after this point, so a defer (LIFO, post-Wait) is safe on both
-	// the success and error paths.
+	// The retained branch source outlives the fold. The defer is safe on
+	// every path because its only reader — the WriteCommitment goroutine —
+	// is spawned AFTER the early error returns below and is joined by
+	// emitWg.Wait() before the success return.
 	defer result.CloseBranches()
 	// commitmentInputStore is not read after the commitment walk (Phase 5b
 	// reads accounts/storage/code + the retained branch store only). Close

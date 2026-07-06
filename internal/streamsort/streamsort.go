@@ -390,8 +390,9 @@ func (c *Cursor) Close() error {
 
 // Getter is a reusable point-lookup over a finalized Store backed by ONE
 // long-lived pebble.Iterator. For a caller that Gets keys in ASCENDING order —
-// e.g. a ParallelHashSort worker reading its own hashed-key-sorted commitment
-// sub-store — SeekGE stays within the currently-open sstable and skips the
+// the engine-fallback commitment walk over a hashed-key-sorted sub-store
+// (the default Direct-Drive Fold uses Cursor streams instead) — SeekGE
+// stays within the currently-open sstable and skips the
 // per-call iterator construction (the profiled newIters cost) that Store.Get
 // (db.Get) pays on every call. Not goroutine-safe (one Getter per goroutine);
 // Close exactly once (holds a reader ref meanwhile).

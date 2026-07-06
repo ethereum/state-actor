@@ -64,7 +64,8 @@ type Result struct {
 	// branchSinks is the Direct-Drive Fold's equivalent: the per-worker
 	// write-once branch stores (each internally sorted; nibble-disjoint
 	// prefixes + the unique root row). BranchIterate k-way-merges them in
-	// ascending prefix order. Exactly one of branches/branchSinks is set.
+	// ascending prefix order. At most one of branches/branchSinks is set (a
+	// zero or closed Result has neither; DDF sets branchSinks, possibly empty).
 	branchSinks []*streamsort.Store
 }
 
@@ -153,22 +154,17 @@ func EncodeStorageUpdate(value []byte) []byte {
 }
 
 // commitmentChunkKeys, when > 0, bounds how many keys each incremental
-// commitment chunk Touches before a Process flush (A0), so one chunk's
-// Updates.keys dedup map + etl working set are ~O(commitmentChunkKeys)
-// instead of O(total-keys) (upstream's dedup map holds every touched
-// plainKey in RAM at ~100 B/key, never spilled — ~50-67 GB across a 100 GB
-// alloc). When > 0, chunk 0 runs on the SERIAL engine and every later chunk
-// on the CONCURRENT 16-way engine (see chunkConcurrent); 0 runs ONE
-// concurrent Process — no chunk barriers and no cross-chunk branch
-// re-reads, but the full dedup map lives in RAM, so it is only viable when
-// total-keys × ~100 B fits the heap budget (e.g. ≤~25 GB allocs under
-// GOMEMLIMIT=20GiB).
+// commitment chunk Touches before a Process flush on the Updates/etl ENGINE
+// path, so one chunk's dedup map + etl working set are ~O(chunk) instead of
+// O(total-keys). Chunk 0 runs the serial engine, later chunks the 16-way
+// concurrent one (see chunkConcurrent). NOTE: chunking also forces
+// KeyingPlain, which disables the default Direct-Drive Fold — the DDF has
+// no dedup map or etl at all, so its RAM does not scale with alloc size.
 //
-// DEFAULT 0 (single concurrent Process). Override at runtime with
-// STATE_ACTOR_COMMITMENT_CHUNK_KEYS to bound RAM at big-alloc scale; bigger
-// chunks mean fewer chunk barriers + fewer spine re-descents, so pick the
-// largest chunk whose dedup map fits the budget (~32M keys ≈ 3.5 GB under
-// GOMEMLIMIT=20GiB). setCommitmentChunkKeys overrides it in tests.
+// DEFAULT 0 (single-shot; with STATE_ACTOR_COMMITMENT_DIRECT unset this
+// means DDF). Set >0 only to force the low-RAM chunked engine path; the
+// engine's single-shot mode holds the full ~100 B/key dedup map in RAM.
+// setCommitmentChunkKeys overrides it in tests.
 var commitmentChunkKeys = func() int {
 	if v := os.Getenv("STATE_ACTOR_COMMITMENT_CHUNK_KEYS"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
@@ -203,50 +199,6 @@ func setFirstChunkKeys(n int) (restore func()) {
 	return func() { firstChunkKeys = prev }
 }
 
-// ComputeGenesisRoot runs Erigon's ConcurrentPatriciaHashed (16-nibble
-// subtree-parallel HPH) against the commitmentInputStore's encoded Update
-// payloads.
-//
-// The caller is responsible for having populated commitmentInputStore
-// during the buildAllocMap/writeSnapshots streaming loop: every alloc
-// account writes one entry keyed by 20-byte addr; every non-zero
-// storage slot writes one entry keyed by addr||slot. Encoding is done
-// via EncodeAccountUpdate / EncodeStorageUpdate above.
-//
-// Parallelism (Phase 2 worker pool):
-//   - upstream's NewUpdates with SetConcurrentCommitment(true) routes
-//     Touch...Direct into 16 per-nibble etl.Collector instances (sharded
-//     by hashedKey[0]).
-//   - NewConcurrentPatriciaHashed spawns 16 SubTrie HPH instances, one
-//     per first-nibble, all mounted under a single root HPH.
-//   - Process dispatches to ParallelHashSort which runs 16 worker
-//     goroutines via errgroup. Each worker drains its nibble's
-//     collector, calls followAndUpdate on its SubTrie, then foldNibble
-//     merges the subtree's final cell into root.grid[0][nib] under
-//     rootMu. After all 16 finish, root.fold() produces the final hash
-//     from the 16 child cells via the standard foldBranch path.
-//   - Subtree branch keys are disjoint by first nibble — workers write
-//     PutBranch into the SHARED live branch store (a temp Pebble KV);
-//     concurrent Set on disjoint prefixes has no overwrite hazard.
-//
-// Memory profile: Account/Storage lookups during the HPH walk hit Pebble
-// via streamsort.Get (thread-safe; 16 concurrent readers fine). Branches
-// no longer accumulate in a RAM map — the old mergedBranches was
-// Θ(total-keys) (storage slots are hashed into the same unified trie), so
-// at bench scale it was tens of GB. They now stream into the live
-// branchStore (bounded by its Pebble memtable+cache) and are dumped into
-// the caller's write-once branchesOut at the end.
-//
-// branchesOut is the write-once streamsort WriteCommitment will consume;
-// ComputeGenesisRoot Puts the sorted branches into it but does NOT
-// Finalize (WriteCommitment appends KeyCommitmentState then Finalizes).
-//
-// tmpDir is the on-disk scratch directory for the upstream etl.Collector
-// spill (the per-nibble (hashedKey, plainKey) runs). It MUST point at real
-// bind-mounted disk (e.g. cfg.DBPath): the previous "" passed os.TempDir(),
-// which on bench hosts is tmpfs (RAM-backed), so the ~28 GB of touched-key
-// spill was actually resident memory. The path is pure scratch — it cannot
-// affect the sort order, the hashing, or the computed root.
 // NumInputParts is the commitment-input partition count — equal to the
 // ParallelHashSort nibble-shard count. The input is split into 16 sub-stores by
 // the first nibble of the keccak-hashed key; each of the 16 concurrent workers
@@ -279,10 +231,10 @@ const (
 	// hashed sort makes each round-robin chunk a NARROW consecutive hashed
 	// slice per nibble, whose thin serial-chunk skeleton breaks later
 	// concurrent chunks ("empty branch data read during unfold" — the bug
-	// that forced the 209af4a revert). In exchange, each 16-way worker reads
-	// its sub-store in exactly hashed order, so subtreeCtx serves
-	// Account/Storage from ONE reused SeekGE Getter (kills the profiled
-	// per-Get newIters chain). ComputeGenesisRoot REJECTS this keying when
+	// that forced the 209af4a revert). In exchange each store is in the
+	// engine's exact fold order: the default Direct-Drive Fold streams it
+	// via cursors, and the engine fallback serves Account/Storage from ONE
+	// reused SeekGE Getter. ComputeGenesisRoot REJECTS this keying when
 	// chunking is enabled.
 	KeyingHashed
 )
@@ -329,10 +281,18 @@ func DecodeInputRow(enc []byte) (plainKey, updateBytes []byte, err error) {
 	return enc[1 : 1+n], enc[1+n:], nil
 }
 
-// ComputeGenesisRoot folds the 16 nibble-partitioned commitment-input sub-stores
-// into the genesis root. inputStores must have len == NumInputParts and be
-// keyed per `keying` (which must match how generation wrote the rows — both
-// sides derive from HashedInput()).
+// ComputeGenesisRoot folds the 16 nibble-partitioned commitment-input
+// sub-stores (populated by the writeSnapshots streaming loop: one row per
+// account + one per non-zero slot, encoded via EncodeAccountUpdate /
+// EncodeStorageUpdate) into the genesis root. inputStores must have
+// len == NumInputParts and be keyed per `keying` (both sides derive from
+// HashedInput(); a layout skew is rejected below). Branch rows are retained
+// on the Result and streamed to WriteCommitment via BranchIterate.
+//
+// Two paths: KeyingHashed + STATE_ACTOR_COMMITMENT_DIRECT (default) → the
+// Direct-Drive Fold (directdrive.go); otherwise the upstream Updates/etl
+// engine below, whose etl spill lands under tmpDir — which must be real
+// bind-mounted disk, not tmpfs (the spill is tens of GB at bench scale).
 func ComputeGenesisRoot(inputStores []*streamsort.Store, tmpDir string, keying InputKeying) (Result, error) {
 	if len(inputStores) != NumInputParts {
 		return Result{}, fmt.Errorf("commitment.ComputeGenesisRoot: got %d input stores, want %d", len(inputStores), NumInputParts)
@@ -341,6 +301,31 @@ func ComputeGenesisRoot(inputStores []*streamsort.Store, tmpDir string, keying I
 	// the narrow-chunk empty-branch failure (209af4a). Fail loudly instead.
 	if keying == KeyingHashed && commitmentChunkKeys > 0 {
 		return Result{}, errors.New("commitment.ComputeGenesisRoot: hashed input keying requires single-shot (STATE_ACTOR_COMMITMENT_CHUNK_KEYS=0)")
+	}
+	// Layout sanity: the stores' key shape must match the declared keying —
+	// plain keys are 20/52 bytes, hashed 64/128 (disjoint sets). A skew would
+	// otherwise fold mis-derived keccaks into a silently wrong root.
+	for _, s := range inputStores {
+		cur, err := s.NewCursor()
+		if err != nil {
+			return Result{}, fmt.Errorf("commitment.ComputeGenesisRoot: keying probe: %w", err)
+		}
+		valid, n := cur.Valid(), 0
+		if valid {
+			n = len(cur.Key())
+		}
+		probeErr := cur.Err()
+		_ = cur.Close()
+		if probeErr != nil {
+			return Result{}, fmt.Errorf("commitment.ComputeGenesisRoot: keying probe: %w", probeErr)
+		}
+		if !valid {
+			continue // empty sub-store — probe the next
+		}
+		if hashedLen := n == 64 || n == 128; hashedLen != (keying == KeyingHashed) {
+			return Result{}, fmt.Errorf("commitment.ComputeGenesisRoot: input key length %d does not match declared keying", n)
+		}
+		break
 	}
 	// Direct-Drive Fold: single-shot + hashed layout → feed the vendored
 	// engine straight from the sorted cursors, skipping Touch/Updates/etl

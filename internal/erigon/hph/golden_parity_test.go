@@ -23,6 +23,7 @@ import (
 
 	"github.com/holiman/uint256"
 
+	"github.com/erigontech/erigon/common/crypto"
 	"github.com/erigontech/erigon/common/empty"
 	erigonkv "github.com/erigontech/erigon/db/kv"
 	upstream "github.com/erigontech/erigon/execution/commitment"
@@ -37,6 +38,7 @@ type fixAccount struct {
 	addr    [20]byte
 	nonce   uint64
 	balance *uint256.Int
+	code    []byte
 	slots   [][2][32]byte // key, value
 }
 
@@ -54,6 +56,9 @@ func fixture(n int) []fixAccount {
 				v[31] = byte(j + 7)
 				a.slots = append(a.slots, [2][32]byte{k, v})
 			}
+		}
+		if i%5 == 0 { // code-bearing: CodeUpdate changes the leaf hash
+			a.code = append([]byte{0xef, 0x01, 0x00}, a.addr[:]...)
 		}
 		out = append(out, a)
 	}
@@ -149,10 +154,10 @@ func (c *upstreamCtx) Storage(plainKey []byte) (*upstream.Update, error) {
 // funcs (each package's Update.Encode wire format is byte-identical — that is
 // itself part of what Golden A pins, since both decoders consume both).
 func encodeFixture(accs []fixAccount, s *mockState,
-	encAcc func(nonce uint64, bal *uint256.Int) []byte,
+	encAcc func(nonce uint64, bal *uint256.Int, code []byte) []byte,
 	encStor func(val []byte) []byte) (plainKeys []string) {
 	for _, a := range accs {
-		s.accounts[string(a.addr[:])] = encAcc(a.nonce, a.balance)
+		s.accounts[string(a.addr[:])] = encAcc(a.nonce, a.balance, a.code)
 		plainKeys = append(plainKeys, string(a.addr[:]))
 		for _, kv := range a.slots {
 			pk := string(a.addr[:]) + string(kv[0][:])
@@ -163,10 +168,14 @@ func encodeFixture(accs []fixAccount, s *mockState,
 	return plainKeys
 }
 
-func encodeVendoredAcc(nonce uint64, bal *uint256.Int) []byte {
+func encodeVendoredAcc(nonce uint64, bal *uint256.Int, code []byte) []byte {
 	u := hph.Update{Flags: hph.NonceUpdate | hph.BalanceUpdate, Nonce: nonce}
 	u.Balance = *bal
 	u.CodeHash = empty.CodeHash
+	if len(code) > 0 {
+		u.CodeHash = crypto.Keccak256Hash(code)
+		u.Flags |= hph.CodeUpdate
+	}
 	var nb [binary.MaxVarintLen64]byte
 	return u.Encode(nil, nb[:])
 }
@@ -183,10 +192,14 @@ func encodeVendoredStor(val []byte) []byte {
 	return u.Encode(nil, nb[:])
 }
 
-func encodeUpstreamAcc(nonce uint64, bal *uint256.Int) []byte {
+func encodeUpstreamAcc(nonce uint64, bal *uint256.Int, code []byte) []byte {
 	u := upstream.Update{Flags: upstream.NonceUpdate | upstream.BalanceUpdate, Nonce: nonce}
 	u.Balance = *bal
 	u.CodeHash = empty.CodeHash
+	if len(code) > 0 {
+		u.CodeHash = crypto.Keccak256Hash(code)
+		u.Flags |= upstream.CodeUpdate
+	}
 	var nb [binary.MaxVarintLen64]byte
 	return u.Encode(nil, nb[:])
 }

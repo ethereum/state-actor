@@ -26,18 +26,35 @@ func goldenBFixtures(t *testing.T) map[string][]Account {
 			common.HexToHash("0x01"): common.HexToHash("0xbeef"),
 		},
 	}}
+	// 64 slots force a multi-level storage subtree under the account leaf.
 	multiSlot := []Account{{
 		Address: common.HexToAddress("0x3333333333333333333333333333333333333333"),
 		Nonce:   9, Balance: uint256.NewInt(1),
 		Storage: func() map[common.Hash]common.Hash {
 			m := map[common.Hash]common.Hash{}
-			for j := 0; j < 24; j++ {
+			for j := 0; j < 64; j++ {
 				var k, v common.Hash
 				k[31], v[31] = byte(j+1), byte(j+101)
 				m[k] = v
 			}
 			return m
 		}(),
+	}}
+	// Code-bearing shapes: the CodeUpdate flag changes the account leaf hash,
+	// so byte-identity must cover it (real allocs are ~30% delegated EOAs).
+	delegated := []Account{{
+		Address: common.HexToAddress("0x4444444444444444444444444444444444444444"),
+		Nonce:   1, Balance: uint256.NewInt(5),
+		Code: append([]byte{0xef, 0x01, 0x00}, common.HexToAddress("0x5555555555555555555555555555555555555555").Bytes()...),
+	}}
+	codeAndStorage := []Account{{
+		Address: common.HexToAddress("0x6666666666666666666666666666666666666666"),
+		Nonce:   3, Balance: uint256.NewInt(7),
+		Code: []byte{0x60, 0x80, 0x60, 0x40, 0x52, 0x00},
+		Storage: map[common.Hash]common.Hash{
+			common.HexToHash("0x02"): common.HexToHash("0xcafe"),
+			common.HexToHash("0x03"): common.HexToHash("0xf00d"),
+		},
 	}}
 	// oneNibble: 24 accounts whose keccak(addr) all share first nibble 0x7 —
 	// one hot shard, 15 empty shards (foldNibble skipped for empties;
@@ -51,12 +68,14 @@ func goldenBFixtures(t *testing.T) map[string][]Account {
 		}
 	}
 	return map[string][]Account{
-		"span2048":  keccakSpanFixture(2048),
-		"single":    single,
-		"oneSlot":   oneSlot,
-		"multiSlot": multiSlot,
-		"oneNibble": oneNibble,
-		"empty":     {},
+		"span2048":       keccakSpanFixture(2048),
+		"single":         single,
+		"oneSlot":        oneSlot,
+		"multiSlot":      multiSlot,
+		"oneNibble":      oneNibble,
+		"delegated":      delegated,
+		"codeAndStorage": codeAndStorage,
+		"empty":          {},
 	}
 }
 

@@ -25,9 +25,9 @@ import (
 // returns an error on mismatch (so we never silently emit a file set
 // against a different salt than the existence filters were built with).
 type Writer struct {
-	datadir   string
-	settings  Settings
-	closed    bool
+	datadir  string
+	settings Settings
+	closed   bool
 }
 
 // NewWriter validates the on-disk salt + erigondb.toml against
@@ -39,9 +39,9 @@ type Writer struct {
 //   - StepsInFrozenFile: erigon.StepsInFrozenFile (256)
 //   - SnapshotVersion:   erigon.SnapshotFormatVersion ("v1.0")
 //   - Salt:              DeriveSaltFromSeed(s.Seed) if both Salt==0
-//                        and no salt-state.txt exists yet on disk
+//     and no salt-state.txt exists yet on disk
 //   - Accessors[d]:      DefaultAccessorMask(d) per Verifier B's
-//                        correction (per-domain mix)
+//     correction (per-domain mix)
 func NewWriter(datadir string, s Settings) (*Writer, error) {
 	if datadir == "" {
 		return nil, errors.New("snap.NewWriter: datadir is required")
@@ -202,6 +202,15 @@ func (w *Writer) WriteDomain(ctx context.Context, d Domain, r StepRange, keyCoun
 		return fmt.Errorf("snap.WriteDomain: seg.NewDecompressor: %w", err)
 	}
 	defer dec.Close()
+	// A pass-2 failure would otherwise leave a final-named .kv with no
+	// sidecars — remove it so an aborted build can't pass for a complete
+	// domain on a re-run.
+	pass2OK := false
+	defer func() {
+		if !pass2OK {
+			_ = os.Remove(dataPath)
+		}
+	}()
 
 	var bt *btindex.Writer
 	if mask.Has(AccessorBTree) {
@@ -321,6 +330,7 @@ func (w *Writer) WriteDomain(ctx context.Context, d Domain, r StepRange, keyCoun
 			return fmt.Errorf("snap.WriteDomain: existence.Build: %w", err)
 		}
 	}
+	pass2OK = true
 	return nil
 }
 

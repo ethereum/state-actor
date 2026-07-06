@@ -84,21 +84,32 @@ func (s *cursorStream) Next() (hashedKey, plainKey []byte, u *hph.Update, ok boo
 	return hashedKey, plainKey, &s.u, true, nil
 }
 
-// directSinks registers each context's write-once branch sink as it closes.
+// directSinks registers each context's write-once branch sink as it closes,
+// capturing the first sink-finalize error for the caller to surface.
 type directSinks struct {
-	mu     sync.Mutex
-	tmpDir string
-	sinks  []*streamsort.Store
-	rows   uint64
+	mu       sync.Mutex
+	tmpDir   string
+	sinks    []*streamsort.Store
+	rows     uint64
+	firstErr error
 }
 
-func (r *directSinks) register(sink *streamsort.Store, rows uint64) {
+func (r *directSinks) register(sink *streamsort.Store, rows uint64, err error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if sink != nil {
 		r.sinks = append(r.sinks, sink)
 	}
 	r.rows += rows
+	if err != nil && r.firstErr == nil {
+		r.firstErr = err
+	}
+}
+
+func (r *directSinks) err() error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.firstErr
 }
 
 // hphDirectCtx is the DDF PatriciaContext: pure write-once branch sink.
@@ -180,14 +191,11 @@ func ComputeGenesisRootDirect(inputStores []*streamsort.Store, tmpDir string) (R
 	factory := func() (hph.PatriciaContext, func()) {
 		c := &hphDirectCtx{reg: reg}
 		return c, func() {
+			var err error
 			if c.sink != nil {
-				if err := c.sink.Finalize(); err != nil {
-					// Surfaced by the merge read failing; log-path kept quiet
-					// here because closeFn has no error channel upstream.
-					_ = err
-				}
+				err = c.sink.Finalize()
 			}
-			reg.register(c.sink, c.rows)
+			reg.register(c.sink, c.rows, err)
 			c.sink = nil
 		}
 	}
@@ -202,16 +210,21 @@ func ComputeGenesisRootDirect(inputStores []*streamsort.Store, tmpDir string) (R
 	}
 
 	// Flush the root HPH's deferred branch rows (the root row, prefix 0x00)
-	// into the root ctx's sink — same contract as the engine path.
-	if err := rootHph.ApplyAndClearInlineDeferredUpdates(); err != nil {
-		return Result{}, fmt.Errorf("commitment.ComputeGenesisRootDirect: ApplyAndClearInlineDeferredUpdates: %w", err)
-	}
+	// into the root ctx's sink — same contract as the engine path. Register
+	// the sink BEFORE acting on any error so the !handedOff cleanup always
+	// covers it.
+	applyErr := rootHph.ApplyAndClearInlineDeferredUpdates()
+	var finErr error
 	if rootCtx.sink != nil {
-		if err := rootCtx.sink.Finalize(); err != nil {
-			return Result{}, fmt.Errorf("commitment.ComputeGenesisRootDirect: finalize root sink: %w", err)
-		}
+		finErr = rootCtx.sink.Finalize()
 	}
-	reg.register(rootCtx.sink, rootCtx.rows)
+	reg.register(rootCtx.sink, rootCtx.rows, finErr)
+	if applyErr != nil {
+		return Result{}, fmt.Errorf("commitment.ComputeGenesisRootDirect: ApplyAndClearInlineDeferredUpdates: %w", applyErr)
+	}
+	if err := reg.err(); err != nil {
+		return Result{}, fmt.Errorf("commitment.ComputeGenesisRootDirect: finalize branch sinks: %w", err)
+	}
 
 	hphState, err := rootHph.EncodeCurrentState(nil)
 	if err != nil {
