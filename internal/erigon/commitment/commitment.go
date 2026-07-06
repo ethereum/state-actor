@@ -56,28 +56,39 @@ type Result struct {
 	// assertions. Production ComputeGenesisRoot leaves it nil — branches
 	// stay on disk in the retained branch store, never a RAM map.
 	BranchNodes map[string][]byte
-	// branches is the live branch store RETAINED past ComputeGenesisRoot:
-	// production streams it via BranchIterate straight into
-	// snap.WriteCommitment (no intermediate re-sort store — the rows are
-	// already ascending in the branch store's Pebble LSM) and must call
-	// CloseBranches when done. Nil once closed.
+	// branches is the live branch store RETAINED past ComputeGenesisRoot
+	// (the Updates/etl engine path): production streams it via BranchIterate
+	// straight into snap.WriteCommitment and must call CloseBranches when
+	// done. Nil once closed.
 	branches *branchStore
+	// branchSinks is the Direct-Drive Fold's equivalent: the per-worker
+	// write-once branch stores (each internally sorted; nibble-disjoint
+	// prefixes + the unique root row). BranchIterate k-way-merges them in
+	// ascending prefix order. Exactly one of branches/branchSinks is set.
+	branchSinks []*streamsort.Store
 }
 
 // BranchIterate streams every (prefix, branchData) row in ascending prefix
-// order from the retained branch store. Key/value byte slices alias Pebble's
-// buffers — copy if retained beyond the callback. Callable repeatedly until
-// CloseBranches.
+// order from the retained branch source. Key/value byte slices alias
+// Pebble's buffers — copy if retained beyond the callback. Callable
+// repeatedly until CloseBranches.
 func (r *Result) BranchIterate(yield func(prefix, data []byte) error) error {
+	if r.branchSinks != nil {
+		return mergedBranchIterate(r.branchSinks, yield)
+	}
 	if r.branches == nil {
-		return errors.New("commitment.Result.BranchIterate: branch store closed or not retained")
+		return errors.New("commitment.Result.BranchIterate: branch source closed or not retained")
 	}
 	return r.branches.iterate(yield)
 }
 
-// CloseBranches releases the retained on-disk branch store (DB + cache +
-// temp dir). Idempotent; safe on a zero Result.
+// CloseBranches releases the retained on-disk branch source. Idempotent;
+// safe on a zero Result.
 func (r *Result) CloseBranches() {
+	for _, s := range r.branchSinks {
+		s.Close()
+	}
+	r.branchSinks = nil
 	if r.branches == nil {
 		return
 	}
@@ -330,6 +341,13 @@ func ComputeGenesisRoot(inputStores []*streamsort.Store, tmpDir string, keying I
 	// the narrow-chunk empty-branch failure (209af4a). Fail loudly instead.
 	if keying == KeyingHashed && commitmentChunkKeys > 0 {
 		return Result{}, errors.New("commitment.ComputeGenesisRoot: hashed input keying requires single-shot (STATE_ACTOR_COMMITMENT_CHUNK_KEYS=0)")
+	}
+	// Direct-Drive Fold: single-shot + hashed layout → feed the vendored
+	// engine straight from the sorted cursors, skipping Touch/Updates/etl
+	// entirely (STATE_ACTOR_COMMITMENT_DIRECT=0 falls back to the engine
+	// path below for A/B and emergencies).
+	if keying == KeyingHashed && directEnabled() {
+		return ComputeGenesisRootDirect(inputStores, tmpDir)
 	}
 	// Live read-write branch sink shared by all 16 nibble-disjoint workers
 	// + the root ctx. Replaces the in-memory mergedBranches map. Created
