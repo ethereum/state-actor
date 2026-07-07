@@ -12,6 +12,32 @@ import (
 	"github.com/holiman/uint256"
 )
 
+// keccakSpanFixture builds n accounts whose keccak(addr) span the hashed
+// keyspace; every even account carries 2 storage slots.
+func keccakSpanFixture(n int) []Account {
+	accounts := make([]Account, 0, n)
+	for i := 0; i < n; i++ {
+		var addr common.Address
+		binary.BigEndian.PutUint64(addr[12:], uint64(i+1))
+		a := Account{
+			Address: addr,
+			Nonce:   uint64(i + 1),
+			Balance: uint256.NewInt(uint64(i + 1)),
+		}
+		if i%2 == 0 {
+			a.Storage = map[common.Hash]common.Hash{}
+			for j := 0; j < 2; j++ {
+				var k, v common.Hash
+				k[0], k[31] = byte(i), byte(j+1)
+				v[31] = byte(j + 7)
+				a.Storage[k] = v
+			}
+		}
+		accounts = append(accounts, a)
+	}
+	return accounts
+}
+
 // goldenBFixtures are the adversarial allocs Golden B runs three-way over.
 func goldenBFixtures(t *testing.T) map[string][]Account {
 	t.Helper()
@@ -87,9 +113,6 @@ func goldenBFixtures(t *testing.T) map[string][]Account {
 //	engine/hashed : the Updates/etl engine over hashed-keyed stores
 //	DIRECT/hashed : the Direct-Drive Fold over hashed-keyed stores
 func TestGoldenB_DirectDriveMatchesEngine(t *testing.T) {
-	restoreChunk := setCommitmentChunkKeys(0) // hashed keying requires single-shot
-	defer restoreChunk()
-
 	for name, accounts := range goldenBFixtures(t) {
 		t.Run(name, func(t *testing.T) {
 			restore := setDirectEnabled(false)
@@ -97,10 +120,12 @@ func TestGoldenB_DirectDriveMatchesEngine(t *testing.T) {
 			if err != nil {
 				t.Fatalf("engine/plain: %v", err)
 			}
+			defer enginePlain.CloseBranches()
 			engineHashed, err := ComputeGenesisRootFromAccountsKeyed(accounts, KeyingHashed)
 			if err != nil {
 				t.Fatalf("engine/hashed: %v", err)
 			}
+			defer engineHashed.CloseBranches()
 			restore()
 
 			restore = setDirectEnabled(true)
@@ -108,12 +133,14 @@ func TestGoldenB_DirectDriveMatchesEngine(t *testing.T) {
 			if err != nil {
 				t.Fatalf("DIRECT/hashed: %v", err)
 			}
+			defer direct.CloseBranches()
 			restore()
 
+			plainBranches := branchNodesBytes(collectBranches(t, &enginePlain))
 			for _, pair := range []struct {
 				label string
-				got   Result
-			}{{"engine/hashed", engineHashed}, {"DIRECT/hashed", direct}} {
+				got   *Result
+			}{{"engine/hashed", &engineHashed}, {"DIRECT/hashed", &direct}} {
 				if pair.got.Root != enginePlain.Root {
 					t.Fatalf("%s ROOT DIVERGED: %s vs engine/plain %s",
 						pair.label, pair.got.Root.Hex(), enginePlain.Root.Hex())
@@ -122,7 +149,7 @@ func TestGoldenB_DirectDriveMatchesEngine(t *testing.T) {
 					t.Errorf("%s BranchCount = %d, engine/plain = %d",
 						pair.label, pair.got.BranchCount, enginePlain.BranchCount)
 				}
-				if !bytes.Equal(branchNodesBytes(pair.got.BranchNodes), branchNodesBytes(enginePlain.BranchNodes)) {
+				if !bytes.Equal(branchNodesBytes(collectBranches(t, pair.got)), plainBranches) {
 					t.Errorf("%s branch BYTES diverged from engine/plain", pair.label)
 				}
 				if !bytes.Equal(pair.got.HPHState, enginePlain.HPHState) {

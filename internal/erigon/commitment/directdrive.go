@@ -153,8 +153,8 @@ func (c *hphDirectCtx) Storage(plainKey []byte) (*hph.Update, error) {
 }
 
 // ComputeGenesisRootDirect is the DDF entry point. inputStores MUST be the
-// 16 KeyingHashed sub-stores (single-shot only — the keying guard upstream
-// of this call enforces HashedInput()).
+// 16 KeyingHashed sub-stores (the layout probe upstream of this call
+// rejects a keying skew).
 func ComputeGenesisRootDirect(inputStores []*streamsort.Store, tmpDir string) (Result, error) {
 	if len(inputStores) != NumInputParts {
 		return Result{}, fmt.Errorf("commitment.ComputeGenesisRootDirect: got %d input stores, want %d", len(inputStores), NumInputParts)

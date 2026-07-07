@@ -80,6 +80,7 @@ func TestH4_HexPatriciaHashed_MatchesMPT(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ComputeGenesisRoot: %v", err)
 	}
+	defer res.CloseBranches()
 
 	t.Logf("geth   MPT root:          %s", gethRoot.Hex())
 	t.Logf("erigon HexPatriciaHashed: %s", res.Root.Hex())

@@ -71,7 +71,7 @@ var fullRange = snap.StepRange{From: 0, To: 1}
 // nethermind, but is overridable via STATE_ACTOR_ERIGON_WORKERS to exploit
 // many-core hosts (the RNG draw stays single-threaded on the main goroutine
 // for cross-client invariance; only the CPU-bound encode is parallelised,
-// so a larger pool is safe for the root). Tests override via setErigonWorkers.
+// so a larger pool is safe for the root).
 var erigonWorkers = func() int {
 	if v := os.Getenv("STATE_ACTOR_ERIGON_WORKERS"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n >= 1 {
@@ -87,14 +87,6 @@ var erigonWorkers = func() int {
 	}
 	return n
 }()
-
-// setErigonWorkers swaps erigonWorkers for the duration of a test.
-// The returned function restores the previous value.
-func setErigonWorkers(n int) (restore func()) {
-	prev := erigonWorkers
-	erigonWorkers = n
-	return func() { erigonWorkers = prev }
-}
 
 // recsplitWorkers sizes the parallel .kvi Build: min(NumCPU, 8) unless
 // STATE_ACTOR_RECSPLIT_WORKERS overrides (1 = sequential).
@@ -326,7 +318,7 @@ func writeSnapshots(
 	// STATE_ACTOR_COMMITMENT_CACHE_GB always wins (opt-in for more RAM —
 	// the arenas/caches are off-heap C malloc, committed RSS by default).
 	partCache := int64(8 << 20)
-	if !internalcommitment.HashedInput() || os.Getenv("STATE_ACTOR_COMMITMENT_CACHE_GB") != "" {
+	if os.Getenv("STATE_ACTOR_COMMITMENT_CACHE_GB") != "" {
 		partCache = envCacheBytes("STATE_ACTOR_COMMITMENT_CACHE_GB", 4) / int64(internalcommitment.NumInputParts)
 		if partCache < 8<<20 {
 			partCache = 8 << 20
@@ -692,10 +684,7 @@ func writeSnapshots(
 	// cfg.DBPath (real bind-mounted disk) hosts the branch sinks/store and,
 	// on the engine fallback, the etl spill; "" would put tens of GB of
 	// scratch on tmpfs (RAM) on the bench host.
-	keying := internalcommitment.KeyingPlain
-	if internalcommitment.HashedInput() {
-		keying = internalcommitment.KeyingHashed
-	}
+	keying := internalcommitment.KeyingHashed
 	foldStart := time.Now()
 	result, err := internalcommitment.ComputeGenesisRoot(commitmentInputStores, cfg.DBPath, keying)
 	if err != nil {
@@ -912,12 +901,10 @@ func encodeEntity(
 		atomic.AddUint64(&counts.code, 1)
 	}
 
-	// Route this account (and all its storage) to its commit-input sub-store by
-	// the first nibble of keccak(addr) — the ParallelHashSort worker shard.
-	// Under KeyingHashed (single-shot fold; commitment.HashedInput) the row is
-	// additionally KEYED by the full hashed key with the plain key in the value
-	// (EncodeInputRow), enabling the fold's sequential reused-Getter reads. The
-	// keccak is the same either way (InputPart == HashedKey[0]) and stays on
+	// Route this account (and all its storage) to its commit-input sub-store
+	// by the first nibble of keccak(addr) — the fold's worker shard. The row
+	// is KEYED by the full hashed key with the plain key in the value
+	// (EncodeInputRow), giving the fold sequential reads; the keccak stays on
 	// this parallel encode worker.
 	hashedAddr := internalcommitment.HashedKey(addrKey)
 	part := hashedAddr[0]
@@ -932,10 +919,7 @@ func encodeEntity(
 	// Commitment input: account-level Update. Reuse the code hash computed
 	// above (no second keccak).
 	commitBytes := internalcommitment.EncodeAccountUpdateCodeHash(ew.entry.Nonce, balance, codeHash)
-	if internalcommitment.HashedInput() {
-		return out.commitIn.send(domainWrite{key: hashedAddr, value: internalcommitment.EncodeInputRow(addrKey, commitBytes), part: part})
-	}
-	return out.commitIn.send(domainWrite{key: addrKey, value: commitBytes, part: part})
+	return out.commitIn.send(domainWrite{key: hashedAddr, value: internalcommitment.EncodeInputRow(addrKey, commitBytes), part: part})
 }
 
 // encodeStorageSlot encodes one (addr, slot, value) tuple. Skip on
@@ -966,12 +950,9 @@ func encodeStorageSlot(
 	atomic.AddUint64(&counts.storage, 1)
 
 	commitBytes := internalcommitment.EncodeStorageUpdate(slotValue[:])
-	if internalcommitment.HashedInput() {
-		// Same part either way: HashedKey(addr||slot)[0] derives from
-		// keccak(addr), matching the owning account's part.
-		return out.commitIn.send(domainWrite{key: internalcommitment.HashedKey(plainKey), value: internalcommitment.EncodeInputRow(plainKey, commitBytes), part: part})
-	}
-	return out.commitIn.send(domainWrite{key: plainKey, value: commitBytes, part: part})
+	// Same part as the owning account: HashedKey(addr||slot)[0] derives
+	// from keccak(addr).
+	return out.commitIn.send(domainWrite{key: internalcommitment.HashedKey(plainKey), value: internalcommitment.EncodeInputRow(plainKey, commitBytes), part: part})
 }
 
 // domainWriter drains a single per-domain channel into the
