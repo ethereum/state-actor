@@ -167,19 +167,11 @@ func (c *Compressor) AddUncompressedWord(word []byte) error {
 	return c.uncompressedFile.AppendUncompressed(word)
 }
 
-// Compress drains all queued words, builds the position Huffman tree,
-// and writes the final compressed file atomically to outputPath.
-//
-// Algorithm (no-pattern fast path, `compress.go:359-368 + parallel_compress.go:684-754`):
-//  1. Flush .idt; scan it once to build posMap[length+1] = uses
-//     (per-word) and a single posMap[0] = totalWords (terminator).
-//  2. Build canonical Huffman tree over posMap (see huffman.go).
-//  3. Write V1 header (version, featureFlagBitmask).
-//  4. Write data header: 8B wordsCount, 8B emptyWordsCount, 8B
-//     patternsSize=0, [no patterns], 8B posSize, posSize varint entries.
-//  5. Per-word: encode pos2code[len+1] bits, optionally pos2code[0]
-//     bits, flush, write raw bytes.
-//  6. fsync + atomic rename.
+// Compress drains all queued words from the .idt, builds the position
+// Huffman tree from the incrementally-accumulated posMap, and writes the
+// final compressed file atomically to outputPath (no-pattern fast path,
+// `compress.go:359-368 + parallel_compress.go:684-754`; see emitKV for
+// the header/body layout).
 //
 // Compress() may be called only once. After it returns, the only legal
 // call is Close().
@@ -191,11 +183,65 @@ func (c *Compressor) Compress() error {
 	if err := c.uncompressedFile.Flush(); err != nil {
 		return fmt.Errorf("seg: flush .idt: %w", err)
 	}
+	return c.emitKV(func(enc func([]byte) error) error {
+		return c.uncompressedFile.ForEach(func(v []byte, _ bool) error {
+			return enc(v)
+		})
+	})
+}
 
-	// posMap + emptyWordsCount were accumulated incrementally in AddWord, so
-	// there is no need to rescan the .idt to rebuild them — one fewer full pass
-	// over the 28-44 GiB intermediate per domain. The histogram fully determines
-	// the Huffman tree, so the output is byte-identical to the old Pass-A scan.
+// WordSource pushes a .kv's word sequence (key, value, key, value, …) in
+// final order. It MUST be repeatable and deterministic: CompressFromSource
+// invokes it TWICE (count pass, then encode pass) and any divergence
+// between the passes silently corrupts the output. Producer errors are
+// surfaced out-of-band by the caller (matching snap's entries convention).
+type WordSource func(yield func(word []byte) bool)
+
+// CompressFromSource writes the .kv directly from a repeatable word source,
+// skipping the .idt intermediate entirely: pass A accumulates the counts +
+// length histogram (exactly what AddWord does), pass B encodes straight
+// into the output. Byte-identical to AddWord+Compress for the same word
+// sequence — the .kv is a pure function of it (per-word encoding with the
+// bit writer flushed to byte alignment after every word; the Huffman table
+// derives only from the histogram). Requires a fresh Compressor.
+func (c *Compressor) CompressFromSource(src WordSource) error {
+	if c.closed {
+		return ErrAlreadyClosed
+	}
+	if c.wordsCount != 0 {
+		return errors.New("seg: CompressFromSource requires a fresh Compressor (no AddWord calls)")
+	}
+	src(func(w []byte) bool {
+		c.wordsCount++
+		c.countWord(len(w))
+		return true
+	})
+	return c.emitKV(func(enc func([]byte) error) error {
+		var encErr error
+		var encoded uint64
+		src(func(w []byte) bool {
+			if err := enc(w); err != nil {
+				encErr = err
+				return false
+			}
+			encoded++
+			return true
+		})
+		if encErr == nil && encoded != c.wordsCount {
+			return fmt.Errorf("seg: source yielded %d words on the encode pass, %d on the count pass — source is not repeatable", encoded, c.wordsCount)
+		}
+		return encErr
+	})
+}
+
+// emitKV writes the complete .kv — Huffman dict from the accumulated
+// posMap, headers, per-word body, fsync + atomic rename. body(enc) must
+// call enc(word) for every word in final order.
+func (c *Compressor) emitKV(body func(enc func([]byte) error) error) error {
+	// posMap + emptyWordsCount were accumulated incrementally (AddWord or
+	// the CompressFromSource count pass) — the .idt is never rescanned for
+	// them. The histogram fully determines the Huffman tree, so the output
+	// is byte-identical to the old Pass-A scan.
 	positionList, pos2code := buildPositionHuffman(c.posMap)
 
 	// Open a temp file in the same directory for atomic rename.
@@ -271,7 +317,7 @@ func (c *Compressor) Compress() error {
 
 	// Pass B: encode each word's Huffman length code + raw bytes.
 	hc := &bitWriter{w: cw}
-	if err := c.uncompressedFile.ForEach(func(v []byte, _ bool) error {
+	enc := func(v []byte) error {
 		l := uint64(len(v))
 		if pc := pos2code[l+1]; pc != nil {
 			if e := hc.encode(pc.code, pc.codeBits); e != nil {
@@ -293,7 +339,8 @@ func (c *Compressor) Compress() error {
 		}
 		_, e := cw.Write(v)
 		return e
-	}); err != nil {
+	}
+	if err := body(enc); err != nil {
 		return fmt.Errorf("seg: encode body: %w", err)
 	}
 

@@ -85,6 +85,14 @@ type Options struct {
 	// keccak-sorted order, expect ~30-50% hit rate at this size against
 	// a 12 GiB store — enough to drop most cold disk reads.
 	BlockCacheBytes int64
+
+	// MemTableBytes overrides the per-memtable arena size (default
+	// MemTableSize, 256 MiB). Arenas are C-malloc'd under cgo — off the Go
+	// heap, invisible to GOMEMLIMIT — and up to 2 are live per store, so
+	// this is the store's main committed-RSS knob. Write-once stores
+	// drained by one sequential scan tolerate small arenas (more L0 SSTs
+	// under a single merging iterator).
+	MemTableBytes int64
 }
 
 // Store is a sorted-by-key spill buffer backed by a temp Pebble LSM with
@@ -140,10 +148,14 @@ func NewWithOptions(workDir string, opts Options) (*Store, error) {
 	if opts.BlockCacheBytes > 0 {
 		cacheSize = opts.BlockCacheBytes
 	}
+	memTableSize := uint64(MemTableSize)
+	if opts.MemTableBytes > 0 {
+		memTableSize = uint64(opts.MemTableBytes)
+	}
 	cache := pebble.NewCache(cacheSize)
 	pebbleOpts := &pebble.Options{
 		DisableWAL:                  true,
-		MemTableSize:                MemTableSize,
+		MemTableSize:                memTableSize,
 		MemTableStopWritesThreshold: 2,
 		L0CompactionThreshold:       math.MaxInt32,
 		L0StopWritesThreshold:       math.MaxInt32,

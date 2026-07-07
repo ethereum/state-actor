@@ -2,6 +2,7 @@ package recsplit
 
 import (
 	"bufio"
+	"container/heap"
 	"context"
 	"crypto/rand"
 	"encoding/binary"
@@ -11,6 +12,9 @@ import (
 	"math/bits"
 	"os"
 	"path/filepath"
+	"sync"
+
+	"golang.org/x/sync/errgroup"
 )
 
 // ErrCollision is returned by Build() when two distinct keys produce the
@@ -53,7 +57,6 @@ var DefaultStartSeed = []uint64{
 // (recsplit.go:203-222), restricted to the spike subset:
 //   - no enums (offsetEf encoding)
 //   - no less-false-positives (existence filter)
-//   - no parallel workers (always sequential)
 //
 // CRITICAL: Salt is a POINTER. Build() may discover a collision and the
 // CALLER is expected to bump *Salt and retry. (Erigon's
@@ -68,6 +71,10 @@ type Args struct {
 	IndexFile  string
 	BaseDataID uint64
 	Enums      bool // MUST be false in spike scope
+	// Workers > 1 parallelizes the per-bucket recsplit compute in Build
+	// (producer -> N workers -> in-dispatch-order writer). Output is
+	// byte-identical at any worker count. 0/1 = sequential.
+	Workers int
 }
 
 // Writer is a single-use perfect-hash function builder. Construct with
@@ -302,33 +309,17 @@ func (w *Writer) Build(ctx context.Context) error {
 	if err := w.collector.Finalize(); err != nil {
 		return err
 	}
-	prevBucketIdx := ^uint32(0) // sentinel for "first bucket"
-	if err := w.collector.ForEach(func(e bucketEntry) error {
-		if e.bucketIdx != prevBucketIdx {
-			if prevBucketIdx != ^uint32(0) {
-				if err := w.flushCurrentBucket(uint64(prevBucketIdx)); err != nil {
-					return err
-				}
-			}
-			prevBucketIdx = e.bucketIdx
-		}
-		w.currentBucket = append(w.currentBucket, e.fingerprintLo)
-		w.currentBucketOs = append(w.currentBucketOs, e.offset)
-
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		default:
-		}
-		return nil
-	}); err != nil {
-		return err
+	var walkErr error
+	if w.args.Workers > 1 {
+		walkErr = w.buildBucketsParallel(ctx)
+	} else {
+		walkErr = w.buildBucketsSequential(ctx)
 	}
-	// Flush the final bucket.
-	if len(w.currentBucket) > 0 {
-		if err := w.flushCurrentBucket(uint64(prevBucketIdx)); err != nil {
-			return err
+	if walkErr != nil {
+		if errors.Is(walkErr, ErrCollision) {
+			w.collision = true
 		}
+		return walkErr
 	}
 
 	// Sentinel: appendFixed(1, 1). Avoids checking for parts of size 1
@@ -416,59 +407,259 @@ func (w *Writer) Build(ctx context.Context) error {
 	return nil
 }
 
-// flushCurrentBucket processes w.currentBucket as bucket-index
-// `bucketIdx`, appends its offset bytes to the index file, and updates
-// the cumulative accumulators. Port of recsplit.go:595-651.
-func (w *Writer) flushCurrentBucket(bucketIdx uint64) error {
-	// Extend bucketSizeAcc to cover bucketIdx (padding gaps with the
-	// previous cumulative value — empty buckets contribute zero keys).
-	for len(w.bucketSizeAcc) <= int(bucketIdx)+1 {
-		w.bucketSizeAcc = append(w.bucketSizeAcc, w.bucketSizeAcc[len(w.bucketSizeAcc)-1])
-	}
-	w.bucketSizeAcc[int(bucketIdx)+1] += uint64(len(w.currentBucket))
-
-	res := &bucketResult{
-		offsetData: make([]byte, 0, len(w.currentBucket)*w.scratch.bytesPerRec),
-	}
-	if len(w.currentBucket) > 1 {
-		// Collision check inside the bucket.
-		for i := 1; i < len(w.currentBucket); i++ {
-			if w.currentBucket[i] == w.currentBucket[i-1] {
-				w.collision = true
-				return fmt.Errorf("%w: fingerprint %x in bucket %d",
-					ErrCollision, w.currentBucket[i], bucketIdx)
-			}
-		}
-		w.scratch.preAlloc(len(w.currentBucket))
-		unary := make([]uint64, 0, len(w.currentBucket))
-		var err error
-		unary, err = recsplitRecurse(0, w.currentBucket, w.currentBucketOs, unary, w.scratch, res)
+// buildBucketsSequential walks the collector in (bucketIdx, fingerprint)
+// order, computing and writing each bucket inline. Port of
+// recsplit.go:595-651 split into computeBucket + writeResult.
+func (w *Writer) buildBucketsSequential(ctx context.Context) error {
+	prevBucketIdx := ^uint32(0) // sentinel for "first bucket"
+	flush := func() error {
+		res, err := computeBucket(w.scratch, uint64(prevBucketIdx), w.currentBucket, w.currentBucketOs)
 		if err != nil {
 			return err
 		}
-		w.gr.Append(&res.gr)
-		w.gr.appendUnaryAll(unary)
+		w.currentBucket = w.currentBucket[:0]
+		w.currentBucketOs = w.currentBucketOs[:0]
+		return w.writeResult(res)
+	}
+	if err := w.collector.ForEach(func(e bucketEntry) error {
+		if e.bucketIdx != prevBucketIdx {
+			if prevBucketIdx != ^uint32(0) {
+				if err := flush(); err != nil {
+					return err
+				}
+			}
+			prevBucketIdx = e.bucketIdx
+		}
+		w.currentBucket = append(w.currentBucket, e.fingerprintLo)
+		w.currentBucketOs = append(w.currentBucketOs, e.offset)
+
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+		return nil
+	}); err != nil {
+		return err
+	}
+	if len(w.currentBucket) > 0 {
+		return flush()
+	}
+	return nil
+}
+
+// computeBucket is the pure per-bucket half: collision scan +
+// recsplitRecurse into a fresh bucketResult. Concurrency-safe — touches
+// only sc and the returned result.
+func computeBucket(sc *recsplitScratch, bucketIdx uint64, fps, offs []uint64) (*bucketResult, error) {
+	res := &bucketResult{
+		offsetData: make([]byte, 0, len(fps)*sc.bytesPerRec),
+		bucketIdx:  bucketIdx,
+		bucketSize: len(fps),
+	}
+	if len(fps) > 1 {
+		for i := 1; i < len(fps); i++ {
+			if fps[i] == fps[i-1] {
+				return nil, fmt.Errorf("%w: fingerprint %x in bucket %d",
+					ErrCollision, fps[i], bucketIdx)
+			}
+		}
+		sc.preAlloc(len(fps))
+		unary := make([]uint64, 0, len(fps))
+		unary, err := recsplitRecurse(0, fps, offs, unary, sc, res)
+		if err != nil {
+			return nil, err
+		}
+		res.unary = unary
 	} else {
-		// Size 0 or 1: just emit the offset directly.
+		// Size 1: just emit the offset directly.
 		var numBuf [8]byte
-		for _, off := range w.currentBucketOs {
+		for _, off := range offs {
 			binary.BigEndian.PutUint64(numBuf[:], off)
-			res.offsetData = append(res.offsetData, numBuf[8-w.scratch.bytesPerRec:]...)
+			res.offsetData = append(res.offsetData, numBuf[8-sc.bytesPerRec:]...)
 		}
 	}
+	return res, nil
+}
 
+// writeResult is the SERIAL half — cumulative accumulators + the one
+// continuous Golomb-Rice stream. MUST be called in ascending bucketIdx
+// order (padding gaps with the previous cumulative value — empty buckets
+// contribute zero keys).
+func (w *Writer) writeResult(res *bucketResult) error {
+	for len(w.bucketSizeAcc) <= int(res.bucketIdx)+1 {
+		w.bucketSizeAcc = append(w.bucketSizeAcc, w.bucketSizeAcc[len(w.bucketSizeAcc)-1])
+	}
+	w.bucketSizeAcc[res.bucketIdx+1] += uint64(res.bucketSize)
+	if res.bucketSize > 1 {
+		w.gr.Append(&res.gr)
+		w.gr.appendUnaryAll(res.unary)
+	}
 	if _, err := w.indexW.Write(res.offsetData); err != nil {
 		return err
 	}
-
-	for len(w.bucketPosAcc) <= int(bucketIdx)+1 {
+	for len(w.bucketPosAcc) <= int(res.bucketIdx)+1 {
 		w.bucketPosAcc = append(w.bucketPosAcc, w.bucketPosAcc[len(w.bucketPosAcc)-1])
 	}
-	w.bucketPosAcc[int(bucketIdx)+1] = uint64(w.gr.Bits())
-
-	w.currentBucket = w.currentBucket[:0]
-	w.currentBucketOs = w.currentBucketOs[:0]
+	w.bucketPosAcc[res.bucketIdx+1] = uint64(w.gr.Bits())
 	return nil
+}
+
+// bucketTask is one non-empty bucket dispatched to a parallel worker.
+type bucketTask struct {
+	seq       uint64
+	bucketIdx uint64
+	fps       []uint64
+	offs      []uint64
+}
+
+// bucketResultHeap is a min-heap on seq — the parallel consumer restores
+// dispatch order with it.
+type bucketResultHeap []*bucketResult
+
+func (h bucketResultHeap) Len() int           { return len(h) }
+func (h bucketResultHeap) Less(i, j int) bool { return h[i].seq < h[j].seq }
+func (h bucketResultHeap) Swap(i, j int)      { h[i], h[j] = h[j], h[i] }
+func (h *bucketResultHeap) Push(x any)        { *h = append(*h, x.(*bucketResult)) }
+func (h *bucketResultHeap) Pop() any {
+	old := *h
+	n := len(old)
+	x := old[n-1]
+	*h = old[:n-1]
+	return x
+}
+
+// newWorkerScratch clones the config half of w.scratch with worker-owned
+// mutable state: count buffers and — critically — a PRIVATE
+// golombParamCache (the table grows on access and is not thread-safe).
+func (w *Writer) newWorkerScratch() *recsplitScratch {
+	s := w.scratch
+	return &recsplitScratch{
+		count:              make([]uint16, len(s.count)),
+		startSeed:          s.startSeed,
+		leafSize:           s.leafSize,
+		primaryAggrBound:   s.primaryAggrBound,
+		secondaryAggrBound: s.secondaryAggrBound,
+		bytesPerRec:        s.bytesPerRec,
+		golombParams: &golombParamCache{
+			leafSize:           s.leafSize,
+			primaryAggrBound:   s.primaryAggrBound,
+			secondaryAggrBound: s.secondaryAggrBound,
+		},
+	}
+}
+
+// buildBucketsParallel mirrors upstream's buildWithWorkers: a producer
+// groups collector entries into per-bucket tasks (ascending bucketIdx,
+// dense seq), N workers run computeBucket concurrently, and the consumer
+// writes results strictly in seq order — reproducing the sequential
+// concatenation byte-for-byte. The footer's golomb table is harvested as
+// the longest across workers (entries are deterministic per size).
+func (w *Writer) buildBucketsParallel(ctx context.Context) error {
+	cctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	g, gctx := errgroup.WithContext(cctx)
+	tasks := make(chan *bucketTask, w.args.Workers*2)
+	results := make(chan *bucketResult, w.args.Workers*2)
+
+	var harvestMu sync.Mutex
+	harvest := func(sc *recsplitScratch) {
+		harvestMu.Lock()
+		if len(sc.golombParams.table) > len(w.scratch.golombParams.table) {
+			w.scratch.golombParams.table = sc.golombParams.table
+		}
+		harvestMu.Unlock()
+	}
+
+	for i := 0; i < w.args.Workers; i++ {
+		g.Go(func() error {
+			sc := w.newWorkerScratch()
+			defer harvest(sc)
+			for t := range tasks {
+				res, err := computeBucket(sc, t.bucketIdx, t.fps, t.offs)
+				if err != nil {
+					return err
+				}
+				res.seq = t.seq
+				select {
+				case results <- res:
+				case <-gctx.Done():
+					return gctx.Err()
+				}
+			}
+			return nil
+		})
+	}
+
+	g.Go(func() error {
+		defer close(tasks)
+		var cur *bucketTask
+		var seq uint64
+		send := func(t *bucketTask) error {
+			select {
+			case tasks <- t:
+				return nil
+			case <-gctx.Done():
+				return gctx.Err()
+			}
+		}
+		if err := w.collector.ForEach(func(e bucketEntry) error {
+			if cur == nil || uint64(e.bucketIdx) != cur.bucketIdx {
+				if cur != nil {
+					if err := send(cur); err != nil {
+						return err
+					}
+				}
+				cur = &bucketTask{
+					seq:       seq,
+					bucketIdx: uint64(e.bucketIdx),
+					fps:       make([]uint64, 0, w.args.BucketSize),
+					offs:      make([]uint64, 0, w.args.BucketSize),
+				}
+				seq++
+			}
+			cur.fps = append(cur.fps, e.fingerprintLo)
+			cur.offs = append(cur.offs, e.offset)
+			return nil
+		}); err != nil {
+			return err
+		}
+		if cur != nil {
+			return send(cur)
+		}
+		return nil
+	})
+
+	gerrCh := make(chan error, 1)
+	go func() {
+		err := g.Wait()
+		close(results)
+		gerrCh <- err
+	}()
+
+	var writeErr error
+	h := &bucketResultHeap{}
+	next := uint64(0)
+	for res := range results {
+		if writeErr != nil {
+			continue // drain until close; workers unwound via cancel
+		}
+		heap.Push(h, res)
+		for h.Len() > 0 && (*h)[0].seq == next {
+			r := heap.Pop(h).(*bucketResult)
+			if err := w.writeResult(r); err != nil {
+				writeErr = err
+				cancel()
+				break
+			}
+			next++
+		}
+	}
+	gerr := <-gerrCh
+	if writeErr != nil {
+		return writeErr
+	}
+	return gerr
 }
 
 // Close releases any open files.

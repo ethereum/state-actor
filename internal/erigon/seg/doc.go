@@ -99,17 +99,19 @@
 //
 // 1. AddWord: append (varint(2*len), bytes) to a temp .idt file.
 // 2. Compress: scan .idt twice.
+//
 //   - Pass A: build posMap[length+1] = uses (count of words of each length);
 //     posMap[0] = totalWordCount (terminator).
+//
 //   - Pass B: build canonical Huffman tree over posMap. Write 3×8B header
 //     (wordsCount, emptyWordsCount, patternsSize=0), then 8B posSize
 //     followed by varint-encoded (depth, pos) pairs. Then Huffman-encode
 //     each word's length+terminator codes and flush+raw-bytes.
 //
-// 3. Decompressor.Iterate: replay the same Huffman decode to discover
-//    each word's byte boundaries. Word offset = byte offset just BEFORE
-//    the encoded length code (i.e., immediately after the previous word's
-//    raw bytes).
+//     3. Decompressor.Iterate: replay the same Huffman decode to discover
+//     each word's byte boundaries. Word offset = byte offset just BEFORE
+//     the encoded length code (i.e., immediately after the previous word's
+//     raw bytes).
 //
 // # Pure-Go constraint
 //

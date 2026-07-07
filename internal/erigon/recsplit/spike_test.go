@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -50,15 +51,20 @@ func TestRecSplit_Spike(t *testing.T) {
 	// at-scale coverage is provided end-to-end by TestE2ESuite, which boots
 	// the real erigon daemon to read the .kvi. spike_100.json is also
 	// consumed by hash_test.go (TestKeyHashAgainstFixture).
+	// workers=0 pins the sequential path, workers=4 the parallel one —
+	// same .kvi golden for both (the in-order consumer reproduces the
+	// sequential concatenation; spike_1000's 10 buckets exercise the
+	// heap-merge ordering).
 	for _, name := range []string{"spike_100.json", "spike_1000.json"} {
-		name := name
-		t.Run(name, func(t *testing.T) {
-			runSpikeFixture(t, filepath.Join("testdata", name))
-		})
+		for _, workers := range []int{0, 4} {
+			t.Run(fmt.Sprintf("%s/workers=%d", name, workers), func(t *testing.T) {
+				runSpikeFixture(t, filepath.Join("testdata", name), workers)
+			})
+		}
 	}
 }
 
-func runSpikeFixture(t *testing.T, path string) {
+func runSpikeFixture(t *testing.T, path string, workers int) {
 	t.Helper()
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -86,6 +92,7 @@ func runSpikeFixture(t *testing.T, path string) {
 		IndexFile:  idxPath,
 		BaseDataID: f.BaseDataID,
 		Enums:      f.Enums,
+		Workers:    workers,
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)

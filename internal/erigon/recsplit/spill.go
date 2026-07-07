@@ -62,10 +62,14 @@ type bucketCollector struct {
 	n      int
 }
 
+// spillOpts: sequential spill drained by one ForEach — 64 MiB arenas
+// (off-heap C malloc) instead of the 256 MiB default.
+var spillOpts = streamsort.Options{MemTableBytes: 64 << 20}
+
 // newBucketCollector opens a fresh streamsort under tmpDir (empty →
 // os.TempDir()). Returns an error if the backing store can't be created.
 func newBucketCollector(tmpDir string) (*bucketCollector, error) {
-	store, err := streamsort.New(tmpDir)
+	store, err := streamsort.NewWithOptions(tmpDir, spillOpts)
 	if err != nil {
 		return nil, fmt.Errorf("recsplit: open bucket streamsort: %w", err)
 	}
@@ -111,7 +115,7 @@ func (c *bucketCollector) Reset() error {
 	if c.store != nil {
 		_ = c.store.Close()
 	}
-	store, err := streamsort.New(c.tmpDir)
+	store, err := streamsort.NewWithOptions(c.tmpDir, spillOpts)
 	if err != nil {
 		return fmt.Errorf("recsplit: reopen bucket streamsort: %w", err)
 	}

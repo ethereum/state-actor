@@ -71,9 +71,14 @@ func WriteCommitment(
 	// yield has no error channel, so a truncated stream would otherwise
 	// build a silently-short .kv (the bug class this repo bans).
 	var streamErr error
-	stateEmitted := false
-	var prevPrefix []byte
 	entries := func(yield func(DomainEntry) bool) {
+		// Per-invocation state: WriteDomain drives entries TWICE
+		// (CompressFromSource count + encode passes) — declared inside so
+		// each pass re-splices the state row and re-arms the ascending
+		// assert; hoisting these would silently drop the state row from
+		// pass 2.
+		stateEmitted := false
+		var prevPrefix []byte
 		streamErr = branches(func(prefix, data []byte) error {
 			// The .kv contract is ascending keys and WriteDomain does not
 			// check ("behaviour is undefined") — a mis-ordered producer would

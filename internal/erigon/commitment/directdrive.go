@@ -133,7 +133,8 @@ func (c *hphDirectCtx) Branch(prefix []byte) ([]byte, erigonkv.Step, error) {
 
 func (c *hphDirectCtx) PutBranch(prefix []byte, data []byte, prevData []byte) error {
 	if c.sink == nil {
-		s, err := streamsort.New(c.reg.tmpDir)
+		// Write-once sink drained by one merge scan: 64 MiB arenas suffice.
+		s, err := streamsort.NewWithOptions(c.reg.tmpDir, streamsort.Options{MemTableBytes: 64 << 20})
 		if err != nil {
 			return fmt.Errorf("directdrive: branch sink: %w", err)
 		}

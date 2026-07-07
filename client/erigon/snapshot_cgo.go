@@ -8,9 +8,11 @@ import (
 	mrand "math/rand"
 	"os"
 	"runtime"
+	"runtime/debug"
 	"strconv"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/crypto"
@@ -92,6 +94,37 @@ func setErigonWorkers(n int) (restore func()) {
 	prev := erigonWorkers
 	erigonWorkers = n
 	return func() { erigonWorkers = prev }
+}
+
+// recsplitWorkers sizes the parallel .kvi Build: min(NumCPU, 8) unless
+// STATE_ACTOR_RECSPLIT_WORKERS overrides (1 = sequential).
+func recsplitWorkers() int {
+	if v := os.Getenv("STATE_ACTOR_RECSPLIT_WORKERS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 1 {
+			return n
+		}
+	}
+	n := runtime.NumCPU()
+	if n > 8 {
+		n = 8
+	}
+	return n
+}
+
+// defaultMemoryLimit caps the Go heap at 8 GiB when GOMEMLIMIT is unset —
+// the writer's live heap is ~2-5 GB and without any limit GOGC lets the
+// peak double; this bounds it for an UNCONFIGURED end user. An explicit
+// GOMEMLIMIT (any value) wins. Pebble arenas/caches are off-heap C malloc,
+// invisible to this limit — they are bounded separately by the small
+// memtable/cache defaults at the store creation sites.
+var memLimitOnce sync.Once
+
+func setDefaultMemoryLimit() {
+	memLimitOnce.Do(func() {
+		if os.Getenv("GOMEMLIMIT") == "" {
+			debug.SetMemoryLimit(8 << 30)
+		}
+	})
 }
 
 // envCacheBytes returns the byte size from a "<N> GiB" env var, or
@@ -259,46 +292,50 @@ func writeSnapshots(
 	foundational *FoundationalAlloc,
 	stats *generator.Stats,
 ) (common.Hash, error) {
+	setDefaultMemoryLimit()
 	// -- Step 1: open 4 streamsorts under cfg.DBPath (bind-mounted disk).
-	accountsStore, err := streamsort.New(cfg.DBPath)
+	// 128 MiB memtables (vs the 256 MiB default): bulk sequential writes
+	// drained by one sequential scan; the arenas are off-heap C malloc —
+	// committed RSS an unconfigured end user pays.
+	valueOpts := streamsort.Options{MemTableBytes: 128 << 20}
+	accountsStore, err := streamsort.NewWithOptions(cfg.DBPath, valueOpts)
 	if err != nil {
 		return common.Hash{}, fmt.Errorf("writeSnapshots: open accounts streamsort: %w", err)
 	}
 	defer accountsStore.Close()
 
-	storageStore, err := streamsort.New(cfg.DBPath)
+	storageStore, err := streamsort.NewWithOptions(cfg.DBPath, valueOpts)
 	if err != nil {
 		return common.Hash{}, fmt.Errorf("writeSnapshots: open storage streamsort: %w", err)
 	}
 	defer storageStore.Close()
 
-	codeStore, err := streamsort.New(cfg.DBPath)
+	codeStore, err := streamsort.NewWithOptions(cfg.DBPath, valueOpts)
 	if err != nil {
 		return common.Hash{}, fmt.Errorf("writeSnapshots: open code streamsort: %w", err)
 	}
 	defer codeStore.Close()
 
-	// commitmentInputStore takes the heavy random-read workload: the
-	// 16 ConcurrentPatriciaHashed workers call subtreeCtx.Storage /
-	// Account on every leaf (~344M Get calls at SPEC_TARGET_GB=1 for
-	// a 12 GiB store, ~1.7B at 25 GiB). With the default 8 MiB block
-	// cache the LSM SSTs miss on most reads. Bump the cache here so
-	// the Pebble block cache holds a non-trivial fraction of the
-	// working set; benchmarking showed 50+ min Phase 2 wall at default.
-	// Tunable via STATE_ACTOR_COMMITMENT_CACHE_GB (default 4 GiB). On a
-	// many-core / large-RAM host, a bigger cache keeps the commitment walk's
-	// random Account/Storage Gets in RAM, which is the dominant Phase-2 cost.
-	// 16 nibble-partitioned commit-input sub-stores (Tier-C): each of the 16
-	// ParallelHashSort workers reads exactly ONE → disjoint Pebble block caches
-	// → the shared-cache random-Get contention (the profiled commitment hot
-	// spot) disappears. The cache budget is split across the 16.
-	partCache := envCacheBytes("STATE_ACTOR_COMMITMENT_CACHE_GB", 4) / int64(internalcommitment.NumInputParts)
-	if partCache < 8<<20 {
-		partCache = 8 << 20
+	// 16 nibble-partitioned commit-input sub-stores; each of the 16 fold
+	// workers reads exactly ONE (disjoint block caches, no cross-worker
+	// contention). Cache sizing by read pattern: hashed keying (the default
+	// — DDF cursors, or the engine/hashed reused SeekGE Getter) reads each
+	// store ONCE in ascending order, so the cache is readahead-only and
+	// 8 MiB/store suffices; only the chunked PLAIN path does ~billions of
+	// random Gets and needs the big cache (4 GiB default). An explicit
+	// STATE_ACTOR_COMMITMENT_CACHE_GB always wins (opt-in for more RAM —
+	// the arenas/caches are off-heap C malloc, committed RSS by default).
+	partCache := int64(8 << 20)
+	if !internalcommitment.HashedInput() || os.Getenv("STATE_ACTOR_COMMITMENT_CACHE_GB") != "" {
+		partCache = envCacheBytes("STATE_ACTOR_COMMITMENT_CACHE_GB", 4) / int64(internalcommitment.NumInputParts)
+		if partCache < 8<<20 {
+			partCache = 8 << 20
+		}
 	}
+	commitInOpts := streamsort.Options{BlockCacheBytes: partCache, MemTableBytes: 64 << 20}
 	commitmentInputStores := make([]*streamsort.Store, internalcommitment.NumInputParts)
 	for i := range commitmentInputStores {
-		s, serr := streamsort.NewWithOptions(cfg.DBPath, streamsort.Options{BlockCacheBytes: partCache})
+		s, serr := streamsort.NewWithOptions(cfg.DBPath, commitInOpts)
 		if serr != nil {
 			for _, s2 := range commitmentInputStores {
 				if s2 != nil {
@@ -609,6 +646,10 @@ func writeSnapshots(
 		StepSize:          internalerigon.StepSize,
 		StepsInFrozenFile: internalerigon.StepsInFrozenFile,
 		SnapshotVersion:   internalerigon.SnapshotFormatVersion,
+		// Parallel .kvi Build (byte-identical at any count). Default
+		// min(NumCPU, 8): it runs at the very tail when the value-domain
+		// writers have drained. STATE_ACTOR_RECSPLIT_WORKERS overrides.
+		RecSplitWorkers: recsplitWorkers(),
 	}
 	w, err := snap.NewWriter(cfg.DBPath, settings)
 	if err != nil {
@@ -634,12 +675,16 @@ func writeSnapshots(
 		emitWg.Add(1)
 		go func(ds domainSpec) {
 			defer func() { <-sem; emitWg.Done() }()
+			start := time.Now()
 			if err := w.WriteDomain(ctx, ds.domain, fullRange, ds.count,
 				snap.FromStreamsort(ds.store)); err != nil {
 				select {
 				case emitErrCh <- fmt.Errorf("WriteDomain(%v): %w", ds.domain, err):
 				default:
 				}
+			}
+			if cfg.Verbose {
+				fmt.Printf("client/erigon: timing WriteDomain(%v) %s\n", ds.domain, time.Since(start).Round(time.Second))
 			}
 		}(ds)
 	}
@@ -651,9 +696,13 @@ func writeSnapshots(
 	if internalcommitment.HashedInput() {
 		keying = internalcommitment.KeyingHashed
 	}
+	foldStart := time.Now()
 	result, err := internalcommitment.ComputeGenesisRoot(commitmentInputStores, cfg.DBPath, keying)
 	if err != nil {
 		return common.Hash{}, fmt.Errorf("writeSnapshots: ComputeGenesisRoot: %w", err)
+	}
+	if cfg.Verbose {
+		fmt.Printf("client/erigon: timing fold %s\n", time.Since(foldStart).Round(time.Second))
 	}
 	// The retained branch source outlives the fold. The defer is safe on
 	// every path because its only reader — the WriteCommitment goroutine —
@@ -671,10 +720,14 @@ func writeSnapshots(
 	// a large cache without compounding the snapshot-write footprint. Close is
 	// idempotent (streamsort guards on closed.Swap), so the deferred Close
 	// degrades to a no-op.
+	closeStart := time.Now()
 	for i, s := range commitmentInputStores {
 		if err := s.Close(); err != nil {
 			return common.Hash{}, fmt.Errorf("writeSnapshots: close commitmentInput sub-store %d: %w", i, err)
 		}
+	}
+	if cfg.Verbose {
+		fmt.Printf("client/erigon: timing commitIn close %s\n", time.Since(closeStart).Round(time.Second))
 	}
 	nBranches := result.BranchCount
 	// KeyCommitmentState encodes (txNum=StepSize-1, blockNum=0): the
@@ -721,11 +774,15 @@ func writeSnapshots(
 	emitWg.Add(1)
 	go func() {
 		defer func() { <-sem; emitWg.Done() }()
+		start := time.Now()
 		if err := snap.WriteCommitment(ctx, w, fullRange, keyStateValue, snap.BranchStream(result.BranchIterate), nBranches); err != nil {
 			select {
 			case emitErrCh <- fmt.Errorf("WriteCommitment: %w", err):
 			default:
 			}
+		}
+		if cfg.Verbose {
+			fmt.Printf("client/erigon: timing WriteCommitment %s\n", time.Since(start).Round(time.Second))
 		}
 	}()
 	emitWg.Wait()
@@ -736,6 +793,10 @@ func writeSnapshots(
 	}
 
 	if cfg.Verbose {
+		var ms runtime.MemStats
+		runtime.ReadMemStats(&ms)
+		fmt.Printf("client/erigon: memory: go_heap=%.1fGiB go_sys=%.1fGiB (pebble arenas/caches are off-heap C malloc; mmapped .kv pages are kernel-reclaimable — RSS overstates committed use)\n",
+			float64(ms.HeapAlloc)/(1<<30), float64(ms.Sys)/(1<<30))
 		fmt.Printf("client/erigon: wrote snapshots: spec=%d autofill_accounts=%d contracts=%d storage_slots=%d branches=%d workers=%d root=%s\n",
 			len(foundational.Spec), stats.AccountsCreated, stats.ContractsCreated, stats.StorageSlotsCreated, nBranches, N, result.Root.Hex())
 		fmt.Printf("client/erigon: domain entry counts: accounts=%d storage=%d code=%d\n",

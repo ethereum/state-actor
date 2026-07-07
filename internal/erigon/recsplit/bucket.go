@@ -36,10 +36,17 @@ func (sc *recsplitScratch) preAlloc(n int) {
 }
 
 // bucketResult collects the per-bucket recsplit() output: serialized
-// leaf-offset bytes + a per-bucket GolombRice fixed-length stream.
+// leaf-offset bytes + a per-bucket GolombRice fixed-length stream, plus
+// the routing fields the parallel Build consumer needs to write results
+// in the exact sequential order (seq is the dense dispatch number —
+// bucket indices are sparse when buckets are empty).
 type bucketResult struct {
 	offsetData []byte
 	gr         GolombRice
+	unary      []uint64
+	bucketIdx  uint64
+	seq        uint64
+	bucketSize int
 }
 
 // findBijection finds a salt s ≥ startSalt such that each fingerprint in

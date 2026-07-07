@@ -98,6 +98,10 @@ type Settings struct {
 	// DefaultAccessorMask).
 	Accessors map[Domain]AccessorMask
 
+	// RecSplitWorkers parallelizes the .kvi recsplit Build (byte-identical
+	// at any count; see recsplit.Args.Workers). 0/1 = sequential.
+	RecSplitWorkers int
+
 	// SnapshotVersion is the on-disk version prefix in filenames
 	// (e.g. "v1.0"). Defaults to the value of
 	// erigon.SnapshotFormatVersion if empty.

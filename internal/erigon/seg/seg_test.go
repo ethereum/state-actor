@@ -359,13 +359,7 @@ func TestGoldenAgainstErigon(t *testing.T) {
 			if err != nil {
 				t.Fatalf("decode expected hex: %v", err)
 			}
-			dir := t.TempDir()
-			outPath := filepath.Join(dir, f.Label+".kv")
-			c, err := NewCompressor(outPath, dir, DefaultConfig())
-			if err != nil {
-				t.Fatalf("NewCompressor: %v", err)
-			}
-			defer c.Close()
+			var words [][]byte
 			for i, pair := range f.Words {
 				if len(pair) != 2 {
 					t.Fatalf("fixture %s: word %d has %d fields, want 2", f.Label, i, len(pair))
@@ -378,11 +372,21 @@ func TestGoldenAgainstErigon(t *testing.T) {
 				if err != nil {
 					t.Fatalf("fixture %s: decode val %d hex: %v", f.Label, i, err)
 				}
-				if err := c.AddWord(k); err != nil {
-					t.Fatalf("AddWord key %d: %v", i, err)
-				}
-				if err := c.AddWord(v); err != nil {
-					t.Fatalf("AddWord val %d: %v", i, err)
+				words = append(words, k, v)
+			}
+			// Both writer paths must produce the same upstream golden
+			// bytes: AddWord+Compress (.idt) and the .idt-free
+			// CompressFromSource two-pass path.
+			dir := t.TempDir()
+			outPath := filepath.Join(dir, f.Label+".kv")
+			c, err := NewCompressor(outPath, dir, DefaultConfig())
+			if err != nil {
+				t.Fatalf("NewCompressor: %v", err)
+			}
+			defer c.Close()
+			for i, w := range words {
+				if err := c.AddWord(w); err != nil {
+					t.Fatalf("AddWord %d: %v", i, err)
 				}
 			}
 			if err := c.Compress(); err != nil {
@@ -394,6 +398,30 @@ func TestGoldenAgainstErigon(t *testing.T) {
 			got, err := os.ReadFile(outPath)
 			if err != nil {
 				t.Fatalf("read output: %v", err)
+			}
+			srcPath := filepath.Join(dir, f.Label+".src.kv")
+			cs, err := NewCompressor(srcPath, dir, DefaultConfig())
+			if err != nil {
+				t.Fatalf("NewCompressor(source): %v", err)
+			}
+			defer cs.Close()
+			if err := cs.CompressFromSource(func(yield func([]byte) bool) {
+				for _, w := range words {
+					if !yield(w) {
+						return
+					}
+				}
+			}); err != nil {
+				t.Fatalf("CompressFromSource: %v", err)
+			}
+			if err := cs.Close(); err != nil {
+				t.Fatalf("Close(source): %v", err)
+			}
+			if gotSrc, err := os.ReadFile(srcPath); err != nil {
+				t.Fatalf("read source output: %v", err)
+			} else if !bytes.Equal(gotSrc, want) {
+				t.Fatalf("CompressFromSource bytes diverge from golden for %s (len got=%d want=%d)",
+					f.Label, len(gotSrc), len(want))
 			}
 			if !bytes.Equal(got, want) {
 				firstDiff := -1

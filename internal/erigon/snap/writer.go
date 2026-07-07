@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/spaolacci/murmur3"
 
@@ -134,8 +135,9 @@ func contains(s, sub string) bool {
 func (w *Writer) Salt() uint32 { return w.settings.Salt }
 
 // WriteDomain emits the per-domain file set (.kv data + accessors) for
-// (d, r). entries MUST yield ascending keys; behaviour is undefined
-// otherwise. The data file is written first via seg.Compressor, then
+// (d, r). entries MUST yield ascending keys and MUST be repeatable —
+// pass 1 drives it twice (seg.CompressFromSource count + encode);
+// behaviour is undefined otherwise. The .kv is written first, then
 // re-iterated via seg.Decompressor to feed the accessor builders —
 // matching the two-pass pattern from Erigon's
 // simple_accessor_builder.go:194-216 (Verifier B's Correction 2).
@@ -163,35 +165,31 @@ func (w *Writer) WriteDomain(ctx context.Context, d Domain, r StepRange, keyCoun
 	tmpDir := domainDir // seg.Compressor writes its own .tmp files under tmpDir
 	dataPath := BuildDataFilename(domainDir, w.settings.SnapshotVersion, d, r)
 
-	// Pass 1: stream (k, v) into seg.Compressor.
+	// Pass 1: write the .kv straight from the (repeatable) entries source —
+	// CompressFromSource drives it twice (count, then encode), skipping the
+	// .idt intermediate that used to cost a full extra write+read of the
+	// domain (up to ~44 GB) and the matching transient disk peak.
+	timing := os.Getenv("STATE_ACTOR_SNAP_TIMING") != ""
+	pass1Start := time.Now()
 	cfg := seg.DefaultConfig()
 	comp, err := seg.NewCompressor(dataPath, tmpDir, cfg)
 	if err != nil {
 		return fmt.Errorf("snap.WriteDomain: seg.NewCompressor: %w", err)
 	}
-	// `entries` is a push-style iterator — invoke it with our consumer.
-	var addErr error
-	entries(func(e DomainEntry) bool {
-		if err := comp.AddWord(e.Key); err != nil {
-			addErr = fmt.Errorf("AddWord(key): %w", err)
-			return false
-		}
-		if err := comp.AddWord(e.Value); err != nil {
-			addErr = fmt.Errorf("AddWord(value): %w", err)
-			return false
-		}
-		return true
+	src := seg.WordSource(func(yield func(word []byte) bool) {
+		entries(func(e DomainEntry) bool {
+			return yield(e.Key) && yield(e.Value)
+		})
 	})
-	if addErr != nil {
+	if err := comp.CompressFromSource(src); err != nil {
 		_ = comp.Close()
-		return fmt.Errorf("snap.WriteDomain: pass-1: %w", addErr)
-	}
-	if err := comp.Compress(); err != nil {
-		_ = comp.Close()
-		return fmt.Errorf("snap.WriteDomain: seg.Compress: %w", err)
+		return fmt.Errorf("snap.WriteDomain: seg.CompressFromSource: %w", err)
 	}
 	if err := comp.Close(); err != nil {
 		return fmt.Errorf("snap.WriteDomain: seg.Close: %w", err)
+	}
+	if timing {
+		fmt.Printf("snap: timing %v pass-1 (count+encode) %s\n", d, time.Since(pass1Start).Round(time.Second))
 	}
 
 	// Pass 2: re-open the .kv, iterate (key, val, keyOff, valOff), feed
@@ -254,6 +252,7 @@ func (w *Writer) WriteDomain(ctx context.Context, d Domain, r StepRange, keyCoun
 			LeafSize:   8,
 			TmpDir:     tmpDir,
 			IndexFile:  hmPath,
+			Workers:    w.settings.RecSplitWorkers,
 		})
 		if err != nil {
 			return fmt.Errorf("snap.WriteDomain: recsplit.New: %w", err)
@@ -273,6 +272,7 @@ func (w *Writer) WriteDomain(ctx context.Context, d Domain, r StepRange, keyCoun
 	saltBytes := make([]byte, 4)
 	binary.BigEndian.PutUint32(saltBytes, w.settings.Salt)
 
+	pass2Start := time.Now()
 	for entry, err := range dec.Iterate(ctx) {
 		if err != nil {
 			return fmt.Errorf("snap.WriteDomain: decompressor iterate: %w", err)
@@ -306,6 +306,10 @@ func (w *Writer) WriteDomain(ctx context.Context, d Domain, r StepRange, keyCoun
 		}
 	}
 
+	if timing {
+		fmt.Printf("snap: timing %v pass-2 (accessor feed) %s\n", d, time.Since(pass2Start).Round(time.Second))
+	}
+	buildStart := time.Now()
 	if bt != nil {
 		if err := bt.Build(ctx); err != nil {
 			return fmt.Errorf("snap.WriteDomain: btindex.Build: %w", err)
@@ -329,6 +333,9 @@ func (w *Writer) WriteDomain(ctx context.Context, d Domain, r StepRange, keyCoun
 		if err := exist.Build(); err != nil {
 			return fmt.Errorf("snap.WriteDomain: existence.Build: %w", err)
 		}
+	}
+	if timing {
+		fmt.Printf("snap: timing %v accessor Build %s\n", d, time.Since(buildStart).Round(time.Second))
 	}
 	pass2OK = true
 	return nil
