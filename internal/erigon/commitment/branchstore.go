@@ -5,7 +5,6 @@ package commitment
 import (
 	"fmt"
 	"os"
-	"strconv"
 
 	"github.com/cockroachdb/pebble"
 )
@@ -18,12 +17,9 @@ import (
 // workers (Pebble Set/Get are goroutine-safe). Peak RAM is the Pebble
 // memtable + cache, independent of branch count.
 //
-// Being read-write (not the write-once streamsort) is what enables
-// incremental/chunked commitment: branches written by an earlier chunk's
-// Process are visible to a later chunk's ctx.Branch reads. For a single
-// from-empty genesis Process the read path is never hit for a written
-// prefix (sorted single-pass folds each prefix once and never re-descends
-// it), so get() returns nil there — byte-identical to the old map path.
+// In the single-shot from-empty fallback the read path is never hit for a
+// written prefix (a sorted single pass folds each prefix once), so get()
+// returns nil — byte-identical to the old map path.
 type branchStore struct {
 	dir   string
 	db    *pebble.DB
@@ -31,27 +27,19 @@ type branchStore struct {
 }
 
 // newBranchStore opens a fresh temp Pebble DB under tmpDir (empty →
-// os.TempDir()). The block cache is the dominant speed lever for the
-// CHUNKED/incremental path, where every chunk after the first re-reads
-// earlier chunks' branches via ctx.Branch: a cache that holds the hot branch
-// set keeps those reads in RAM. Sized by STATE_ACTOR_BRANCH_CACHE_GB
-// (default 1 GiB). A 256 MiB memtable cuts L0 churn under the write load.
+// os.TempDir()). The write-then-one-scan fallback needs no big block
+// cache (the chunked re-read path that wanted one is gone); 64 MiB
+// memtables match the other write-once stores.
 func newBranchStore(tmpDir string) (*branchStore, error) {
 	dir, err := os.MkdirTemp(tmpDir, "commitment-branches-*")
 	if err != nil {
 		return nil, fmt.Errorf("commitment: mkdir branch store: %w", err)
 	}
-	cacheBytes := int64(1) << 30
-	if v := os.Getenv("STATE_ACTOR_BRANCH_CACHE_GB"); v != "" {
-		if n, perr := strconv.Atoi(v); perr == nil && n > 0 {
-			cacheBytes = int64(n) << 30
-		}
-	}
-	cache := pebble.NewCache(cacheBytes)
+	cache := pebble.NewCache(8 << 20)
 	db, err := pebble.Open(dir, &pebble.Options{
 		DisableWAL:   true,
 		Cache:        cache,
-		MemTableSize: 256 << 20,
+		MemTableSize: 64 << 20,
 	})
 	if err != nil {
 		cache.Unref()

@@ -2,23 +2,14 @@
 
 package commitment
 
-// The Direct-Drive Fold (DDF): single-shot, from-empty commitment build that
-// feeds the VENDORED engine's followAndUpdate straight from the 16
-// hashed-keyed commit-input sub-stores (KeyingHashed layout — each cursor
-// yields ascending nibblized-keccak keys, exactly the engine's sort order).
-//
-// What this deletes relative to the Updates/etl path: the never-spilled
-// Touch dedup map (~50-67 GB at 613 M keys — the reason chunking existed),
-// the etl re-sort + spill (~28-50 GB), the ~10^9 cross-chunk branch
-// prev-reads (chunking's intrinsic cost), and the per-key ctx.Account/
-// Storage random Gets (the Update rides the input row). The fold becomes a
-// sequential scan + the pure trie compute.
-//
-// Branch rows land in per-worker WRITE-ONCE streamsort sinks (compaction
-// off — no LSM write-amp, none of the compacting-branchStore churn), counted
-// as emitted (from-empty each prefix is folded exactly once), and are merged
-// in ascending prefix order by Result.BranchIterate straight into
-// snap.WriteCommitment.
+// The Direct-Drive Fold (DDF): the default commitment path. Feeds the
+// vendored engine's followAndUpdate straight from the 16 hashed-keyed
+// sub-store cursors (each yields ascending nibblized-keccak keys — the
+// engine's sort order, with the Update riding the input row), so there is
+// no Touch dedup map, no etl spill, and no per-key ctx Gets. Branch rows
+// land in per-worker WRITE-ONCE sinks (compaction off), counted as
+// emitted (from-empty, each prefix folds exactly once), and are k-way
+// merged in ascending order by Result.BranchIterate.
 
 import (
 	"container/heap"

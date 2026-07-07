@@ -441,19 +441,10 @@ func ComputeGenesisRootFromAccountsKeyed(accounts []Account, keying InputKeying)
 	return ComputeGenesisRoot(stores, "", keying)
 }
 
-// subtreeCtx implements erigoncommitment.PatriciaContext over a
-// streamsort-backed commitmentInputStore (random-access via Pebble,
-// thread-safe read path) plus the SHARED live branch store.
-//
-// Lifecycle: one subtreeCtx per ConcurrentPatriciaHashed worker (16 of
-// them inside ParallelHashSort) plus one for the root HPH. All of them
-// point at the same *branchStore. Workers write disjoint first-nibble
-// prefixes, so concurrent PutBranch (pebble Set) and Branch (pebble Get)
-// are safe with no overwrite ambiguity — pebble's Set/Get are goroutine-
-// safe. Branch reads back prior writes, which is a no-op for a single
-// from-empty genesis Process (sorted single-pass never re-descends a
-// folded prefix) and the read path that makes incremental/chunked
-// commitment work.
+// subtreeCtx implements erigoncommitment.PatriciaContext for the ENGINE
+// fallback: one per ParallelHashSort worker (+ the root HPH), all sharing
+// the live branch store. Workers write disjoint first-nibble prefixes, so
+// concurrent PutBranch/Branch are safe with no overwrite ambiguity.
 type subtreeCtx struct {
 	// inputStores is the 16 nibble-partitioned commitment-input sub-stores,
 	// keyed per `keying`. Account/Storage route by InputPart(plainKey); a

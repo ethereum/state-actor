@@ -25,36 +25,17 @@ type bucketEntry struct {
 // fingerprintLo(8) || seq(8). See bucketCollector for why seq is here.
 const bucketSpillKeyLen = 4 + 8 + 8
 
-// bucketCollector is a DISK-BACKED external sort over bucketEntry,
-// replacing the original in-memory `[]bucketEntry` slice. That slice was
-// explicitly scoped to "≤ 1M keys" and held every key in RAM — at bench
-// scale (hundreds of millions of keys) it was an O(N) OOM. We now spill
-// to a streamsort (Pebble LSM): Add → Put, Finalize → seal, ForEach →
-// sorted Iterate. Peak RAM is the streamsort working set (~memtable),
-// independent of key count.
-//
-// Spill-key layout keeps streamsort's raw-byte order identical to
-// Erigon's etl.Collector order (lexicographic BE == (bucketIdx,
-// fingerprintLo) integer order, since both fields are fixed-width and
-// non-negative):
+// bucketCollector is a disk-backed external sort over bucketEntry
+// (streamsort/Pebble: Add → Put, ForEach → sorted Iterate) — peak RAM is
+// the memtable, independent of key count. Key layout:
 //
 //	bucketIdx (4 BE) || fingerprintLo (8 BE) || seq (8 BE)   value = offset (8 BE)
 //
-// The 8-byte `seq` suffix is LOAD-BEARING. Two entries sharing the same
-// (bucketIdx, fingerprintLo) is exactly the collision that
-// flushCurrentBucket (recsplit.go) must DETECT. Pebble deduplicates
-// identical keys (last write wins), so without a unique suffix a
-// collision would be silently swallowed — keysAdded would exceed the
-// number of spilled records, AddKey-vs-KeyCount would mismatch, and a
-// structurally wrong .kvi could be emitted. `seq` (a per-Add counter)
-// makes every spill key unique, so both colliding records survive to the
-// sorted scan where the in-bucket fingerprint check fires.
-//
-// Byte-identity on a SUCCESSFUL (collision-free) build: all (bucketIdx,
-// fingerprintLo) pairs are distinct, so the 12-byte prefix already fully
-// orders the records and the seq suffix is never consulted for ordering.
-// The bucket walk, Golomb-Rice stream, offset emission, and
-// DoubleEliasFano are therefore identical to the old `sort.Slice` path.
+// The `seq` suffix is LOAD-BEARING: Pebble dedups identical keys, so
+// without it a (bucketIdx, fingerprintLo) collision — exactly what the
+// bucket walk must DETECT — would be silently swallowed. On a
+// collision-free build the 12-byte prefix fully orders the records, so
+// the output is byte-identical to the old in-memory sort.
 type bucketCollector struct {
 	tmpDir string
 	store  *streamsort.Store

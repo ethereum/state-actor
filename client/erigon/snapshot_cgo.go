@@ -26,44 +26,17 @@ import (
 	"github.com/ethereum/state-actor/internal/streamsort"
 )
 
-// fullRange is the SINGLE [0, 1) step-range we emit for every domain
-// (accounts/storage/code/commitment). The [0, 1) range is REQUIRED by
-// Erigon's DependencyIntegrityChecker (state_schema.go:69-70 +
-// entity_integrity_check.go:133-155): the frozen accounts.0-1 /
-// storage.0-1 files are only made visible if a commitment file with
-// the EXACT same range exists, so all 4 domains MUST share [0, 1).
+// fullRange is the SINGLE [0, 1) step-range for every domain: Erigon's
+// DependencyIntegrityChecker only surfaces the frozen accounts/storage
+// files if a commitment file with the EXACT same range exists.
 //
-// Continuability is solved by the "fat genesis" construction (see
-// genesis_patch.go step 9 + the commitment anchor below), NOT by the
-// file range. We write MaxTxNum[0]=StepSize-1 so genesis OCCUPIES the
-// entire frozen step 0, and anchor KeyCommitmentState at
-// txNum=StepSize-1. On boot, SeekCommitment resumes the first live
-// block (block 1) at txNum=StepSize — i.e. STEP 1, one step ABOVE the
-// frozen [0, 1) range. Block 1's commitment then writes to the MDBX hot
-// tier at step 1, which WINS the getLatestFromDb EndTxNum gate
-// (domain.go:1582: an MDBX step-S write beats the frozen file iff
-// lastTxNumOfStep(S) >= files.EndTxNum()=StepSize, i.e. S>=1) instead
-// of being shadowed. This is the no-patch fix for the block-2 "wrong
-// trie root" stall — keep the bloat in flat files, keep only the
-// advancing commitment in MDBX (proven on STOCK erigon 2026-06-18:
-// chain advanced past block 70, erigon==geth==reth root).
-//
-// CheckDataAvailable (commitmentdb/reader.go:31) still passes:
-// frozenSteps([0,1))=0, and the live step (1) is not < 0. The
-// replaceShortenedKeysInBranch shard-size short-circuit
-// (domain_committed.go:54, shardSize<2) also still holds.
-//
-// Cross-client genesis-state-root invariance is preserved because the
-// HPH root is content-addressed over the alloc, independent of file
-// partitioning AND of the txNum bookkeeping
-// (internal/erigon/commitment/commitment.go::ComputeGenesisRoot has no
-// file-layout parameter; the fat-genesis txNum changes are pure
-// bookkeeping that never touch state values).
-//
-// State-actor's bench launches the daemon with `--snap.state.stop`
-// which sets ProduceE3=false (aggregator.go:1999-2027 early-returns
-// at :2023), freezing the [0, 1) layout — no merge or collation will
-// run, preserving the file forever.
+// Continuability is the "fat genesis" construction (genesis_patch.go
+// step 9 + the KeyCommitmentState anchor below): MaxTxNum[0]=StepSize-1
+// makes genesis occupy the whole frozen step 0, so block 1 resumes at
+// step 1 and its MDBX commitment WINS the getLatestFromDb EndTxNum gate
+// instead of being shadowed by the frozen file (the block-2 "wrong trie
+// root" fix — proven on stock erigon, cross-client root match). The
+// bench daemon runs --snap.state.stop, freezing this layout.
 var fullRange = snap.StepRange{From: 0, To: 1}
 
 // erigonWorkers is the size of the Phase 1 autofill encode-worker pool.
@@ -162,14 +135,10 @@ type perDomainChans struct {
 	commitIn chan []domainWrite
 }
 
-// domainBatchSize is how many domainWrites accumulate in a worker-local
-// buffer before ONE batched channel send. Batching exists because the
-// profiled generation cost was NOT the writers' pebble Puts (arenaskl ~4%)
-// but the per-item channel machinery itself: sendDomainWrite 10.15% cum +
-// runtime.selectgo 30% cum + futex/steal churn across 48 producers —
-// ~1.5-2B channel ops at 613M entities × 2-3 sends each. 128/batch cuts
-// the op count ~99% without materially raising memory (the row payloads
-// are allocated either way; a batch is ~128 slice headers).
+// domainBatchSize is how many domainWrites accumulate worker-locally
+// before ONE batched channel send. The profiled generation cost was the
+// per-item channel machinery (selectgo ~30% cum across 48 producers),
+// not the writers' pebble Puts — 128/batch cuts channel ops ~99%.
 const domainBatchSize = 128
 
 // batchedSender accumulates domainWrites worker-locally and ships them as
@@ -698,17 +667,10 @@ func writeSnapshots(
 	// is spawned AFTER the early error returns below and is joined by
 	// emitWg.Wait() before the success return.
 	defer result.CloseBranches()
-	// commitmentInputStore is not read after the commitment walk (Phase 5b
-	// reads accounts/storage/code + the retained branch store only). Close
-	// it NOW —
-	// ahead of the deferred Close at function scope — to release its
-	// STATE_ACTOR_COMMITMENT_CACHE_GB block cache, 256 MiB memtable, and the
-	// ~tens-of-GB on-disk spill dir BEFORE the mmap-heavy Phase-5b snapshot
-	// write. Holding that cache through Phase 5b is what pushed the 100 GB
-	// run's RSS to the OOM edge; freeing it here lets the commitment walk use
-	// a large cache without compounding the snapshot-write footprint. Close is
-	// idempotent (streamsort guards on closed.Swap), so the deferred Close
-	// degrades to a no-op.
+	// Close the 16 commit-input sub-stores NOW (not at function scope):
+	// their caches/memtables/spill dirs are dead weight during the
+	// mmap-heavy Phase 5b — holding them once pushed a 100 GB run to the
+	// OOM edge. Close is idempotent, so the deferred Close is a no-op.
 	closeStart := time.Now()
 	for i, s := range commitmentInputStores {
 		if err := s.Close(); err != nil {
@@ -719,25 +681,10 @@ func writeSnapshots(
 		fmt.Printf("client/erigon: timing commitIn close %s\n", time.Since(closeStart).Round(time.Second))
 	}
 	nBranches := result.BranchCount
-	// KeyCommitmentState encodes (txNum=StepSize-1, blockNum=0): the
-	// "fat genesis" anchor. Genesis is made to OCCUPY the entire frozen
-	// step 0 by writing MaxTxNum[0]=StepSize-1 (see genesis_patch.go), so
-	// the commitment domain's last-committed txNum is StepSize-1 (still
-	// step 0, inside the frozen [0,1) file). On boot, SeekCommitment reads
-	// this anchor and restoreTxNum seeds the FIRST live block (block 1) at
-	// txNum=StepSize — i.e. STEP 1, one step ABOVE the frozen range.
-	//
-	// This is the load-bearing fix for the block-2 "wrong trie root"
-	// stall. The prior (0,0)/(1,0) anchors left block 1 at txNum 2-3
-	// (step 0), so its commitment writes to MDBX were SHADOWED by the
-	// frozen commitment.0-1.kv via the getLatestFromDb EndTxNum gate
-	// (domain.go:1582: an MDBX write at step S wins only when
-	// lastTxNumOfStep(S) >= files.EndTxNum()=StepSize, i.e. S>=1). With
-	// block 1 at step 1, lastTxNumOfStep(1)=2*StepSize-1 >= StepSize, so
-	// the live commitment WINS the gate → not shadowed → continuable.
-	// CheckDataAvailable still passes: frozenSteps([0,1))=0, and step 1
-	// is not < 0. This mirrors how a snap-synced node resumes with the
-	// chain tip past the frozen steps.
+	// KeyCommitmentState anchor: (txNum=StepSize-1, blockNum=0) — the fat
+	// genesis. SeekCommitment reads this and resumes block 1 at step 1,
+	// above the frozen [0,1) range (see fullRange). Changing these two
+	// numbers WILL re-break the block-2 stall.
 	keyStateValue, err := internalcommitment.EncodeKeyCommitmentStateValue(internalerigon.StepSize-1, 0, result.HPHState)
 	if err != nil {
 		return common.Hash{}, fmt.Errorf("writeSnapshots: encode KeyCommitmentState: %w", err)

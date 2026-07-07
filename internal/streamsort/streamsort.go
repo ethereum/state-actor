@@ -29,14 +29,9 @@
 //     readers WaitGroup tracks active readers.
 //   - Close is idempotent and safe to call from any state.
 //
-// The package exists because the natural Pebble idiom (one batched
-// write phase then concurrent reads) doesn't compose cleanly without
-// an explicit transition — a shared *pebble.Batch is NOT safe for
-// concurrent commit (batch.committing is a non-atomic bool with an
-// explicit "violations may cause memory safety issues" comment at
-// batch.go:305-312). Finalize is the transition that lets us reuse
-// the batched fast path for writes while opening up Pebble's
-// thread-safe read path for parallel HPH commitment walks.
+// The package exists because a shared *pebble.Batch is not safe for
+// concurrent commit; Finalize is the explicit transition from the batched
+// write path to Pebble's thread-safe read path.
 package streamsort
 
 import (
@@ -71,19 +66,9 @@ const (
 // Options is the optional configuration for NewWithOptions. Zero-value
 // fields fall back to package defaults.
 type Options struct {
-	// BlockCacheBytes overrides the Pebble block cache size. Pebble's
-	// block cache is the primary in-memory hot-data store for random
-	// reads; for read-heavy workloads against multi-GiB Stores the
-	// default 8 MiB cache yields very low hit rates and the LSM SST
-	// disk reads dominate wall time. Set this to a value sized to the
-	// expected working set (e.g. 1-4 GiB for a 12-25 GiB store under
-	// HPH commitment walks). Default: 8 MiB.
-	//
-	// Tuning guidance from upstream Pebble: the cache holds compressed
-	// data blocks (~64 KiB each by default). A 4 GiB cache holds ~65k
-	// blocks. For an HPH walk that touches every entry once in
-	// keccak-sorted order, expect ~30-50% hit rate at this size against
-	// a 12 GiB store — enough to drop most cold disk reads.
+	// BlockCacheBytes overrides the Pebble block cache size (default
+	// 8 MiB — sized for sequential scans). Random-read workloads against
+	// multi-GiB stores need a cache sized to their working set.
 	BlockCacheBytes int64
 
 	// MemTableBytes overrides the per-memtable arena size (default
