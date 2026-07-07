@@ -1,255 +1,41 @@
 // Vendored from github.com/erigontech/erigon execution/commitment/metrics.go @ 14273f79a6 (production pin).
-// Modifications: package commitment -> hph; build tag; R2 strip: CSV read-back (Unmarshall*/readMetricsFromCSV/parse cells/RLock)
+// Modifications: package commitment -> hph; build tag; R2+R3: reduced to the live counter subset (CSV read+write paths, MetricValues, Reset/AsValues/headers, cache/miss counters removed)
 //
 //go:build cgo_erigon_commitment
 
 package hph
 
 import (
-	"encoding/csv"
-	"fmt"
-	"os"
-	"sort"
-	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
 
-	"github.com/erigontech/erigon/common"
 	"github.com/erigontech/erigon/common/dbg"
 	"github.com/erigontech/erigon/common/length"
-	"github.com/erigontech/erigon/common/log/v3"
 )
 
-type CsvMetrics interface {
-	Headers() []string
-	Values() [][]string
-}
-
 type Metrics struct {
-	Accounts        *AccountMetrics
-	Branches        *BranchMetrics
-	updates         atomic.Uint64
-	addressKeys     atomic.Uint64
-	storageKeys     atomic.Uint64
-	loadBranch      atomic.Uint64
-	loadAccount     atomic.Uint64
-	loadStorage     atomic.Uint64
-	cacheBranch     atomic.Uint64
-	cacheAccount    atomic.Uint64
-	cacheStorage    atomic.Uint64
-	missBranch      atomic.Uint64
-	missAccount     atomic.Uint64
-	missStorage     atomic.Uint64
-	updateBranch    atomic.Uint64
-	loadDepths      [10]uint64
-	unfolds         atomic.Uint64
-	spentUnfolding  time.Duration
-	spentFolding    time.Duration
-	spentProcessing time.Duration
-	// metric config related
-	metricsFilePrefix        string
+	Accounts       *AccountMetrics
+	Branches       *BranchMetrics
+	addressKeys    atomic.Uint64
+	storageKeys    atomic.Uint64
+	loadBranch     atomic.Uint64
+	loadAccount    atomic.Uint64
+	loadStorage    atomic.Uint64
+	updateBranch   atomic.Uint64
+	unfolds        atomic.Uint64
+	spentUnfolding time.Duration
+	spentFolding   time.Duration
+
 	collectCommitmentMetrics bool
 	writeCommitmentMetrics   bool
 }
 
-type MetricValues struct {
-	mu              *sync.RWMutex
-	Accounts        map[string]*AccountStats
-	Branches        map[string]*BranchStats
-	Updates         uint64
-	AddressKeys     uint64
-	StorageKeys     uint64
-	LoadBranch      uint64
-	LoadAccount     uint64
-	LoadStorage     uint64
-	CacheBranch     uint64
-	CacheAccount    uint64
-	CacheStorage    uint64
-	MissBranch      uint64
-	MissAccount     uint64
-	MissStorage     uint64
-	UpdateBranch    uint64
-	LoadDepths      [10]uint64
-	Unfolds         uint64
-	SpentUnfolding  time.Duration
-	SpentFolding    time.Duration
-	SpentProcessing time.Duration
-}
-
 func NewMetrics() *Metrics {
-	metrics := &Metrics{
+	return &Metrics{
 		Accounts:                 NewAccounts(),
 		Branches:                 NewBranches(),
 		collectCommitmentMetrics: dbg.KVReadLevelledMetrics,
-	}
-	csvFilePathPrefix := dbg.EnvString("ERIGON_COMMITMENT_CSV_METRICS_FILE_PATH_PREFIX", "")
-	if csvFilePathPrefix != "" {
-		metrics.EnableCsvMetrics(csvFilePathPrefix)
-	}
-	return metrics
-}
-
-func (m *Metrics) EnableCsvMetrics(filePathPrefix string) {
-	m.metricsFilePrefix = filePathPrefix
-	m.writeCommitmentMetrics = true
-	m.collectCommitmentMetrics = true
-	m.Accounts.writeCommitmentMetrics = true
-	m.Branches.writeCommitmentMetrics = true
-}
-
-func (m *Metrics) AsValues() MetricValues {
-	return MetricValues{
-		mu:              &m.Accounts.m,
-		Accounts:        m.Accounts.AccountStats,
-		Branches:        m.Branches.BranchStats,
-		Updates:         m.updates.Load(),
-		AddressKeys:     m.addressKeys.Load(),
-		StorageKeys:     m.storageKeys.Load(),
-		LoadBranch:      m.loadBranch.Load(),
-		LoadAccount:     m.loadAccount.Load(),
-		LoadStorage:     m.loadStorage.Load(),
-		CacheBranch:     m.cacheBranch.Load(),
-		CacheAccount:    m.cacheAccount.Load(),
-		CacheStorage:    m.cacheStorage.Load(),
-		MissBranch:      m.missBranch.Load(),
-		MissAccount:     m.missAccount.Load(),
-		MissStorage:     m.missStorage.Load(),
-		UpdateBranch:    m.updateBranch.Load(),
-		LoadDepths:      m.loadDepths,
-		Unfolds:         m.unfolds.Load(),
-		SpentUnfolding:  m.spentUnfolding,
-		SpentFolding:    m.spentFolding,
-		SpentProcessing: m.spentProcessing,
-	}
-}
-
-func (m *Metrics) WriteToCSV() {
-	if !m.writeCommitmentMetrics {
-		return
-	}
-	if err := writeMetricsToCSV(m, m.metricsFilePrefix+"_process.csv"); err != nil {
-		panic(err)
-	}
-	if err := writeMetricsToCSV(m.Accounts, m.metricsFilePrefix+"_accounts.csv"); err != nil {
-		panic(err)
-	}
-	if err := writeMetricsToCSV(m.Branches, m.metricsFilePrefix+"_branches.csv"); err != nil {
-		panic(err)
-	}
-}
-
-func (m *Metrics) logMetrics() []any {
-	return []any{
-		"akeys", common.PrettyCounter(m.addressKeys.Load()), "skeys", common.PrettyCounter(m.storageKeys.Load()),
-		"rdb", common.PrettyCounter(m.loadBranch.Load()), "rda", common.PrettyCounter(m.loadAccount.Load()),
-		"rds", common.PrettyCounter(m.loadStorage.Load()), "wrb", common.PrettyCounter(m.updateBranch.Load()),
-		"cb", common.PrettyCounter(m.cacheBranch.Load()), "ca", common.PrettyCounter(m.cacheAccount.Load()),
-		"cs", common.PrettyCounter(m.cacheStorage.Load()),
-		"mb", common.PrettyCounter(m.missBranch.Load()), "ma", common.PrettyCounter(m.missAccount.Load()),
-		"ms", common.PrettyCounter(m.missStorage.Load()),
-		"fld", common.PrettyCounter(m.unfolds.Load()), "pdur", common.Round(m.spentProcessing, 0).String(),
-		"fdur", common.Round(m.spentFolding, 0).String(), "ufdur", common.Round(m.spentUnfolding, 0),
-	}
-}
-
-func metricsHeaders() []string {
-	return []string{
-		"updates",
-		"address plainKey",
-		"account plainKeys",
-		"PatriciaContext.Branch()",
-		"PatriciaContext.Account()",
-		"PatriciaContext.Storage()",
-		"PatriciaContext.PutBranch()",
-		"CacheHit.Branch",
-		"CacheHit.Account",
-		"CacheHit.Storage",
-		"L0 - Load Account/Storage",
-		"L1 - Load Account/Storage",
-		"L2 - Load Account/Storage",
-		"L3 - Load Account/Storage",
-		"L4 - Load Account/Storage",
-		"unfold/fold calls",
-		"total unfolding time (ms)",
-		"total folding time (ms)",
-		"total processing time (ms)",
-	}
-}
-
-func (m *Metrics) Headers() []string {
-	return metricsHeaders()
-}
-
-func (m *Metrics) Values() [][]string {
-	vals := [][]string{
-		{
-			strconv.FormatUint(m.updates.Load(), 10),
-			strconv.FormatUint(m.addressKeys.Load(), 10),
-			strconv.FormatUint(m.storageKeys.Load(), 10),
-			strconv.FormatUint(m.loadBranch.Load(), 10),
-			strconv.FormatUint(m.loadAccount.Load(), 10),
-			strconv.FormatUint(m.loadStorage.Load(), 10),
-			strconv.FormatUint(m.updateBranch.Load(), 10),
-			strconv.FormatUint(m.cacheBranch.Load(), 10),
-			strconv.FormatUint(m.cacheAccount.Load(), 10),
-			strconv.FormatUint(m.cacheStorage.Load(), 10),
-			strconv.FormatUint(m.loadDepths[0], 10) + "/" + strconv.FormatUint(m.loadDepths[1], 10),
-			strconv.FormatUint(m.loadDepths[2], 10) + "/" + strconv.FormatUint(m.loadDepths[3], 10),
-			strconv.FormatUint(m.loadDepths[4], 10) + "/" + strconv.FormatUint(m.loadDepths[5], 10),
-			strconv.FormatUint(m.loadDepths[6], 10) + "/" + strconv.FormatUint(m.loadDepths[7], 10),
-			strconv.FormatUint(m.loadDepths[8], 10) + "/" + strconv.FormatUint(m.loadDepths[9], 10),
-			strconv.FormatUint(m.unfolds.Load(), 10),
-			strconv.FormatInt(m.spentUnfolding.Milliseconds(), 10),
-			strconv.FormatInt(m.spentFolding.Milliseconds(), 10),
-			strconv.FormatInt(m.spentProcessing.Milliseconds(), 10),
-		},
-	}
-	if have, want := len(vals[0]), len(m.Headers()); have != want {
-		panic(fmt.Errorf("invalid number of values in metrics row: have=%d, want=%d", have, want))
-	}
-	return vals
-}
-
-func (m *Metrics) Reset() {
-	m.updates.Store(0)
-	m.addressKeys.Store(0)
-	m.storageKeys.Store(0)
-	m.loadBranch.Store(0)
-	m.loadAccount.Store(0)
-	m.loadStorage.Store(0)
-	m.updateBranch.Store(0)
-	m.missBranch.Store(0)
-	m.missAccount.Store(0)
-	m.missStorage.Store(0)
-	m.unfolds.Store(0)
-
-	if !m.collectCommitmentMetrics {
-		return
-	}
-
-	m.Accounts.Reset()
-	m.Branches.Reset()
-	m.spentUnfolding = 0
-	m.spentFolding = 0
-	m.spentProcessing = 0
-}
-
-func (m *Metrics) CollectFileDepthStats(endTxNumStats map[uint64]skipStat) {
-	if !m.writeCommitmentMetrics {
-		return
-	}
-	ends := make([]uint64, 0, len(endTxNumStats))
-	for k := range endTxNumStats {
-		ends = append(ends, k)
-	}
-	// sort by file endTxNum
-	sort.Slice(ends, func(i, j int) bool { return ends[i] > ends[j] })
-	for i := 0; i < 5 && i < len(ends); i++ {
-		// get stats for specific file depth
-		v := endTxNumStats[ends[i]]
-		// write level i file stats - account and storage loads
-		m.loadDepths[i*2], m.loadDepths[i*2+1] = v.accLoaded, v.storLoaded
 	}
 }
 
@@ -323,12 +109,6 @@ func (m *Metrics) StartFolding(plainKey []byte) func() {
 	return func() {}
 }
 
-func (m *Metrics) TotalProcessingTimeInc(t time.Time) {
-	if m.collectCommitmentMetrics {
-		m.spentProcessing += time.Since(t)
-	}
-}
-
 func NewAccounts() *AccountMetrics {
 	return &AccountMetrics{
 		AccountStats: make(map[string]*AccountStats),
@@ -371,58 +151,6 @@ func (am *AccountMetrics) collect(plainKey []byte, fn func(mx *AccountStats)) {
 	fn(as)
 }
 
-func (am *AccountMetrics) Headers() []string {
-	return accountMetricsHeaders()
-}
-
-func accountMetricsHeaders() []string {
-	return []string{
-		"account",
-		"storage updates",
-		"loading account",
-		"loading storage",
-		"total unfolds",
-		"total unfolding time (μs)",
-		"total folds",
-		"total folding time (μs)",
-	}
-}
-
-func (am *AccountMetrics) Values() [][]string {
-	am.m.Lock()
-	defer am.m.Unlock()
-	values := make([][]string, len(am.AccountStats)+1) // + 1 to add one empty line between "process" calls
-	headersLen := len(am.Headers())
-	var vi uint64
-	for addr, stat := range am.AccountStats {
-		values[vi] = []string{
-			fmt.Sprintf("%x", addr),
-			strconv.FormatUint(stat.StorageUpates, 10),
-			strconv.FormatUint(stat.LoadAccount, 10),
-			strconv.FormatUint(stat.LoadStorage, 10),
-			strconv.FormatUint(stat.Unfolds, 10),
-			strconv.Itoa(int(stat.SpentUnfolding.Microseconds())),
-			strconv.FormatUint(stat.Folds, 10),
-			strconv.Itoa(int(stat.SpentFolding.Microseconds())),
-		}
-		if len(values[vi]) != headersLen {
-			panic(fmt.Errorf("invalid number of values in account metrics row: have=%d, want=%d", len(values[vi]), headersLen))
-		}
-		vi++
-	}
-	values[vi] = make([]string, headersLen)
-	return values
-}
-
-func (am *AccountMetrics) Reset() {
-	if !am.writeCommitmentMetrics {
-		return
-	}
-	am.m.Lock()
-	defer am.m.Unlock()
-	am.AccountStats = make(map[string]*AccountStats)
-}
-
 type BranchStats struct {
 	LoadBranch uint64
 }
@@ -437,37 +165,6 @@ type BranchMetrics struct {
 	BranchStats map[string]*BranchStats
 	// metric config related
 	writeCommitmentMetrics bool
-}
-
-func (bm *BranchMetrics) Headers() []string {
-	return branchMetricsHeaders()
-}
-
-func branchMetricsHeaders() []string {
-	return []string{
-		"branchKey",
-		"loads",
-	}
-}
-
-func (bm *BranchMetrics) Values() [][]string {
-	bm.m.RLock()
-	defer bm.m.RUnlock()
-	values := make([][]string, len(bm.BranchStats)+1) // + 1 to add one empty line between "process" calls
-	headersLen := len(bm.Headers())
-	var vi uint64
-	for branchKey, stat := range bm.BranchStats {
-		values[vi] = []string{
-			fmt.Sprintf("%x", branchKey),
-			strconv.FormatUint(stat.LoadBranch, 10),
-		}
-		if len(values[vi]) != headersLen {
-			panic(fmt.Errorf("invalid number of values in branch metrics metrics row: have=%d, want=%d", len(values[vi]), headersLen))
-		}
-		vi++
-	}
-	values[vi] = make([]string, headersLen)
-	return values
 }
 
 func (bm *BranchMetrics) collect(plainKey []byte, fn func(mx *BranchStats)) {
@@ -486,49 +183,4 @@ func (bm *BranchMetrics) collect(plainKey []byte, fn func(mx *BranchStats)) {
 		bm.BranchStats[addr] = bs
 	}
 	fn(bs)
-}
-
-func (bm *BranchMetrics) Reset() {
-	if !bm.writeCommitmentMetrics {
-		return
-	}
-	bm.m.Lock()
-	defer bm.m.Unlock()
-	bm.BranchStats = make(map[string]*BranchStats)
-}
-
-func writeMetricsToCSV(metrics CsvMetrics, filePath string) (err error) {
-	// Open the file in append mode or create if it doesn't exist
-	file, err := os.OpenFile(filePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-	if err != nil {
-		return err
-	}
-	defer func() {
-		err := file.Close()
-		if err != nil {
-			log.Error("failed to close metrics file while writing", "err", err, "filePath", filePath)
-		}
-	}()
-
-	// Create a new writer
-	writer := csv.NewWriter(file)
-	defer writer.Flush()
-
-	// Optionally write header if file is empty
-	info, err := file.Stat()
-	if err != nil {
-		return err
-	}
-	if info.Size() == 0 {
-		if err := writer.Write(metrics.Headers()); err != nil {
-			return err
-		}
-	}
-	// Write the actual data
-	for _, value := range metrics.Values() {
-		if err := writer.Write(value); err != nil {
-			return err
-		}
-	}
-	return nil
 }

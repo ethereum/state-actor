@@ -1,5 +1,5 @@
 // Vendored from github.com/erigontech/erigon execution/commitment/commitment.go @ 14273f79a6 (production pin).
-// Modifications: package commitment -> hph; build tag; nibbles import rewrite; R2 dead-code strip: ReplacePlainKeys/MergeHexBranches/Validate+helpers/BranchStat/DecodeBranchAndCollectStat/ParseTrieVariant/PendingCommitmentUpdate/Touch{PlainKey,HashedKey,Account,Storage,Code}/NewEmpty/SetMode/Mode/PlainKeys/keyHasherNoop/GetDeferredUpdateMetrics (+ crypto/accounts/keccak/slices/nibbles imports)
+// Modifications: package commitment -> hph; build tag; nibbles import rewrite; R2+R3 strips: ReplacePlainKeys/MergeHexBranches/Validate+helpers/BranchStat/DecodeBranchAndCollectStat/ParseTrieVariant/PendingCommitmentUpdate/Touch{PlainKey,HashedKey,Account,Storage,Code}/NewEmpty/SetMode/Mode/PlainKeys/keyHasherNoop/GetDeferredUpdateMetrics (+ crypto/accounts/keccak/slices/nibbles imports); R3: Updates core (NewUpdates/TouchPlainKeyDirect/HashSort/arena/Mode/KeyUpdate/keyHasher), Trie interface + TrieVariant + InitializeTrieAndUpdates, CommitProgress, Update.Copy, BranchEncoder warmup-cache field/branches, levelled metric arrays
 //
 //go:build cgo_erigon_commitment
 
@@ -23,27 +23,20 @@ package hph
 
 import (
 	"bytes"
-	"context"
 	"encoding/binary"
 	"errors"
 	"fmt"
 	"math/bits"
-	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
-	"unsafe"
 
-	"github.com/google/btree"
 	"github.com/holiman/uint256"
 
 	"github.com/erigontech/erigon/common"
-	"github.com/erigontech/erigon/common/dbg"
 	"github.com/erigontech/erigon/common/empty"
 	"github.com/erigontech/erigon/common/length"
-	"github.com/erigontech/erigon/common/log/v3"
 	"github.com/erigontech/erigon/common/maphash"
-	"github.com/erigontech/erigon/db/etl"
 	"github.com/erigontech/erigon/db/kv"
 	"github.com/erigontech/erigon/diagnostics/metrics"
 )
@@ -52,80 +45,9 @@ var (
 	mxTrieProcessedKeys   = metrics.GetOrCreateCounter("domain_commitment_keys")
 	mxTrieBranchesUpdated = metrics.GetOrCreateCounter("domain_commitment_updates_applied")
 
-	mxTrieStateSkipRate                 = metrics.GetOrCreateCounter("trie_state_skip_rate")
-	mxTrieStateLoadRate                 = metrics.GetOrCreateCounter("trie_state_load_rate")
-	mxTrieStateLevelledSkipRatesAccount = [...]metrics.Counter{
-		metrics.GetOrCreateCounter(`trie_state_levelled_skip_rate{level="L0",key="account"}`),
-		metrics.GetOrCreateCounter(`trie_state_levelled_skip_rate{level="L1",key="account"}`),
-		metrics.GetOrCreateCounter(`trie_state_levelled_skip_rate{level="L2",key="account"}`),
-		metrics.GetOrCreateCounter(`trie_state_levelled_skip_rate{level="L3",key="account"}`),
-		metrics.GetOrCreateCounter(`trie_state_levelled_skip_rate{level="L4",key="account"}`),
-		metrics.GetOrCreateCounter(`trie_state_levelled_skip_rate{level="recent",key="account"}`),
-	}
-	mxTrieStateLevelledSkipRatesStorage = [...]metrics.Counter{
-		metrics.GetOrCreateCounter(`trie_state_levelled_skip_rate{level="L0",key="storage"}`),
-		metrics.GetOrCreateCounter(`trie_state_levelled_skip_rate{level="L1",key="storage"}`),
-		metrics.GetOrCreateCounter(`trie_state_levelled_skip_rate{level="L2",key="storage"}`),
-		metrics.GetOrCreateCounter(`trie_state_levelled_skip_rate{level="L3",key="storage"}`),
-		metrics.GetOrCreateCounter(`trie_state_levelled_skip_rate{level="L4",key="storage"}`),
-		metrics.GetOrCreateCounter(`trie_state_levelled_skip_rate{level="recent",key="storage"}`),
-	}
-	mxTrieStateLevelledLoadRatesAccount = [...]metrics.Counter{
-		metrics.GetOrCreateCounter(`trie_state_levelled_load_rate{level="L0",key="account"}`),
-		metrics.GetOrCreateCounter(`trie_state_levelled_load_rate{level="L1",key="account"}`),
-		metrics.GetOrCreateCounter(`trie_state_levelled_load_rate{level="L2",key="account"}`),
-		metrics.GetOrCreateCounter(`trie_state_levelled_load_rate{level="L3",key="account"}`),
-		metrics.GetOrCreateCounter(`trie_state_levelled_load_rate{level="L4",key="account"}`),
-		metrics.GetOrCreateCounter(`trie_state_levelled_load_rate{level="recent",key="account"}`),
-	}
-	mxTrieStateLevelledLoadRatesStorage = [...]metrics.Counter{
-		metrics.GetOrCreateCounter(`trie_state_levelled_load_rate{level="L0",key="storage"}`),
-		metrics.GetOrCreateCounter(`trie_state_levelled_load_rate{level="L1",key="storage"}`),
-		metrics.GetOrCreateCounter(`trie_state_levelled_load_rate{level="L2",key="storage"}`),
-		metrics.GetOrCreateCounter(`trie_state_levelled_load_rate{level="L3",key="storage"}`),
-		metrics.GetOrCreateCounter(`trie_state_levelled_load_rate{level="L4",key="storage"}`),
-		metrics.GetOrCreateCounter(`trie_state_levelled_load_rate{level="recent",key="storage"}`),
-	}
+	mxTrieStateSkipRate = metrics.GetOrCreateCounter("trie_state_skip_rate")
+	mxTrieStateLoadRate = metrics.GetOrCreateCounter("trie_state_load_rate")
 )
-
-// Trie represents commitment variant.
-type Trie interface {
-	// RootHash produces root hash of the trie
-	RootHash() (hash []byte, err error)
-
-	// Makes trie more verbose
-	SetTrace(bool)
-	// Trace domain writes only (no filding etc)
-	SetTraceDomain(bool)
-	SetCapture(capture []string)
-	GetCapture(truncate bool) []string
-	EnableCsvMetrics(filePathPrefix string)
-	// EnableWarmupCache enables/disables warmup cache during Process (false by default)
-	EnableWarmupCache(bool)
-
-	// Variant returns commitment trie variant
-	Variant() TrieVariant
-
-	// Reset Drops everything from the trie
-	Reset()
-
-	// Set context for state IO
-	ResetContext(ctx PatriciaContext)
-
-	// Process updates. If warmup.Enabled is true, pre-warms MDBX page cache in parallel.
-	// onProgress (optional) is called periodically with commitment progress info.
-	Process(ctx context.Context, updates *Updates, logPrefix string, onProgress func(*CommitProgress), warmup WarmupConfig) (rootHash []byte, err error)
-
-	// Release returns the trie to a pool for reuse. After calling Release,
-	// the caller must not use the trie.
-	Release()
-}
-
-type CommitProgress struct {
-	KeyIndex    uint64
-	UpdateCount uint64
-	Metrics     MetricValues
-}
 
 type PatriciaContext interface {
 	// GetBranch load branch node and fill up the cells
@@ -138,40 +60,6 @@ type PatriciaContext interface {
 	Account(plainKey []byte) (*Update, error)
 	// fetch storage with given plain key
 	Storage(plainKey []byte) (*Update, error)
-}
-
-type TrieVariant string
-
-const (
-	// VariantHexPatriciaTrie used as default commitment approach
-	VariantHexPatriciaTrie TrieVariant = "hex-patricia-hashed"
-	// VariantBinPatriciaTrie - Experimental mode with binary key representation
-	VariantBinPatriciaTrie       TrieVariant = "bin-patricia-hashed"
-	VariantConcurrentHexPatricia TrieVariant = "hex-concurrent-patricia-hashed"
-)
-
-func InitializeTrieAndUpdates(tv TrieVariant, mode Mode, tmpdir string) (Trie, *Updates) {
-	switch tv {
-	case VariantConcurrentHexPatricia:
-		root := NewHexPatriciaHashed(length.Addr, nil)
-		trie := NewConcurrentPatriciaHashed(root, nil)
-		tree := NewUpdates(mode, tmpdir, KeyToHexNibbleHash)
-		// tree.SetConcurrentCommitment(true) // first run always sequential
-		return trie, tree
-	case VariantBinPatriciaTrie:
-		//trie := NewBinPatriciaHashed(length.Addr, nil, tmpdir)
-		//fn := func(key []byte) []byte { return hexToBin(key) }
-		//tree := NewUpdateTree(mode, tmpdir, fn)
-		//return trie, tree
-		panic("VariantBinPatriciaTrie not supported")
-	case VariantHexPatriciaTrie:
-		fallthrough
-	default:
-
-		trie := NewHexPatriciaHashed(length.Addr, nil)
-		tree := NewUpdates(mode, tmpdir, KeyToHexNibbleHash)
-		return trie, tree
-	}
 }
 
 type cellFields uint8
@@ -320,7 +208,6 @@ type BranchEncoder struct {
 	deferUpdates    bool
 	deferred        []*DeferredBranchUpdate
 	pendingPrefixes *maphash.NonConcurrentMap[struct{}] // tracks pending prefixes to detect duplicates
-	cache           *WarmupCache
 }
 
 func NewBranchEncoder(sz uint64) *BranchEncoder {
@@ -527,31 +414,15 @@ func (be *BranchEncoder) setMetrics(metrics *Metrics) {
 	be.metrics = metrics
 }
 
-func (be *BranchEncoder) SetCache(cache *WarmupCache) {
-	be.cache = cache
-}
-
 func (be *BranchEncoder) CollectUpdate(
 	ctx PatriciaContext,
 	prefix []byte,
 	bitmap, touchMap, afterMap uint16,
 	cells *[16]cellEncodeData,
 ) error {
-	var prev []byte
-	var foundInCache bool
-	var err error
-
-	if be.cache != nil {
-		prev, foundInCache = be.cache.GetAndEvictBranch(prefix)
-		if foundInCache && be.metrics != nil {
-			be.metrics.cacheBranch.Add(1)
-		}
-	}
-	if !foundInCache {
-		prev, _, err = ctx.Branch(prefix)
-		if err != nil {
-			return err
-		}
+	prev, _, err := ctx.Branch(prefix)
+	if err != nil {
+		return err
 	}
 
 	update, err := be.EncodeBranch(bitmap, touchMap, afterMap, cells)
@@ -573,9 +444,6 @@ func (be *BranchEncoder) CollectUpdate(
 	updateCopy := common.Copy(update)
 	if err = ctx.PutBranch(prefixCopy, updateCopy, prev); err != nil {
 		return err
-	}
-	if be.cache != nil {
-		be.cache.PutBranch(prefixCopy, updateCopy)
 	}
 	if be.metrics != nil {
 		be.metrics.updateBranch.Add(1)
@@ -610,22 +478,7 @@ func (be *BranchEncoder) CollectDeferredUpdate(
 		be.ClearDeferred()
 	}
 
-	// try to get previous data from cache
-	var (
-		prev         []byte
-		foundInCache bool
-		err          error
-	)
-
-	if be.cache != nil {
-		prev, foundInCache = be.cache.GetAndEvictBranch(prefix)
-		if foundInCache && be.metrics != nil {
-			be.metrics.cacheBranch.Add(1)
-		}
-	}
-	if !foundInCache {
-		prev, _, err = ctx.Branch(prefix)
-	}
+	prev, _, err := ctx.Branch(prefix)
 	if err != nil {
 		return err
 	}
@@ -869,432 +722,6 @@ func (m *BranchMerger) Merge(branch1 BranchData, branch2 BranchData) (BranchData
 	return m.buf, nil
 }
 
-// Defines how to evaluate commitments
-type Mode uint
-
-const (
-	ModeDisabled Mode = 0
-	ModeDirect   Mode = 1
-	ModeUpdate   Mode = 2
-)
-
-func (m Mode) String() string {
-	switch m {
-	case ModeDisabled:
-		return "disabled"
-	case ModeDirect:
-		return "direct"
-	case ModeUpdate:
-		return "update"
-	default:
-		return "unknown"
-	}
-}
-
-type Updates struct {
-	hasher keyHasher
-	keys   map[string]struct{} // plain keys to keep only unique keys in etl
-	etl    *etl.Collector      // all-in-one collector
-	// Sorted by hashedKey first, with plainKey as a tiebreaker (see
-	// keyUpdateLessFn). Trie traversal must happen in hashedKey order so
-	// Process's fold/unfold operates on adjacent paths; iterating by
-	// plainKey produced a divergent root and was the root cause of the
-	// eip1153/eip7778/eip7976/eip7825 wrong-trie-root failures. ModeDirect
-	// achieves the same ordering via its etl collector keyed on hashedKey;
-	// this btree must match.
-	tree    *btree.BTreeG[*KeyUpdate]
-	treeIdx map[string]*KeyUpdate // plainKey → btree entry for O(1) lookup in ModeUpdate
-	mode    Mode
-	tmpdir  string
-
-	sortPerNibble bool // if true, use nibbles collectors instead of etl (all-in-one)
-	nibbles       [16]*etl.Collector
-
-	batchSlab []KeyUpdate // grow-only slab for HashSort batch (avoids per-key heap allocs)
-	byteArena []byte      // grow-only byte arena for HashSort key copies
-}
-
-// arenaAlloc appends b to the byte arena and returns the sub-slice.
-// The returned slice is valid until the arena is reset.
-// The arena must have sufficient capacity (via arenaEnsureCap) before
-// accumulating a batch; if capacity is exceeded, arenaAlloc falls back
-// to an independent heap allocation to keep previously returned
-// sub-slices valid.
-func (t *Updates) arenaAlloc(b []byte) []byte {
-	off := len(t.byteArena)
-	needed := off + len(b)
-	if needed > cap(t.byteArena) {
-		// Arena capacity exceeded — fall back to an independent allocation.
-		// This keeps previously returned sub-slices valid while avoiding a
-		// panic that would crash a production node.
-		result := make([]byte, len(b))
-		copy(result, b)
-		return result
-	}
-	t.byteArena = t.byteArena[:needed]
-	copy(t.byteArena[off:], b)
-	return t.byteArena[off:needed]
-}
-
-// arenaEnsureCap ensures the byte arena has at least cap bytes of capacity.
-// Must be called before each batch to prevent mid-batch reallocation.
-func (t *Updates) arenaEnsureCap(c int) {
-	if cap(t.byteArena) < c {
-		t.byteArena = make([]byte, 0, c)
-	}
-}
-
-// Should be called right after updates initialisation. Otherwise could lost some data
-func (t *Updates) SetConcurrentCommitment(b bool) {
-	t.sortPerNibble = b
-	t.initCollector()
-}
-
-// SetConcurrentCommitment returns true if updates are sorted per nibble
-func (t *Updates) IsConcurrentCommitment() bool {
-	return t.sortPerNibble
-}
-
-type keyHasher func(key []byte) []byte
-
-func NewUpdates(m Mode, tmpdir string, hasher keyHasher) *Updates {
-	t := &Updates{
-		hasher: hasher,
-		tmpdir: tmpdir,
-		mode:   m,
-	}
-	if t.mode == ModeDirect {
-		t.keys = make(map[string]struct{})
-		t.initCollector()
-	} else if t.mode == ModeUpdate {
-		t.tree = btree.NewG(64, keyUpdateLessFn)
-		t.treeIdx = make(map[string]*KeyUpdate)
-	}
-	return t
-}
-
-func (t *Updates) initCollector() {
-	if t.sortPerNibble {
-		for i := 0; i < len(t.nibbles); i++ {
-			if t.nibbles[i] != nil {
-				t.nibbles[i].Close()
-				t.nibbles[i] = nil
-			}
-
-			t.nibbles[i] = etl.NewCollectorWithAllocator("commitment.nibble."+strconv.Itoa(i), t.tmpdir, etl.SmallSortableBuffers, log.Root().New("update-tree")).LogLvl(log.LvlDebug)
-			t.nibbles[i].SortAndFlushInBackground(true)
-		}
-		if t.etl != nil {
-			t.etl.Close()
-			t.etl = nil
-		}
-		return
-	}
-
-	if t.etl != nil {
-		t.etl.Close()
-		t.etl = nil
-	}
-	t.etl = etl.NewCollectorWithAllocator("commitment", t.tmpdir, etl.SmallSortableBuffers, log.Root().New("update-tree")).LogLvl(log.LvlDebug)
-	t.etl.SortAndFlushInBackground(true)
-}
-
-func (t *Updates) Size() (updates uint64) {
-	switch t.mode {
-	case ModeDirect:
-		return uint64(len(t.keys))
-	case ModeUpdate:
-		return uint64(t.tree.Len())
-	default:
-		return 0
-	}
-}
-
-// TouchPlainKeyDirect applies a pre-built Update to the key without
-// serialization/deserialization. Used by the commitment calculator which
-// receives aggregated state changes via channel instead of serialized bytes
-// from DomainPut.
-func (t *Updates) TouchPlainKeyDirect(key string, update *Update) {
-	if dbg.TraceTouchKey {
-		fmt.Printf("TOUCHDIRECT key=%x flags=%v balance=%d nonce=%d codeHash=%x\n",
-			key, update.Flags, &update.Balance, update.Nonce, update.CodeHash)
-	}
-	switch t.mode {
-	case ModeUpdate:
-		if existing, ok := t.treeIdx[key]; ok {
-			// Merge into existing entry
-			if update.Flags&DeleteUpdate != 0 {
-				existing.update.Flags = DeleteUpdate
-				existing.update.CodeHash = empty.CodeHash
-			} else {
-				existing.update.Flags &^= DeleteUpdate
-				if update.Flags&BalanceUpdate != 0 {
-					existing.update.Balance.Set(&update.Balance)
-					existing.update.Flags |= BalanceUpdate
-				}
-				if update.Flags&NonceUpdate != 0 {
-					existing.update.Nonce = update.Nonce
-					existing.update.Flags |= NonceUpdate
-				}
-				if update.Flags&CodeUpdate != 0 {
-					existing.update.CodeHash = update.CodeHash
-					existing.update.Flags |= CodeUpdate
-				}
-				if update.Flags&StorageUpdate != 0 {
-					existing.update.Storage = update.Storage
-					existing.update.StorageLen = update.StorageLen
-					existing.update.Flags |= StorageUpdate
-				}
-			}
-		} else {
-			pivot := &KeyUpdate{
-				plainKey:  key,
-				hashedKey: t.hasher(common.ToBytesZeroCopy(key)),
-				update:    new(Update),
-			}
-			*pivot.update = *update
-			t.tree.ReplaceOrInsert(pivot)
-			t.treeIdx[key] = pivot
-		}
-	case ModeDirect:
-		if _, ok := t.keys[key]; !ok {
-			keyBytes := common.ToBytesZeroCopy(key)
-			hashedKey := t.hasher(keyBytes)
-
-			var err error
-			if !t.sortPerNibble {
-				err = t.etl.Collect(hashedKey, keyBytes)
-			} else {
-				err = t.nibbles[hashedKey[0]].Collect(hashedKey, keyBytes)
-			}
-			if err != nil {
-				log.Warn("failed to collect updated key", "key", key, "err", err)
-			}
-			t.keys[key] = struct{}{}
-		}
-	default:
-	}
-}
-
-func (t *Updates) Close() {
-	if t.keys != nil {
-		clear(t.keys)
-	}
-	if t.tree != nil {
-		t.tree.Clear(true)
-		t.tree = nil
-	}
-	if t.etl != nil {
-		t.etl.Close()
-	}
-	if t.sortPerNibble {
-		for i := 0; i < len(t.nibbles); i++ {
-			if t.nibbles[i] != nil {
-				t.nibbles[i].Close()
-			}
-		}
-	}
-}
-
-const hashSortBatchSize = 10_000
-
-// HashSort sorts and applies fn to each key-value pair in the order of hashed keys.
-// Keys are processed in batches of 10k to control memory usage.
-// If warmuper is non-nil, keys are submitted for parallel warming before processing.
-// Caller is responsible for calling warmuper.Wait() after processing completes.
-// IMPORTANT: fn must not retain hk or pk slices after returning; they are backed by
-// reusable arena memory that is invalidated between batches.
-func (t *Updates) HashSort(ctx context.Context, warmuper *Warmuper, fn func(hk, pk []byte, update *Update) error) error {
-	switch t.mode {
-	case ModeDirect:
-		clear(t.keys)
-
-		t.batchSlab = t.batchSlab[:0]
-		// Pre-allocate arena to avoid mid-batch reallocation that would
-		// invalidate previously returned sub-slices (hk/pk in batchSlab).
-		// Worst case: storage keys produce 128-byte nibblized hashed keys +
-		// 52-byte plain keys = 180 bytes/key. Use 192 with headroom.
-		t.arenaEnsureCap(hashSortBatchSize * 192)
-		t.byteArena = t.byteArena[:0]
-		var prevKey []byte
-
-		err := t.etl.Load(nil, "", func(k, v []byte, table etl.CurrentTableReader, next etl.LoadNextFunc) error {
-			if warmuper != nil && warmuper.Cache() != nil {
-				warmuper.Cache().EvictPlainKey(v)
-			}
-			// Copy into arena since ETL may reuse buffers
-			hk := t.arenaAlloc(k)
-			pk := t.arenaAlloc(v)
-			t.batchSlab = append(t.batchSlab, KeyUpdate{hashedKey: hk, plainKey: unsafe.String(unsafe.SliceData(pk), len(pk))})
-
-			// Submit to warmuper with start depth based on divergence from previous key
-			if warmuper != nil {
-				startDepth := 0
-				if prevKey != nil {
-					// Find common prefix length
-					minLen := min(len(prevKey), len(hk))
-					for startDepth < minLen && prevKey[startDepth] == hk[startDepth] {
-						startDepth++
-					}
-				}
-				warmuper.WarmKey(hk, startDepth)
-				prevKey = append(prevKey[:0], hk...)
-			}
-
-			// Process batch when full
-			if len(t.batchSlab) >= hashSortBatchSize {
-				for i := range t.batchSlab {
-					select {
-					case <-ctx.Done():
-						return ctx.Err()
-					default:
-					}
-					if err := fn(t.batchSlab[i].hashedKey, common.ToBytesZeroCopy(t.batchSlab[i].plainKey), nil); err != nil {
-						return err
-					}
-				}
-				if warmuper != nil {
-					warmuper.DrainPending()
-				}
-				t.batchSlab = t.batchSlab[:0]
-				t.byteArena = t.byteArena[:0]
-			}
-			return nil
-		}, etl.TransformArgs{Quit: ctx.Done()})
-		if err != nil {
-			return err
-		}
-
-		// Process remaining keys in final batch
-		for i := range t.batchSlab {
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			default:
-			}
-			if err := fn(t.batchSlab[i].hashedKey, common.ToBytesZeroCopy(t.batchSlab[i].plainKey), nil); err != nil {
-				return err
-			}
-		}
-
-		t.initCollector()
-
-	case ModeUpdate:
-		t.batchSlab = t.batchSlab[:0]
-		t.arenaEnsureCap(hashSortBatchSize * 144)
-		t.byteArena = t.byteArena[:0]
-		var prevKey []byte
-		var processErr error
-
-		t.tree.Ascend(func(item *KeyUpdate) bool {
-			select {
-			case <-ctx.Done():
-				processErr = ctx.Err()
-				return false
-			default:
-			}
-
-			hk := t.arenaAlloc(item.hashedKey)
-			t.batchSlab = append(t.batchSlab, KeyUpdate{hashedKey: hk, plainKey: item.plainKey, update: item.update})
-
-			if warmuper != nil {
-				startDepth := 0
-				if prevKey != nil {
-					minLen := min(len(prevKey), len(hk))
-					for startDepth < minLen && prevKey[startDepth] == hk[startDepth] {
-						startDepth++
-					}
-				}
-				warmuper.WarmKey(hk, startDepth)
-				prevKey = append(prevKey[:0], hk...)
-			}
-
-			if len(t.batchSlab) >= hashSortBatchSize {
-				for i := range t.batchSlab {
-					select {
-					case <-ctx.Done():
-						processErr = ctx.Err()
-						return false
-					default:
-					}
-					if err := fn(t.batchSlab[i].hashedKey, common.ToBytesZeroCopy(t.batchSlab[i].plainKey), t.batchSlab[i].update); err != nil {
-						processErr = err
-						return false
-					}
-				}
-				if warmuper != nil {
-					warmuper.DrainPending()
-				}
-				t.batchSlab = t.batchSlab[:0]
-				t.byteArena = t.byteArena[:0]
-			}
-			return true
-		})
-
-		if processErr != nil {
-			return processErr
-		}
-
-		// Process remaining keys in final batch
-		for i := range t.batchSlab {
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			default:
-			}
-			if err := fn(t.batchSlab[i].hashedKey, common.ToBytesZeroCopy(t.batchSlab[i].plainKey), t.batchSlab[i].update); err != nil {
-				return err
-			}
-		}
-		t.tree.Clear(true)
-
-	default:
-		return nil
-	}
-	return nil
-}
-
-// Reset clears all updates
-func (t *Updates) Reset() {
-	switch t.mode {
-	case ModeDirect:
-		if t.keys == nil {
-			t.keys = make(map[string]struct{})
-		} else {
-			clear(t.keys)
-		}
-		t.initCollector()
-	case ModeUpdate:
-		t.tree.Clear(true)
-		clear(t.treeIdx)
-	default:
-	}
-	t.batchSlab = t.batchSlab[:0]
-	t.byteArena = t.byteArena[:0]
-}
-
-type KeyUpdate struct {
-	plainKey  string
-	hashedKey []byte
-	update    *Update
-}
-
-// keyUpdateLessFn orders KeyUpdate entries by hashedKey. Process requires
-// updates to arrive in hashedKey-sorted order so fold/unfold operates on
-// adjacent trie paths; iterating by plainKey produces a different trie
-// traversal sequence and yields a divergent root hash. ModeDirect achieves
-// this via its etl collector keyed on hashedKey; ModeUpdate's btree must
-// match that order.
-//
-// plainKey is used only as a tiebreaker (e.g. for TouchHashedKey entries
-// that share their hashedKey with a "real" entry).
-func keyUpdateLessFn(i, j *KeyUpdate) bool {
-	if c := bytes.Compare(i.hashedKey, j.hashedKey); c != 0 {
-		return c < 0
-	}
-	return i.plainKey < j.plainKey
-}
-
 type UpdateFlags uint8
 
 const (
@@ -1340,22 +767,6 @@ func (u *Update) Reset() {
 	u.Nonce = 0
 	u.StorageLen = 0
 	u.CodeHash = empty.CodeHash
-}
-
-// Copy creates a deep copy of the Update.
-func (u *Update) Copy() *Update {
-	if u == nil {
-		return nil
-	}
-	c := &Update{
-		CodeHash:   u.CodeHash,
-		Storage:    u.Storage,
-		StorageLen: u.StorageLen,
-		Flags:      u.Flags,
-		Nonce:      u.Nonce,
-	}
-	c.Balance.Set(&u.Balance)
-	return c
 }
 
 func (u *Update) Merge(b *Update) {

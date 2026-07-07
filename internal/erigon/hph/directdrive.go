@@ -1,7 +1,7 @@
 // STATE-ACTOR ADDITION — NOT vendored from erigon. This file extends the
 // vendored engine (see the sibling files' provenance headers) with a bulk,
 // from-empty fold driver that feeds followAndUpdate directly from sorted
-// per-nibble streams. It replicates Updates.ParallelHashSort's engine
+// per-nibble streams. It replicates the upstream concurrent engine's
 // choreography (hex_concurrent_patricia_hashed.go:212-300) — the only
 // semantic difference is the feed: a KeyStream instead of an etl collector,
 // with the Update passed inline instead of re-fetched via ctx.Account/
@@ -19,6 +19,11 @@ import (
 	"golang.org/x/sync/errgroup"
 )
 
+// TrieContextFactory creates fresh PatriciaContext instances for the
+// per-shard fold workers. (Relocated from the deleted warmuper.go — the
+// warmup subsystem itself was never enabled.)
+type TrieContextFactory func() (PatriciaContext, func())
+
 // KeyStream yields one first-nibble shard's rows in ascending hashedKey
 // order. hashedKey is the nibblized keccak key (64 B account / 128 B
 // storage — KeyToHexNibbleHash output); plainKey the 20/52-byte plain key;
@@ -32,9 +37,9 @@ type KeyStream interface {
 // DirectFold builds the trie from empty in ONE concurrent pass: 16 mounted
 // subtries, worker n draining streams[n] through followAndUpdate with the
 // inline Update, then foldNibble + the serial root fold — exactly
-// ParallelHashSort's engine sequence. The caller owns the root flush
+// the upstream concurrent fold sequence. The caller owns the root flush
 // (ApplyAndClearInlineDeferredUpdates) and EncodeCurrentState, as with
-// ParallelHashSort.
+// the upstream engine.
 //
 // From-empty invariants this relies on (and which make ctx.Branch reads
 // nil-safe): a sorted single pass never re-descends a folded prefix, and

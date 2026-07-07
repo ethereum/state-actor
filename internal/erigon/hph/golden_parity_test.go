@@ -230,26 +230,62 @@ func branchBytes(m map[string][]byte) []byte {
 	return buf.Bytes()
 }
 
-// TestGoldenA_VendoredMatchesUpstream16Way is the vendor-faithfulness gate.
+// sliceStream serves one first-nibble shard's rows to DirectFold in
+// ascending hashedKey order — the in-memory analogue of production's
+// cursorStream.
+type streamRow struct{ hashedKey, plainKey, enc []byte }
+
+type sliceStream struct {
+	rows []streamRow
+	i    int
+	u    hph.Update // reused; the engine copies what it keeps
+}
+
+func (s *sliceStream) Next() (hashedKey, plainKey []byte, u *hph.Update, ok bool, err error) {
+	if s.i >= len(s.rows) {
+		return nil, nil, nil, false, nil
+	}
+	r := s.rows[s.i]
+	s.i++
+	s.u = hph.Update{} // full reset — Decode writes only flagged fields
+	if _, e := s.u.Decode(r.enc, 0); e != nil {
+		return nil, nil, nil, false, e
+	}
+	return r.hashedKey, r.plainKey, &s.u, true, nil
+}
+
+// TestGoldenA_VendoredMatchesUpstream16Way is the vendor-faithfulness gate:
+// the vendored DirectFold (the production path) must be byte-identical to
+// the UPSTREAM module engine on root, every branch row, and HPHState.
 func TestGoldenA_VendoredMatchesUpstream16Way(t *testing.T) {
 	accs := fixture(2048)
 
-	// --- vendored engine run ---
+	// --- vendored DirectFold run (the production choreography) ---
 	vs := &mockState{branches: map[string][]byte{}, accounts: map[string][]byte{}, storage: map[string][]byte{}}
 	vKeys := encodeFixture(accs, vs, encodeVendoredAcc, encodeVendoredStor)
-	vCtx := &vendoredCtx{s: vs}
-	vUpds := hph.NewUpdates(hph.ModeDirect, t.TempDir(), hph.KeyToHexNibbleHash)
-	vUpds.SetConcurrentCommitment(true)
-	var placeholderV hph.Update
+	var shards [16][]streamRow
 	for _, k := range vKeys {
-		vUpds.TouchPlainKeyDirect(k, &placeholderV)
+		pk := []byte(k)
+		hk := hph.KeyToHexNibbleHash(pk) // [0] == worker shard (InputPart)
+		enc := vs.accounts[k]
+		if enc == nil {
+			enc = vs.storage[k]
+		}
+		shards[hk[0]] = append(shards[hk[0]], streamRow{hashedKey: hk, plainKey: pk, enc: enc})
 	}
+	var streams [16]hph.KeyStream
+	for n := range shards {
+		sh := shards[n]
+		sort.Slice(sh, func(i, j int) bool { return bytes.Compare(sh[i].hashedKey, sh[j].hashedKey) < 0 })
+		streams[n] = &sliceStream{rows: sh} // ascending hashed order — the engine's sort order
+	}
+	vCtx := &vendoredCtx{s: vs}
 	vHph := hph.NewHexPatriciaHashed(20, vCtx)
 	vPph := hph.NewConcurrentPatriciaHashed(vHph, vCtx)
-	vRoot, err := vPph.Process(context.Background(), vUpds, "goldenA-vendored", nil,
-		hph.WarmupConfig{CtxFactory: func() (hph.PatriciaContext, func()) { return &vendoredCtx{s: vs}, func() {} }})
+	factory := func() (hph.PatriciaContext, func()) { return &vendoredCtx{s: vs}, func() {} }
+	vRoot, err := hph.DirectFold(context.Background(), vPph, factory, &streams)
 	if err != nil {
-		t.Fatalf("vendored Process: %v", err)
+		t.Fatalf("DirectFold: %v", err)
 	}
 	if err := vHph.ApplyAndClearInlineDeferredUpdates(); err != nil {
 		t.Fatalf("vendored ApplyDeferred: %v", err)
@@ -289,6 +325,14 @@ func TestGoldenA_VendoredMatchesUpstream16Way(t *testing.T) {
 	}
 	if len(vs.branches) != len(us.branches) {
 		t.Fatalf("branch row count diverged: vendored=%d upstream=%d", len(vs.branches), len(us.branches))
+	}
+	vState, verr := vHph.EncodeCurrentState(nil)
+	uState, uerr := uHph.EncodeCurrentState(nil)
+	if verr != nil || uerr != nil {
+		t.Fatalf("EncodeCurrentState: vendored=%v upstream=%v", verr, uerr)
+	}
+	if !bytes.Equal(vState, uState) {
+		t.Fatalf("HPHState DIVERGED: vendored=%x upstream=%x", vState, uState)
 	}
 	if !bytes.Equal(branchBytes(vs.branches), branchBytes(us.branches)) {
 		for k, v := range vs.branches {
