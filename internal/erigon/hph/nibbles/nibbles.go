@@ -1,5 +1,5 @@
 // Vendored from github.com/erigontech/erigon execution/commitment/nibbles/nibbles.go @ 14273f79a6 (production pin).
-// Modifications: build tag only.
+// Modifications: build tag; R2 strip: CompactToHex/KeybytesToHex/HexToKeybytes (unused post-trim).
 //
 //go:build cgo_erigon_commitment
 
@@ -48,49 +48,6 @@ func HexToCompact(hex []byte) []byte {
 	}
 	decodeNibbles(hex, buf[1:])
 	return buf
-}
-
-// CompactToHex converts a compact (hex-prefix) encoded byte slice back to
-// a hex nibble sequence.
-func CompactToHex(compact []byte) []byte {
-	if len(compact) == 0 {
-		return compact
-	}
-	base := KeybytesToHex(compact)
-	// delete terminator flag
-	if base[0] < 2 {
-		base = base[:len(base)-1]
-	}
-	// apply odd flag
-	chop := 2 - base[0]&1
-	return base[chop:]
-}
-
-// KeybytesToHex converts a key byte slice (packed, 2 nibbles per byte) to hex
-// nibble encoding with a trailing Terminator byte.
-func KeybytesToHex(str []byte) []byte {
-	l := len(str)*2 + 1
-	var nibbles = make([]byte, l)
-	for i, b := range str {
-		nibbles[i*2] = b / Terminator
-		nibbles[i*2+1] = b % Terminator
-	}
-	nibbles[l-1] = Terminator
-	return nibbles
-}
-
-// HexToKeybytes turns hex nibbles into key bytes.
-// This can only be used for keys of even length.
-func HexToKeybytes(hex []byte) []byte {
-	if HasTerm(hex) {
-		hex = hex[:len(hex)-1]
-	}
-	if len(hex)&1 != 0 {
-		panic("can't convert hex key of odd length")
-	}
-	key := make([]byte, len(hex)/2)
-	decodeNibbles(hex, key)
-	return key
 }
 
 // HasTerm returns whether a hex key has the terminator flag.

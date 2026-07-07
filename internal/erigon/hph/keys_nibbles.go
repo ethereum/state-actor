@@ -1,14 +1,12 @@
 // Vendored from github.com/erigontech/erigon execution/commitment/keys_nibbles.go @ 14273f79a6 (production pin).
-// Modifications: package commitment -> hph; build tag; nibbles import rewrite
+// Modifications: package commitment -> hph; build tag; nibbles import rewrite; R2 strip: KeyToNibblizedHash/CompactKey/PrefixStringToNibbles/NibblesToString
 //
 //go:build cgo_erigon_commitment
 
 package hph
 
 import (
-	"errors"
 	"fmt"
-	"strconv"
 	"strings"
 
 	keccak "github.com/erigontech/fastkeccak"
@@ -42,54 +40,6 @@ func KeyToHexNibbleHash(key []byte) []byte {
 		nibblized[i*2+1] = b & 0xf
 	}
 	return nibblized
-}
-
-func KeyToNibblizedHash(key []byte) []byte {
-	nibblized := make([]byte, 64) // nibblized hash
-	hashed := nibblized[32:]
-	h := keccak.Sum256(key)
-	copy(hashed, h[:])
-	for i, b := range hashed {
-		nibblized[i*2] = (b >> 4) & 0xf
-		nibblized[i*2+1] = b & 0xf
-	}
-	return nibblized
-}
-
-// NibblesToString returns a hex string representation of a nibble sequence.
-// Each nibble (0-15) is printed as a single hex character. Works for both
-// even and odd length sequences.
-func NibblesToString(nibbles []byte) string {
-	var b strings.Builder
-	b.Grow(len(nibbles))
-	for _, n := range nibbles {
-		b.WriteByte("0123456789abcdef"[n&0x0F])
-	}
-	return b.String()
-}
-
-// CompactKey takes a slice of nibbles and compacts them into the original byte slice.
-// It returns an error if the input contains invalid nibbles (values > 0xF).
-func CompactKey(nibbles []byte) ([]byte, error) {
-	// If the number of nibbles is odd, you might decide to handle it differently.
-	// For this example, we'll return an error.
-	if len(nibbles)%2 != 0 {
-		return nil, errors.New("nibbles slice has an odd length")
-	}
-
-	key := make([]byte, len(nibbles)/2)
-	for i := 0; i < len(key); i++ {
-		highNibble := nibbles[i*2]
-		lowNibble := nibbles[i*2+1]
-
-		// Validate that each nibble is indeed a nibble
-		if highNibble > 0xF || lowNibble > 0xF {
-			return nil, fmt.Errorf("invalid nibble at position %d or %d: 0x%X, 0x%X", i*2, i*2+1, highNibble, lowNibble)
-		}
-
-		key[i] = (highNibble << 4) | (lowNibble & 0x0F)
-	}
-	return key, nil
 }
 
 // updatedNibs returns a string of nibbles that are set in the given number.
@@ -129,18 +79,4 @@ func hashKey(hasher keccak.KeccakState, plainKey []byte, dest []byte, hashedKeyO
 		k++
 	}
 	return nil
-}
-
-func PrefixStringToNibbles(hexStr string) ([]byte, error) {
-	nibbles := make([]byte, len(hexStr))
-
-	for i, char := range hexStr {
-		nibble, err := strconv.ParseUint(string(char), 16, 8)
-		if err != nil {
-			return nil, err
-		}
-		nibbles[i] = byte(nibble)
-	}
-
-	return nibbles, nil
 }
