@@ -19,12 +19,26 @@
 # Tag strategy (per image):
 #   push to main      → main, main-latest, main-<sha>
 #   tag v*.*.*        → <version>, latest, <version>-<sha>
+#   workflow_dispatch → pr-<n>, pr-<n>-<sha>
 # Per-arch build tags (…-amd64 / …-arm64) are implementation detail; consumers
 # pull the multi-arch manifests above.
+#
+# PR builds are manual (`workflow_dispatch`) by design, not label- or
+# `pull_request`-triggered. A `pull_request` run from a fork gets a read-only
+# GITHUB_TOKEN and cannot push to GHCR at all, and most contributions here
+# arrive from forks. The alternative — `pull_request_target` — hands a
+# packages:write token to a workflow building a fork-authored Dockerfile on
+# every label event. Dispatch keeps the same code-execution exposure (a
+# maintainer is still building fork code) but makes it a deliberate,
+# per-commit act rather than something an event config can misfire.
+# `pr` is a PR number, and a fork PR's head is fetchable from this repo under
+# refs/pull/*, so fork PRs work without a fork remote.
 #
 # The matrix is the only thing that differs from benchmarkoor (which had one
 # file per image): the per-client Dockerfiles would otherwise mean that many
 # near-identical workflow files, so the per-image fan-out lives in a matrix.
+# `meta` computes that matrix, so a dispatch naming one client builds one
+# image rather than all seven.
 
 name: Deploy - Docker
 
@@ -34,24 +48,81 @@ on:
       - main
     tags:
       - 'v*.*.*'
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: 'PR number to build (e.g. 112). Builds that PR''s head commit and pushes pr-<n> tags.'
+        required: true
+        type: string
+      images:
+        description: 'Images to build: "all", or a comma-separated subset of base,besu,nethermind,reth,geth,ethrex,erigon.'
+        required: false
+        default: all
+        type: string
+
+# Supersede an in-flight build of the same PR when it gets re-dispatched.
+# Pushes to main and version tags are never cancelled — a release build that
+# loses a race would leave half-published manifests behind.
+concurrency:
+  group: ${{ github.workflow }}-${{ inputs.pr && format('pr-{0}', inputs.pr) || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'workflow_dispatch' }}
 
 jobs:
   meta:
-    name: Compute tags and build info
+    name: Compute tags, matrix and build info
     runs-on: ubuntu-latest
     outputs:
+      checkout_ref: ${{ steps.resolve.outputs.checkout_ref }}
       sha_short: ${{ steps.vars.outputs.sha_short }}
       tag_prefix: ${{ steps.vars.outputs.tag_prefix }}
       additional_tags: ${{ steps.vars.outputs.additional_tags }}
       version: ${{ steps.vars.outputs.version }}
       revision: ${{ steps.vars.outputs.revision }}
+      matrix: ${{ steps.matrix.outputs.matrix }}
+      suffixes: ${{ steps.matrix.outputs.suffixes }}
     steps:
+      # Resolve the PR head to a concrete sha ONCE, here, and hand it to every
+      # downstream job. If the contributor force-pushes mid-run, the later jobs
+      # still build the commit this job stamped rather than silently splitting
+      # the multi-arch manifest across two different commits.
+      - name: Resolve commit to build
+        id: resolve
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ inputs.pr }}
+        run: |
+          set -euo pipefail
+          # Empty for push events, which leaves every checkout below on its
+          # default ref. Deliberate: actions/checkout turns a 40-char `ref`
+          # into a bare `git fetch origin <sha>`, which brings no tag refs, and
+          # `git describe --tags` in the next step would silently degrade a
+          # release's version stamp from v1.2.3 to a bare sha.
+          if [[ "$GITHUB_EVENT_NAME" != "workflow_dispatch" ]]; then
+            echo "checkout_ref=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [[ ! "$PR" =~ ^[0-9]+$ ]]; then
+            echo "::error::pr input must be a number, got '$PR'"
+            exit 1
+          fi
+          HEAD_SHA=$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR}" --jq .head.sha)
+          echo "Building PR #${PR} at ${HEAD_SHA}"
+          # A sha, not refs/pull/<n>/head: fork heads live in this repo under
+          # refs/pull/*, so the sha is fetchable, and pinning it here stops a
+          # mid-run force-push from splitting the multi-arch manifest across
+          # two commits. PR builds therefore stamp VERSION as a bare sha.
+          echo "checkout_ref=${HEAD_SHA}" >> "$GITHUB_OUTPUT"
+
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
+          ref: ${{ steps.resolve.outputs.checkout_ref }}
           fetch-depth: 0
 
       - id: vars
+        env:
+          PR: ${{ inputs.pr }}
         run: |
+          set -euo pipefail
           SHA_SHORT=$(git rev-parse --short HEAD)
           echo "sha_short=$SHA_SHORT" >> $GITHUB_OUTPUT
           # Version stamped into the binary via -X main.Version (build-arg
@@ -61,7 +132,13 @@ jobs:
           echo "version=$VERSION" >> $GITHUB_OUTPUT
           # Full commit for the org.opencontainers.image.revision label.
           echo "revision=$(git rev-parse HEAD)" >> $GITHUB_OUTPUT
-          if [[ "${{ github.ref }}" == refs/tags/v*.*.* ]]; then
+          if [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]; then
+            # No moving-"latest" analogue for PRs: pr-<n> already is the
+            # moving pointer, and pr-<n>-<sha> the pinned one. Nothing a
+            # dispatch produces may collide with main/latest/<version>.
+            echo "tag_prefix=pr-${PR}" >> $GITHUB_OUTPUT
+            echo "additional_tags=[\"pr-${PR}\"]" >> $GITHUB_OUTPUT
+          elif [[ "${{ github.ref }}" == refs/tags/v*.*.* ]]; then
             VERSION_TAG="${GITHUB_REF#refs/tags/}"
             echo "tag_prefix=$VERSION_TAG" >> $GITHUB_OUTPUT
             echo "additional_tags=[\"$VERSION_TAG\",\"latest\"]" >> $GITHUB_OUTPUT
@@ -69,6 +146,42 @@ jobs:
             echo "tag_prefix=main" >> $GITHUB_OUTPUT
             echo "additional_tags=[\"main\",\"main-latest\"]" >> $GITHUB_OUTPUT
           fi
+
+      # Single source of truth for the image list — the build and manifest
+      # jobs all fan out from these two outputs.
+      - id: matrix
+        env:
+          IMAGES: ${{ inputs.images }}
+        run: |
+          set -euo pipefail
+          ALL='[
+            {"name":"base",       "suffix":"",           "dockerfile":"Dockerfile"},
+            {"name":"besu",       "suffix":"-besu",      "dockerfile":"Dockerfile.besu"},
+            {"name":"nethermind", "suffix":"-nethermind","dockerfile":"Dockerfile.nethermind"},
+            {"name":"reth",       "suffix":"-reth",      "dockerfile":"Dockerfile.reth"},
+            {"name":"geth",       "suffix":"-geth",      "dockerfile":"Dockerfile.geth"},
+            {"name":"ethrex",     "suffix":"-ethrex",    "dockerfile":"Dockerfile.ethrex"},
+            {"name":"erigon",     "suffix":"-erigon",    "dockerfile":"Dockerfile.erigon"}
+          ]'
+          if [[ "$GITHUB_EVENT_NAME" != "workflow_dispatch" || -z "${IMAGES:-}" || "$IMAGES" == "all" ]]; then
+            SELECTED="$ALL"
+          else
+            # Reject unknown names loudly. A typo'd client would otherwise
+            # silently narrow the matrix and "succeed" having built nothing.
+            KNOWN=$(jq -r '.[].name' <<<"$ALL")
+            for want in ${IMAGES//,/ }; do
+              if ! grep -qx -- "$want" <<<"$KNOWN"; then
+                echo "::error::unknown image '$want'; valid: $(tr '\n' ' ' <<<"$KNOWN")"
+                exit 1
+              fi
+            done
+            SELECTED=$(jq -c --arg csv "$IMAGES" \
+              '($csv | split(",") | map(gsub("^\\s+|\\s+$";""))) as $want
+               | map(select(.name as $n | $want | index($n)))' <<<"$ALL")
+          fi
+          echo "Building: $(jq -r '[.[].name] | join(", ")' <<<"$SELECTED")"
+          echo "matrix=$(jq -c '.' <<<"$SELECTED")" >> "$GITHUB_OUTPUT"
+          echo "suffixes=$(jq -c '[.[].suffix]' <<<"$SELECTED")" >> "$GITHUB_OUTPUT"
 
   build_amd64:
     name: Build amd64 image (${{ matrix.dockerfile }})
@@ -81,20 +194,14 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - { suffix: '',            dockerfile: Dockerfile }
-          - { suffix: '-besu',       dockerfile: Dockerfile.besu }
-          - { suffix: '-nethermind', dockerfile: Dockerfile.nethermind }
-          - { suffix: '-reth',       dockerfile: Dockerfile.reth }
-          - { suffix: '-geth',       dockerfile: Dockerfile.geth }
-          - { suffix: '-ethrex',     dockerfile: Dockerfile.ethrex }
-          - { suffix: '-erigon',     dockerfile: Dockerfile.erigon }
+        include: ${{ fromJSON(needs.meta.outputs.matrix) }}
     env:
       GHCR_REPO: ghcr.io/${{ github.repository }}${{ matrix.suffix }}
       DOCKERFILE: ${{ matrix.dockerfile }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
+          ref: ${{ needs.meta.outputs.checkout_ref }}
           fetch-depth: 0
 
       - name: Set up Docker Buildx
@@ -140,20 +247,14 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - { suffix: '',            dockerfile: Dockerfile }
-          - { suffix: '-besu',       dockerfile: Dockerfile.besu }
-          - { suffix: '-nethermind', dockerfile: Dockerfile.nethermind }
-          - { suffix: '-reth',       dockerfile: Dockerfile.reth }
-          - { suffix: '-geth',       dockerfile: Dockerfile.geth }
-          - { suffix: '-ethrex',     dockerfile: Dockerfile.ethrex }
-          - { suffix: '-erigon',     dockerfile: Dockerfile.erigon }
+        include: ${{ fromJSON(needs.meta.outputs.matrix) }}
     env:
       GHCR_REPO: ghcr.io/${{ github.repository }}${{ matrix.suffix }}
       DOCKERFILE: ${{ matrix.dockerfile }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
+          ref: ${{ needs.meta.outputs.checkout_ref }}
           fetch-depth: 0
 
       - name: Set up Docker Buildx
@@ -197,7 +298,7 @@ jobs:
       packages: write
     strategy:
       matrix:
-        suffix: ['', '-besu', '-nethermind', '-reth', '-geth', '-ethrex', '-erigon']
+        suffix: ${{ fromJSON(needs.meta.outputs.suffixes) }}
     env:
       GHCR_REPO: ghcr.io/${{ github.repository }}${{ matrix.suffix }}
     steps:
@@ -230,7 +331,7 @@ jobs:
       packages: write
     strategy:
       matrix:
-        suffix: ['', '-besu', '-nethermind', '-reth', '-geth', '-ethrex', '-erigon']
+        suffix: ${{ fromJSON(needs.meta.outputs.suffixes) }}
         tag: ${{ fromJSON(needs.meta.outputs.additional_tags) }}
     env:
       GHCR_REPO: ghcr.io/${{ github.repository }}${{ matrix.suffix }}

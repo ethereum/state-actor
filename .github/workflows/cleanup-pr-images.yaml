@@ -1,0 +1,97 @@
+# Cleanup - PR Docker images
+#
+# Deletes the `pr-<n>` GHCR tags that `deploy-docker.yaml`'s workflow_dispatch
+# publishes, once the PR is closed. Without this, every PR build leaves seven
+# images × (multi-arch manifest + sha manifest + 2 per-arch tags) behind
+# forever.
+#
+# Runs on `pull_request_target` because a `pull_request` run from a fork gets a
+# read-only GITHUB_TOKEN and cannot delete package versions — and most PRs here
+# come from forks. That trigger is safe *here* specifically because this
+# workflow never checks out or executes PR code: it only calls the packages
+# API with tag names derived from the PR number. Do not add a checkout of
+# `head.sha` to this file.
+
+name: Cleanup - PR Docker images
+
+on:
+  pull_request_target:
+    types: [closed]
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: 'PR number whose pr-<n> images should be deleted.'
+        required: true
+        type: string
+
+concurrency:
+  group: ${{ github.workflow }}-${{ inputs.pr || github.event.pull_request.number }}
+  cancel-in-progress: false
+
+jobs:
+  cleanup:
+    name: Delete pr-${{ inputs.pr || github.event.pull_request.number }} image tags
+    runs-on: ubuntu-latest
+    permissions:
+      packages: write
+    steps:
+      - name: Delete PR package versions
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OWNER: ${{ github.repository_owner }}
+          PR: ${{ inputs.pr || github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$PR" =~ ^[0-9]+$ ]]; then
+            echo "::error::pr must be a number, got '$PR'"
+            exit 1
+          fi
+          # Exported for the jq filter below. Matching is exact-or-`pr-<n>-`
+          # prefixed so that closing PR #1 cannot match PR #112's tags.
+          export PR_TAG="pr-${PR}"
+
+          PACKAGES=(
+            state-actor
+            state-actor-besu
+            state-actor-nethermind
+            state-actor-reth
+            state-actor-geth
+            state-actor-ethrex
+            state-actor-erigon
+          )
+
+          deleted=0
+          for pkg in "${PACKAGES[@]}"; do
+            # A package only exists once something has been pushed to it; a
+            # never-built client 404s, which is not an error here.
+            if ! versions=$(gh api --paginate \
+              "/orgs/${OWNER}/packages/container/${pkg}/versions" 2>/dev/null); then
+              echo "· ${pkg}: no such package, skipping"
+              continue
+            fi
+
+            # Only delete a version when EVERY tag on it belongs to this PR.
+            # Versions are content-addressed, so if a PR head happens to build
+            # byte-identical to main, one version carries both `pr-<n>` and
+            # `main` — deleting it would take `main` down with it. Untagged
+            # versions are left alone: they are the per-arch children of
+            # manifests and cannot be attributed to a PR by tag.
+            ids=$(jq -r '
+              .[]
+              | . as $v
+              | (($v.metadata.container.tags) // []) as $tags
+              | select(($tags | length) > 0)
+              | select($tags | any(. == env.PR_TAG or startswith(env.PR_TAG + "-")))
+              | select($tags | all(. == env.PR_TAG or startswith(env.PR_TAG + "-")))
+              | $v.id
+            ' <<<"$versions")
+
+            for id in $ids; do
+              echo "· ${pkg}: deleting version ${id}"
+              gh api -X DELETE \
+                "/orgs/${OWNER}/packages/container/${pkg}/versions/${id}"
+              deleted=$((deleted + 1))
+            done
+          done
+
+          echo "Deleted ${deleted} package version(s) for ${PR_TAG}."

@@ -80,6 +80,18 @@ docker build -f Dockerfile.geth       -t state-actor-geth:dev .        # pure Go
 
 Then run your locally-built tag in place of the `ghcr.io/...:main` image in any recipe below, e.g. `docker run --rm -v /tmp/sa-reth:/data state-actor-reth:dev --client=reth --db=/data --target-size=1GB`. The cgo images build RocksDB from source, so the first build is slow (~15 min); subsequent builds reuse the layer cache. The same Dockerfiles are what CI publishes via `.github/workflows/deploy-docker.yaml`.
 
+### Images for an open pull request
+
+To try a PR's images without building them, a maintainer can publish them from the **Deploy - Docker** workflow's *Run workflow* button, passing the PR number and either `all` or a comma-separated subset (`nethermind`, `besu,reth`, …). This is manual rather than automatic: most PRs come from forks, and a fork's `pull_request` run gets a read-only token that cannot push to GHCR.
+
+That publishes two tags per selected image — `pr-<n>`, which follows the PR as it is re-dispatched, and `pr-<n>-<sha>`, pinned to one commit:
+
+```bash
+docker pull ghcr.io/ethereum/state-actor-nethermind:pr-112
+```
+
+Both are deleted automatically when the PR closes.
+
 ## Usage
 
 Every client runs the same way: mount an output directory at `/data` and run its `ghcr.io/ethereum/state-actor-<client>:main` image. Substitute `geth` / `reth` / `besu` / `nethermind` / `ethrex` / `erigon` for the client and the matching image.
