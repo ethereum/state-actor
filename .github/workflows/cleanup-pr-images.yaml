@@ -60,14 +60,26 @@ jobs:
             state-actor-erigon
           )
 
+          err=$(mktemp)
+          trap 'rm -f "$err"' EXIT
+
           deleted=0
           for pkg in "${PACKAGES[@]}"; do
-            # A package only exists once something has been pushed to it; a
-            # never-built client 404s, which is not an error here.
-            if ! versions=$(gh api --paginate \
-              "/orgs/${OWNER}/packages/container/${pkg}/versions" 2>/dev/null); then
-              echo "· ${pkg}: no such package, skipping"
+            # A package only exists once something has been pushed to it, so a
+            # never-built client 404s and that is not an error. Anything else
+            # is: treating a 403 or a 5xx as "no such package" would report
+            # success while deleting nothing, and the tags would leak forever
+            # with nobody watching — this job only ever runs at PR close.
+            if versions=$(gh api --paginate \
+              "/orgs/${OWNER}/packages/container/${pkg}/versions" 2>"$err"); then
+              :
+            elif grep -q 'HTTP 404' "$err"; then
+              echo "· ${pkg}: never published, skipping"
               continue
+            else
+              echo "::error::${pkg}: could not list package versions"
+              cat "$err" >&2
+              exit 1
             fi
 
             # Only delete a version when EVERY tag on it belongs to this PR.

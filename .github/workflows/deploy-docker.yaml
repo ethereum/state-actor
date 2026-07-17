@@ -60,11 +60,18 @@ on:
         default: all
         type: string
 
-# Supersede an in-flight build of the same PR when it gets re-dispatched.
+# Supersede an in-flight build only when the same PR is re-dispatched for the
+# same images — re-dispatching means "redo it", so cancelling the old run is
+# the point. The images are part of the key so that dispatching `besu` and then
+# `nethermind` for one PR runs both instead of the second silently cancelling
+# the first's ~15 min cgo build. Two dispatches with *overlapping* sets can
+# then race to push one tag, which is benign: both build the same PR head, so
+# they publish the same content.
+#
 # Pushes to main and version tags are never cancelled — a release build that
 # loses a race would leave half-published manifests behind.
 concurrency:
-  group: ${{ github.workflow }}-${{ inputs.pr && format('pr-{0}', inputs.pr) || github.ref }}
+  group: ${{ github.workflow }}-${{ inputs.pr && format('pr-{0}-{1}', inputs.pr, inputs.images) || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'workflow_dispatch' }}
 
 jobs:
@@ -166,18 +173,30 @@ jobs:
           if [[ "$GITHUB_EVENT_NAME" != "workflow_dispatch" || -z "${IMAGES:-}" || "$IMAGES" == "all" ]]; then
             SELECTED="$ALL"
           else
-            # Reject unknown names loudly. A typo'd client would otherwise
-            # silently narrow the matrix and "succeed" having built nothing.
-            KNOWN=$(jq -r '.[].name' <<<"$ALL")
-            for want in ${IMAGES//,/ }; do
-              if ! grep -qx -- "$want" <<<"$KNOWN"; then
-                echo "::error::unknown image '$want'; valid: $(tr '\n' ' ' <<<"$KNOWN")"
-                exit 1
-              fi
-            done
-            SELECTED=$(jq -c --arg csv "$IMAGES" \
-              '($csv | split(",") | map(gsub("^\\s+|\\s+$";""))) as $want
-               | map(select(.name as $n | $want | index($n)))' <<<"$ALL")
+            # Split and match in ONE jq pass, and reject whatever it could not
+            # match. Validating in bash and selecting in jq lets the two
+            # disagree: bash word-splits "nethermind besu" into two valid names
+            # and passes it, while split(",") sees one unknown name and selects
+            # nothing — a typo would then "succeed" having built nothing, the
+            # opposite of what the check is for.
+            PARSED=$(jq -c --arg csv "$IMAGES" '
+              ($csv | split(",") | map(gsub("^\\s+|\\s+$";"")) | map(select(length > 0)) | unique) as $want
+              | { selected: map(select(.name as $n | $want | index($n))),
+                  unknown:  ($want - map(.name)) }
+            ' <<<"$ALL")
+            UNKNOWN=$(jq -r '.unknown | join(", ")' <<<"$PARSED")
+            if [[ -n "$UNKNOWN" ]]; then
+              echo "::error::unknown image(s): ${UNKNOWN}; valid: $(jq -r 'map(.name) | join(", ")' <<<"$ALL")"
+              exit 1
+            fi
+            SELECTED=$(jq -c '.selected' <<<"$PARSED")
+          fi
+          # Backstop for every path above: an empty matrix expands to zero
+          # build jobs, the manifest jobs skip on `needs`, and the run reports
+          # success having published nothing.
+          if [[ "$(jq 'length' <<<"$SELECTED")" -eq 0 ]]; then
+            echo "::error::no images selected from '${IMAGES:-}'"
+            exit 1
           fi
           echo "Building: $(jq -r '[.[].name] | join(", ")' <<<"$SELECTED")"
           echo "matrix=$(jq -c '.' <<<"$SELECTED")" >> "$GITHUB_OUTPUT"
