@@ -9,7 +9,7 @@ import (
 )
 
 func TestBuildMaxSameRuntimePreAmsterdamLayout(t *testing.T) {
-	got := buildMaxSameRuntimePreAmsterdam()
+	got := BuildMaxSameRuntime(preAmsterdamMaxCodeSize)
 
 	if len(got) != 0x6000 {
 		t.Fatalf("length: got %d, want 0x6000 (24576)", len(got))
