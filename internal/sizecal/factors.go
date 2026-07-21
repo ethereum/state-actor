@@ -8,9 +8,9 @@ type SizeApproximator interface {
 }
 
 // bytesPerSlot is the TRIE-only on-disk B/slot cost. Flat-state rows (Pebble
-// snapshot, Bonsai flat, reth MDBX flat tables) are ADDITIONAL and not counted
-// toward target_bytes. Calibration anchor and per-client flat-state overhead
-// numbers live in docs/CALIBRATION.md.
+// snapshot, Bonsai flat, reth MDBX flat tables, Nethermind flat Account/Storage
+// rows) are ADDITIONAL and not counted toward target_bytes. Calibration anchor
+// and per-client flat-state overhead numbers live in docs/CALIBRATION.md.
 const bytesPerSlot uint64 = 140
 
 // bytesPerAccount is the TRIE-only on-disk B/account cost.

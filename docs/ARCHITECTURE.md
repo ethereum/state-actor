@@ -97,7 +97,7 @@ State Actor generates Ethereum state in three phases:
 │  ├─────────────────────────────────────────────────────────────────────┤ │
 │  │  reth: MDBX state tables + RocksDB history + nippy-jar static_files│ │
 │  │  besu: single RocksDB w/ 8 Bonsai column families + chainspec.json │ │
-│  │  nethermind: 7 RocksDB instances + parity-format chainspec sidecar │ │
+│  │  nethermind: 7 RocksDB + flat column DB + parity chainspec sidecar │ │
 │  │  ethrex: single RocksDB w/ 20 CFs + metadata.json + genesis sidecar│ │
 │  │  erigon: Erigon v3 flat .kv snapshots + minimal MDBX               │ │
 │  └─────────────────────────────────────────────────────────────────────┘ │
@@ -223,8 +223,9 @@ configurable worker pool / batch size at the generator level.
   Single RocksDB with 8 Bonsai column families; per-entity raw-bytes
   accumulator drives the target-size stop.
 - **nethermind** (`client/nethermind/{run_cgo,entitygen_cgo}.go`): cgo
-  + grocksdb. Seven RocksDB instances; periodic `dirSize` sample
-  (every 100 contracts) drives the target-size stop.
+  + grocksdb. Seven RocksDB instances plus an eighth flat-state column DB
+  under `<db>/flat` (the flat backend Nethermind >= 1.39.0 serves); periodic
+  `dirSize` sample (every 100 contracts) drives the target-size stop.
 - **ethrex** (`client/ethrex/run_cgo.go`): cgo + grocksdb. Single
   RocksDB with 20 column families. Account and storage trie nodes
   are encoded via `internal/ethrex`'s path-keyed trie codec (two rows
@@ -351,8 +352,9 @@ Today's client adapters:
   besu-format chainspec sidecar. Behind the `cgo_besu` build tag.
 - `client/nethermind/` — cgo + grocksdb writer producing seven RocksDB
   instances (`state`, `code`, `blocks`, `headers`, `blockNumbers`,
-  `blockInfos`, `receipts`) plus a parity-format chainspec sidecar.
-  Behind the `cgo_neth` build tag.
+  `blockInfos`, `receipts`) plus an eighth `flat` column DB (byte-mirrored in
+  `internal/neth/flat`) that Nethermind ≥ 1.39.0 serves as its flat backend,
+  and a parity-format chainspec sidecar. Behind the `cgo_neth` build tag.
 - `client/ethrex/` — cgo + grocksdb writer producing a single RocksDB
   with 20 column families (full list in `internal/ethrex/constants.go`)
   using ethrex's own path-keyed trie codec (`internal/ethrex/`). Two
@@ -372,7 +374,7 @@ Today's client adapters:
 
 The Nethermind adapter takes a different route from the others: instead of
 writing a chainspec for the client to consume, it writes the seven RocksDB
-instances Nethermind reads on boot directly. This bypasses Nethermind's
+instances plus the eighth `flat` column DB Nethermind reads on boot directly. This bypasses Nethermind's
 `LoadGenesisBlock` step (which would deserialize every alloc account into
 a `Dictionary<Address, ChainSpecAllocation>` — fine at small scale, OOMs
 at multi-million-account scale per upstream issue #7361). The boot gate

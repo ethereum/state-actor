@@ -2,6 +2,27 @@
 
 ## Unreleased
 
+### Added
+- **Nethermind flat-DB state generation (closes #111).** `--client=nethermind`
+  now always writes Nethermind's flat-state layout — an eighth RocksDB
+  (`<db>/flat`, a column DB holding Account/Storage leaf rows plus the relocated
+  Merkle-Patricia trie in four node column families, and the
+  `Layout`/`SlotEncoding`/`CurrentState` metadata markers) — so Nethermind
+  ≥ 1.39.0 detects and serves the DB as its **flat** backend instead of
+  **patricia**, matching how real networks run it. The byte-exact layout lives
+  in the new dependency-free `internal/neth/flat` package, pinned to release tag
+  1.39.0. The state root is unchanged (the trie is relocated into the flat DB,
+  not removed). Boot a flat datadir with `--FlatDb.Enabled=true` (the bloatnet
+  bench and the e2e suite pass it). The legacy patricia (`state`-DB) layout is
+  no longer written.
+
+### Changed
+- **Pinned Nethermind image bumped 1.37.0 → 1.39.0.** The flat-DB backend and
+  its startup `State backend: flat/patricia` detection log only exist in
+  Nethermind ≥ 1.39.0. A new `neth.PinnedNethermindVersion` constant plus a
+  consistency test keep the image pin aligned across the Makefile, bench script,
+  and `validate-big-db.sh`.
+
 ### Documentation
 - **RUNBOOK and `client/besu/doc.go` document Besu's p2p requirement for the Engine
   API.** Besu accepts `engine_forkchoiceUpdated` on an isolated snapshot node only with

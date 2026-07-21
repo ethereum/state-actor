@@ -26,8 +26,8 @@ var errNotImplemented = errors.New(
 // `case "nethermind"` arm. It delegates to the build-tag-gated runImpl:
 //
 //   - Built with `-tags cgo_neth` (Docker only): runImpl in run_cgo.go opens
-//     7 grocksdb instances, drives entitygen → trie.Builder → grocksdb writes,
-//     assembles the genesis block tree.
+//     8 grocksdb instances (7 block/state DBs + the flat column DB), drives
+//     entitygen → trie.Builder → grocksdb writes, assembles the genesis block tree.
 //   - Built without the tag (local default): runImpl in run_stub.go returns
 //     errNotImplemented.
 //

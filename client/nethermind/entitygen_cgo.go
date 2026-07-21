@@ -15,31 +15,33 @@ import (
 	gethrlp "github.com/ethereum/go-ethereum/rlp"
 
 	"github.com/ethereum/state-actor/generator"
-	nethtrie "github.com/ethereum/state-actor/internal/neth/trie"
+	nethrlp "github.com/ethereum/state-actor/internal/neth/rlp"
 	"github.com/ethereum/state-actor/internal/streamsort"
 )
 
 // maxPhase0Workers caps Phase 0 drain-and-compute parallelism. Each worker
-// holds a nethtrie.Builder + stateDBSink (grocksdb.WriteBatch up to
-// stateBatchFlushBytes) + a streamsort.Store; peak per-worker RAM scales
-// linearly.
+// holds a flatStateWriter (nethtrie.Builder + a flat sink whose
+// grocksdb.WriteBatch flushes at stateBatchFlushBytes) + a streamsort.Store;
+// peak per-worker RAM scales linearly.
 const maxPhase0Workers = 8
 
-// writeSyntheticAccounts populates the State + Code DBs from synthetic
-// EOAs/contracts, genesis-alloc entries, and spec-PreAlloc entities,
-// and returns the computed state root.
+// writeSyntheticAccounts populates the flat DB (trie nodes in the node CFs plus
+// flat Account/Storage leaf rows) and the Code DB from synthetic EOAs/contracts,
+// genesis-alloc entries, and spec-PreAlloc entities, and returns the computed
+// state root.
 //
-// Phase 0 streams each spec-PreAlloc entity's storage into the builder
-// (BeginStorage→AddStorageSlot→FinalizeStorageRoot) and splices the
-// returned root into cfg.GenesisAccounts[addr].Root.
+// Phase 0 streams each spec-PreAlloc entity's storage through a per-worker
+// builder (AddStorageSlot→FinalizeStorageRoot), teeing flat Storage rows, and
+// splices the returned storage root into genesisAccounts[addr].Root.
 //
-// Phase 1 generates entitygen output, drives per-contract storage tries
-// against the State DB at HalfPath storage keys, and queues
-// (addrHash → StateAccount blob) into a streamsort.Store.
+// Phase 1 generates entitygen output, drives per-contract storage tries (teeing
+// flat Storage rows), writes each account's flat Account row from the live
+// StateAccount (writeFlatAccountRow), and queues the account's full RLP into a
+// streamsort.Store keyed by addrHash.
 //
-// Phase 2 iterates the streamsort.Store in addrHash order, decodes the
-// stashed StateAccount, encodes Nethermind RLP, and drives
-// Builder.AddAccount. FinalizeStateRoot returns the final root.
+// Phase 2 iterates the streamsort.Store in addrHash order and feeds each stashed
+// full RLP straight to Builder.AddAccount (no decode — the flat Account row was
+// already written in Phase 1). FinalizeStateRoot returns the final root.
 //
 // Memory: O(max slots per contract).
 func writeSyntheticAccounts(
@@ -51,9 +53,8 @@ func writeSyntheticAccounts(
 	genesisStorages map[common.Address]map[common.Hash]common.Hash,
 	stats *generator.Stats,
 ) (common.Hash, error) {
-	sink := newStateDBSink(dbs.state)
-	defer func() { _ = sink.close() }()
-	builder := nethtrie.NewBuilder(sink)
+	builder, closeState := newFlatStateWriter(dbs)
+	defer func() { _ = closeState() }()
 
 	sorter, err := streamsort.New("")
 	if err != nil {
@@ -65,13 +66,13 @@ func writeSyntheticAccounts(
 	defer func() { _ = codeSink.close() }()
 
 	// Phase 0: drain every spec-PreAlloc entity's storage trie in parallel.
-	// Workers each own (a) a stateDBSink wrapping a per-worker
+	// Workers each own (a) a per-worker flat sink wrapping its own
 	// grocksdb.WriteBatch — grocksdb's Write is safe to call concurrently
 	// across workers per RocksDB's WAL serialization (besu commit 4847945,
 	// docs and matching pattern at client/besu/state_writer_cgo.go:308-432),
-	// and (b) a per-worker nethtrie.Builder so the single-goroutine
-	// invariant (internal/neth/trie/builder.go:60-61) holds within each
-	// worker. Storage roots are content-addressed (keccak), so out-of-order
+	// and (b) a per-worker flatStateWriter/nethtrie.Builder so the
+	// single-goroutine invariant (internal/neth/trie/builder.go:60-61) holds
+	// within each worker. Storage roots are content-addressed (keccak), so out-of-order
 	// completion doesn't affect determinism; the main goroutine assigns
 	// roots into genesisAccounts in receive order — the eventual state-trie
 	// root depends only on sorted addrHash iteration (sorter.Iterate below).
@@ -124,17 +125,13 @@ func writeSyntheticAccounts(
 				return bytes.Compare(hashed[i].keyHash[:], hashed[j].keyHash[:]) < 0
 			})
 			for _, s := range hashed {
-				v := s.value[:]
-				for len(v) > 0 && v[0] == 0 {
-					v = v[1:]
-				}
-				if len(v) == 0 {
-					continue // zero slot = deletion; skip
-				}
-				valRLP, err := gethrlp.EncodeToBytes(v)
+				valRLP, err := nethrlp.EncodeStorageValue(s.value)
 				if err != nil {
 					return common.Hash{}, fmt.Errorf("encode genesis-alloc slot %s/%s: %w",
 						addr.Hex(), s.keyHash.Hex(), err)
+				}
+				if valRLP == nil {
+					continue // zero slot = deletion; skip
 				}
 				if err := builder.AddStorageSlot(ah, [32]byte(s.keyHash), valRLP); err != nil {
 					return common.Hash{}, fmt.Errorf("add genesis-alloc storage slot %s/%s: %w",
@@ -160,6 +157,9 @@ func writeSyntheticAccounts(
 		if err := sorter.Put(ah[:], data); err != nil {
 			return common.Hash{}, fmt.Errorf("queue genesis account: %w", err)
 		}
+		if err := builder.writeFlatAccountRow([32]byte(ah), acc); err != nil {
+			return common.Hash{}, fmt.Errorf("write genesis flat account %s: %w", addr.Hex(), err)
+		}
 		if stats != nil {
 			stats.AccountBytes += uint64(len(data))
 		}
@@ -179,6 +179,9 @@ func writeSyntheticAccounts(
 			}
 			if err := sorter.Put(acc.AddrHash[:], data); err != nil {
 				return common.Hash{}, fmt.Errorf("queue EOA: %w", err)
+			}
+			if err := builder.writeFlatAccountRow([32]byte(acc.AddrHash), acc.StateAccount); err != nil {
+				return common.Hash{}, fmt.Errorf("write EOA flat account: %w", err)
 			}
 			if stats != nil {
 				stats.AccountBytes += uint64(len(data))
@@ -229,7 +232,7 @@ func writeSyntheticAccounts(
 			})
 
 			for _, s := range slots {
-				valueRLP, err := encodeStorageValueNeth(s.value)
+				valueRLP, err := nethrlp.EncodeStorageValue(s.value)
 				if err != nil {
 					return common.Hash{}, fmt.Errorf("encode slot: %w", err)
 				}
@@ -257,6 +260,9 @@ func writeSyntheticAccounts(
 		if err := sorter.Put(contract.AddrHash[:], data); err != nil {
 			return common.Hash{}, fmt.Errorf("queue contract: %w", err)
 		}
+		if err := builder.writeFlatAccountRow([32]byte(contract.AddrHash), contract.StateAccount); err != nil {
+			return common.Hash{}, fmt.Errorf("write contract flat account: %w", err)
+		}
 		if stats != nil {
 			stats.AccountBytes += uint64(len(data))
 			stats.ContractsCreated++
@@ -277,13 +283,11 @@ func writeSyntheticAccounts(
 		var ah [32]byte
 		copy(ah[:], key)
 
-		// Skip the decode + re-encode round-trip: nethrlp.EncodeAccount
-		// (internal/neth/rlp/account.go:28-30) is literally
-		// gethrlp.EncodeToBytes(acc), which is the same encoder that
-		// produced the stashed `value` bytes in the loops above. Saves
-		// ~5-10% of Phase 2 wall on the 215K-entity bloatnet workload.
-		// Determinism preserved: the bytes ARE the canonical Nethermind
-		// RLP encoding by construction.
+		// Feed the stashed full RLP straight to the state trie: it is already
+		// the canonical Nethermind account encoding (gethrlp.EncodeToBytes(acc)
+		// from the Phase-1 loops), so no decode/re-encode happens here. The flat
+		// Account CF row (slim form) was already teed in Phase 1 via
+		// writeFlatAccountRow, so this hot path stays fully decode-free.
 		if err := builder.AddAccount(ah, value); err != nil {
 			return fmt.Errorf("add account: %w", err)
 		}
@@ -298,26 +302,19 @@ func writeSyntheticAccounts(
 	if err != nil {
 		return common.Hash{}, fmt.Errorf("finalize state root: %w", err)
 	}
-	// Flush before return so the genesis-block writer sees a coherent
-	// State DB and so failures surface synchronously.
-	if err := sink.close(); err != nil {
+	// Flush the flat and code sinks before return so the genesis-block writer
+	// sees coherent DBs and any final-flush failure surfaces synchronously. The
+	// deferred closes above stay as idempotent safety nets; closing here on the
+	// success path means a failed final code Write is a hard error rather than a
+	// silently dropped one (which would leave accounts referencing code the code
+	// DB never persisted).
+	if err := closeState(); err != nil {
 		return common.Hash{}, fmt.Errorf("flush state writes: %w", err)
 	}
+	if err := codeSink.close(); err != nil {
+		return common.Hash{}, fmt.Errorf("flush code writes: %w", err)
+	}
 	return common.Hash(root), nil
-}
-
-// encodeStorageValueNeth RLP-encodes a storage slot value with leading
-// zeros trimmed — the same wire format Nethermind reads. Returns nil for
-// the all-zero hash (which represents a deletion in MPT semantics).
-func encodeStorageValueNeth(value common.Hash) ([]byte, error) {
-	v := value[:]
-	for len(v) > 0 && v[0] == 0 {
-		v = v[1:]
-	}
-	if len(v) == 0 {
-		return nil, nil
-	}
-	return gethrlp.EncodeToBytes(v)
 }
 
 type hashedSlot struct {
@@ -325,12 +322,12 @@ type hashedSlot struct {
 	value   common.Hash
 }
 
-// nethermindStorageHashBuilder adapts nethtrie.Builder to
-// streamingtrie.HashBuilder. AddStorageSlot writes both the per-slot
-// Storage CF row and advances the storage trie, so the streamingtrie
-// Sink slot is left nil for nethermind.
+// nethermindStorageHashBuilder adapts the flatStateWriter to
+// streamingtrie.HashBuilder. AddStorageSlot advances the storage trie and tees
+// the per-slot flat Storage CF row, so the streamingtrie Sink slot is left nil
+// for nethermind.
 type nethermindStorageHashBuilder struct {
-	builder *nethtrie.Builder
+	builder *flatStateWriter
 	ah      [32]byte
 }
 

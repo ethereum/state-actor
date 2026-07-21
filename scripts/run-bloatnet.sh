@@ -194,11 +194,14 @@ boot_client() {
   "Mining": { "Enabled": false }
 }
 NETH_CFG
+            # Flat mode must be opted into at boot; a flat datadir booted
+            # without this flag detects as patricia and finds an empty state DB.
             docker run -d --name $ct \
                 --network host \
                 -v $data:/data \
-                nethermind/nethermind:1.37.0 \
+                nethermind/nethermind:1.39.0 \
                 --config=/data/boot.cfg \
+                --FlatDb.Enabled=true \
                 --log=Info
             ;;
         reth)
@@ -458,6 +461,23 @@ run_one_client() {
         write_result "$client" "rpc_timeout" "after ${rpc_timeout}s; see container logs" "$result_json"
         return 1
     fi
+
+    # Flat-DB boot proof: Nethermind >= 1.39.0 logs its selected state backend
+    # at startup. A flat run MUST detect flat; a silent patricia fallback would
+    # leave the state unreadable, so fail the leg loudly rather than benchmark
+    # an empty node.
+    if [ "$client" = "nethermind" ]; then
+        if docker logs $ct 2>&1 | grep -qiE 'State backend: flat'; then
+            echo "    nethermind: flat backend detected"
+        else
+            echo "    nethermind: FLAT BACKEND NOT DETECTED — see docker logs $ct" >&2
+            docker logs --tail 50 $ct >&2 || true
+            docker rm -f $ct 2>/dev/null || true
+            write_result "$client" "flat_not_detected" "boot did not log 'State backend: flat'" "$result_json"
+            return 1
+        fi
+    fi
+
     if ! start_engine_driver_if_needed $client $logdir; then
         docker rm -f $ct 2>/dev/null || true
         write_result "$client" "engine_driver_died" "see $logdir/engine-driver.log" "$result_json"

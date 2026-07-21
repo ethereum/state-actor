@@ -128,7 +128,13 @@ jobs:
             env-prefix: NETH
             test-tags: 'cgo_neth oracle'
             test-pkg: ./client/nethermind/
-            test-run-filter: 'TestE2ESuite|TestDifferentialOracle'
+            # Empty filter → runs ALL cgo_neth+oracle tests (TestE2ESuite +
+            # TestDifferentialOracle + TestNethGoldenStateRoot +
+            # TestRunEmitsFullPlan + TestRunPopulatesByteStats +
+            # TestPureSpecDispatchUsesStreamingPath). Restores the cgo_neth
+            # unit-test coverage that the previous
+            # `-run TestE2ESuite|TestDifferentialOracle` filter silently dropped.
+            test-run-filter: ''
           - client: reth
             dockerfile: Dockerfile.reth
             image-tag: state-actor-reth:latest

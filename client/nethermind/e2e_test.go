@@ -26,7 +26,7 @@ import (
 // pinnedNethImage is the upstream Nethermind Docker tag the e2e suite
 // pins against. Override with NETH_IMAGE=nethermind/nethermind:vX.Y.Z to
 // test a pre-release version.
-const pinnedNethImage = "nethermind/nethermind:1.37.0"
+const pinnedNethImage = "nethermind/nethermind:1.39.0"
 
 func nethImageRef() string {
 	if v := os.Getenv("NETH_IMAGE"); v != "" {
@@ -168,6 +168,8 @@ func TestE2ESuite(t *testing.T) {
 		"-v", dd.VolMount,
 		imageRef,
 		"--config", containerCfgPath,
+		// Nethermind requires flat to be opted into at boot even for a flat DB.
+		"--FlatDb.Enabled=true",
 		"--log", "Info",
 	)
 	runOut, err := exec.Command("docker", runArgs...).CombinedOutput()
@@ -193,6 +195,12 @@ func TestE2ESuite(t *testing.T) {
 	// Nethermind's .NET startup is comparable to Besu; allow 180s.
 	if err := rpcprobe.WaitForRPC(rpcURL, 180*time.Second); err != nil {
 		t.Fatalf("RPC never came up (logs captured in t.Cleanup): %v", err)
+	}
+
+	// Flat-DB detection guard: Nethermind must select the flat backend for the
+	// DB state-actor wrote; a silent patricia fallback would serve empty state.
+	if logs, _ := exec.Command("docker", "logs", containerName).CombinedOutput(); !strings.Contains(string(logs), "State backend: flat") {
+		t.Fatalf("nethermind did not log 'State backend: flat' (flat DB not detected); logs:\n%s", logs)
 	}
 
 	// Mock CL: drive block production via engine API. MergePlugin's

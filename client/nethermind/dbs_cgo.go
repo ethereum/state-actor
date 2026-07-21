@@ -10,6 +10,8 @@ import (
 	"runtime"
 
 	"github.com/linxGnu/grocksdb"
+
+	"github.com/ethereum/state-actor/internal/neth/flat"
 )
 
 // bulkBackgroundJobs caps RocksDB's per-DB background compaction/flush thread
@@ -56,6 +58,7 @@ const (
 	dbNameBlockNumbers = "blockNumbers"
 	dbNameBlockInfos   = "blockInfos"
 	dbNameReceipts     = "receipts"
+	dbNameFlat         = "flat"
 )
 
 // receiptsCFNames must match Nethermind.Db/ReceiptsColumns.cs exactly.
@@ -77,13 +80,18 @@ type nethDBs struct {
 	receiptsCFs      []*grocksdb.ColumnFamilyHandle // [default, Transactions, Blocks]
 	receiptsBlocksCF *grocksdb.ColumnFamilyHandle   // alias to receiptsCFs[2]
 
+	// flat is the Nethermind flat-state column DB; flatCFs holds its
+	// column-family handles indexed by flat.Column.
+	flat    *grocksdb.DB
+	flatCFs []*grocksdb.ColumnFamilyHandle
+
 	// Held for Destroy() during Close — grocksdb requires explicit
 	// option-bag cleanup or it leaks C++ allocations.
 	openedOpts []*grocksdb.Options
 }
 
-// openNethDBs opens (or creates) the 7 RocksDB instances directly under
-// dataDir/<name>/. dataDir typically comes from the user's --db flag, and
+// openNethDBs opens (or creates) the 8 RocksDB instances (7 block/state DBs
+// plus the flat-state column DB) directly under dataDir/<name>/. dataDir typically comes from the user's --db flag, and
 // matches Nethermind's `BaseDbPath` convention 1:1 — point Nethermind at
 // the same path state-actor wrote to and it finds the DBs immediately, no
 // subdir gymnastics. (Earlier revisions used a `db/` subdir to mirror
@@ -92,7 +100,7 @@ type nethDBs struct {
 // and ignored the populated ones at dataDir/db/<name>/.)
 //
 // **Fresh-dir precondition.** Before opening anything, this function
-// fails loud if any of the 7 DB directories already exist. The genesis
+// fails loud if any of the 8 DB directories already exist. The genesis
 // writer makes 5 separate `Put` calls across 5 separate grocksdb
 // instances (no cross-DB transactions exist), so a re-run on top of a
 // half-finished previous run could silently mix the old and new genesis
@@ -107,19 +115,23 @@ type nethDBs struct {
 func openNethDBs(dataDir string) (*nethDBs, error) {
 	dbRoot := dataDir
 
+	// Reserved DB subdir names: the seven Nethermind block/state DBs plus the
+	// flat-state column DB.
+	dbNames := []string{
+		dbNameState, dbNameCode, dbNameBlocks, dbNameHeaders,
+		dbNameBlockNumbers, dbNameBlockInfos, dbNameReceipts, dbNameFlat,
+	}
+
 	// Precondition: refuse to write into a non-fresh dataDir. We check
 	// EACH DB subdir individually (rather than "is dataDir empty?") so
 	// callers can put unrelated files in dataDir without surprise; only
 	// our reserved names are off-limits.
-	for _, name := range []string{
-		dbNameState, dbNameCode, dbNameBlocks, dbNameHeaders,
-		dbNameBlockNumbers, dbNameBlockInfos, dbNameReceipts,
-	} {
+	for _, name := range dbNames {
 		path := filepath.Join(dbRoot, name)
 		if _, err := os.Stat(path); err == nil {
 			return nil, fmt.Errorf(
 				"--db=%s already contains a Nethermind DB at %s/. "+
-					"Refusing to write into it: a partial previous run could leave the seven "+
+					"Refusing to write into it: a partial previous run could leave the "+
 					"DBs in inconsistent states because grocksdb has no cross-DB transactions. "+
 					"Pass --db= to a fresh path, or `rm -rf %s` first.",
 				dataDir, name, dataDir,
@@ -132,10 +144,7 @@ func openNethDBs(dataDir string) (*nethDBs, error) {
 	// grocksdb's CreateIfMissing only creates the leaf directory, not its
 	// parents. Pre-create the per-DB subdirs so the open call succeeds on
 	// a fresh dataDir.
-	for _, name := range []string{
-		dbNameState, dbNameCode, dbNameBlocks, dbNameHeaders,
-		dbNameBlockNumbers, dbNameBlockInfos, dbNameReceipts,
-	} {
+	for _, name := range dbNames {
 		if err := os.MkdirAll(filepath.Join(dbRoot, name), 0o755); err != nil {
 			return nil, fmt.Errorf("mkdir %s: %w", name, err)
 		}
@@ -216,6 +225,29 @@ func openNethDBs(dataDir string) (*nethDBs, error) {
 	dbs.receiptsCFs = cfHandles
 	dbs.receiptsBlocksCF = cfHandles[2] // index 2 = "Blocks" per receiptsCFNames
 
+	// Flat-state column DB: one RocksDB with 8 CFs (default + the 7
+	// flat.ColumnNames), same multi-CF open pattern as receipts. Opened last so
+	// the single-CF DBs and receipts are already in dbs for cleanup() on error.
+	flatPath := filepath.Join(dbRoot, dbNameFlat)
+	flatOpts := bulkRocksOptions()
+	dbs.openedOpts = append(dbs.openedOpts, flatOpts)
+
+	flatCFOpts := make([]*grocksdb.Options, len(flat.ColumnNames))
+	for i := range flatCFOpts {
+		flatCFOpts[i] = bulkRocksOptions()
+		dbs.openedOpts = append(dbs.openedOpts, flatCFOpts[i])
+	}
+
+	flatDB, flatHandles, err := grocksdb.OpenDbColumnFamilies(
+		flatOpts, flatPath, flat.ColumnNames, flatCFOpts,
+	)
+	if err != nil {
+		cleanup()
+		return nil, fmt.Errorf("open flat db at %s: %w", flatPath, err)
+	}
+	dbs.flat = flatDB
+	dbs.flatCFs = flatHandles
+
 	return dbs, nil
 }
 
@@ -246,6 +278,13 @@ func (d *nethDBs) Close() {
 			}
 		}
 	}
+	if d.flat != nil {
+		for _, cf := range d.flatCFs {
+			if cf != nil {
+				d.flat.CompactRangeCF(cf, emptyRange)
+			}
+		}
+	}
 
 	for _, h := range d.receiptsCFs {
 		if h != nil {
@@ -255,9 +294,17 @@ func (d *nethDBs) Close() {
 	d.receiptsCFs = nil
 	d.receiptsBlocksCF = nil
 
+	// Flat CF handles must be destroyed before the flat DB is closed.
+	for _, h := range d.flatCFs {
+		if h != nil {
+			h.Destroy()
+		}
+	}
+	d.flatCFs = nil
+
 	for _, db := range []**grocksdb.DB{
 		&d.state, &d.code, &d.blocks, &d.headers,
-		&d.blockNumbers, &d.blockInfos, &d.receipts,
+		&d.blockNumbers, &d.blockInfos, &d.receipts, &d.flat,
 	} {
 		if *db != nil {
 			(*db).Close()

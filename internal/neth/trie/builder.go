@@ -10,20 +10,20 @@ import (
 	"github.com/ethereum/state-actor/internal/neth"
 )
 
-// NodeStorage is the sink for HalfPath-keyed trie nodes that Builder emits.
+// NodeStorage is the sink for the trie nodes Builder emits.
 //
 // SetStateNode is called once per state-trie node (account-tree side) with:
 //
-//   - pathBytes: the byte-packed path representation (≥ 8 bytes; first 8
-//     are what HalfPath embeds in the key).
-//   - pathLen:   nibble count of the path (0..64).
-//   - keccak:    keccak256(rlp) of the node.
-//   - rlp:       the node's full RLP bytes (already copied — Builder
-//                does the deep-copy from StackTrie's volatile buffer).
+//   - path:    the 32-byte packed path representation (high nibble first).
+//   - pathLen: nibble count of the path (0..64).
+//   - keccak:  keccak256(rlp) of the node.
+//   - rlp:     the node's full RLP bytes (already copied — Builder does the
+//     deep-copy from StackTrie's volatile buffer).
 //
-// SetStorageNode is the same shape but tagged with the contract's
-// addrHash (the keccak of the contract address) so the sink can build
-// the 74-byte storage-trie key.
+// SetStorageNode is the same shape but tagged with the contract's addrHash
+// (the keccak of the contract address). The sink maps (path, pathLen, and for
+// storage the addrHash) to whatever node-key scheme its layout uses — for the
+// Nethermind writer, internal/neth/flat's flat node CFs.
 //
 // Implementations may return an error to abort the build; Builder will
 // propagate it from the next entry-point method (AddAccount, AddStorageSlot,
@@ -190,8 +190,8 @@ func (b *Builder) accountSink() gethtrie.OnTrieNode {
 		bl := make([]byte, len(blob))
 		copy(bl, blob)
 
-		// Convert nibble-path to byte-packed for HalfPath; keep only
-		// what fits in the 8-byte HalfPath snippet (caller pads / takes [:8]).
+		// Convert the nibble path to the 32-byte packed form the flat
+		// node-key encoders consume.
 		packed := packNibblesTo32(p)
 
 		var k [32]byte
@@ -229,10 +229,9 @@ func (b *Builder) storageSink(addrHash [32]byte) gethtrie.OnTrieNode {
 
 // packNibblesTo32 packs a nibble slice (each byte ∈ [0, 15]) into a
 // 32-byte buffer (high nibble first per byte, zero-padded). Mirrors the
-// representation `Nethermind.Trie.TreePath.Path.BytesAsSpan` exposes —
-// neth/storage's HalfPath encoder reads only the first 8 bytes of this
-// buffer, so paths shorter than 16 nibbles still produce well-formed
-// keys.
+// representation `Nethermind.Trie.TreePath.Path.BytesAsSpan` exposes; the flat
+// node-key encoders (internal/neth/flat) read the first 3 bytes (top nodes),
+// the first 8 (shortened), or the full 32 (fallback) of this buffer.
 func packNibblesTo32(nibbles []byte) [32]byte {
 	var out [32]byte
 	for i, n := range nibbles {

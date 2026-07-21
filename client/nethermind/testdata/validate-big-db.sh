@@ -29,14 +29,15 @@ echo "expected stateRoot: ${EXPECTED_ROOT:-<not provided — will skip equality 
 echo "size: $(du -sh "$DBPATH" | awk '{print $1}')"
 echo
 
-echo "[1/6] Booting nethermind/nethermind:1.37.0 ..."
+echo "[1/6] Booting nethermind/nethermind:1.39.0 ..."
 docker run --rm -d \
   --name "$CONTAINER" \
   -v "$TESTDATA:/test:ro" \
   -v "$DBPATH:/data" \
   -p 127.0.0.1:8545:8545 \
-  nethermind/nethermind:1.37.0 \
+  nethermind/nethermind:1.39.0 \
   --config "/test/configs/$CONFIG_NAME" \
+  --FlatDb.Enabled=true \
   --log Info > /dev/null
 
 # Wait for RPC to come up.

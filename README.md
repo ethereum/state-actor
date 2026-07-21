@@ -29,7 +29,7 @@
 
 ## Why
 
-You want a pre-populated Ethereum database that a client can boot against directly &mdash; for cross-client determinism tests, devnet bootstrapping, EIP-7702 / ERC-20 fixtures, or state-bloat experiments. The alternative (run the client's `init` against a genesis with millions of `alloc` entries) is slow and client-specific. State Actor writes each client's on-disk format directly: Pebble for geth, MDBX + RocksDB + nippy-jar for reth, single RocksDB + 8 Bonsai column families for besu, seven RocksDB instances for nethermind, single RocksDB + 20 column families for ethrex, Erigon v3 flat snapshot `.kv` files + a minimal MDBX for erigon.
+You want a pre-populated Ethereum database that a client can boot against directly &mdash; for cross-client determinism tests, devnet bootstrapping, EIP-7702 / ERC-20 fixtures, or state-bloat experiments. The alternative (run the client's `init` against a genesis with millions of `alloc` entries) is slow and client-specific. State Actor writes each client's on-disk format directly: Pebble for geth, MDBX + RocksDB + nippy-jar for reth, single RocksDB + 8 Bonsai column families for besu, seven RocksDB instances + a flat column DB for nethermind, single RocksDB + 20 column families for ethrex, Erigon v3 flat snapshot `.kv` files + a minimal MDBX for erigon.
 
 Three flags carry most of the weight: `--client` (which client's format to write), `--spec` (concrete entities to include, declared in YAML), `--target-size` (the DB-size budget; auto-fills mainnet-shaped 20 % / 10 % / 70 % across account-trie / bytecode / storage up to the cap). One of `--spec` or `--target-size` is required; everything else has a sane default.
 

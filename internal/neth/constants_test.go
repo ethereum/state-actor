@@ -29,12 +29,3 @@ func TestKeccakConstants_DerivedFromSpec(t *testing.T) {
 		})
 	}
 }
-
-// TestTopStateBoundary pins the depth split. If Nethermind ever changes this
-// (it has been 5 since the HalfPath scheme landed), the State DB key
-// encoding shifts and stored data becomes unreadable by the new boundary.
-func TestTopStateBoundary(t *testing.T) {
-	if TopStateBoundary != 5 {
-		t.Fatalf("TopStateBoundary: got %d, want 5 (per NodeStorage.cs)", TopStateBoundary)
-	}
-}

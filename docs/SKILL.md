@@ -100,7 +100,7 @@ See [`RUNBOOK.md#geth`](RUNBOOK.md#geth) for the boot command, and [`client/geth
 ```bash
 go run . --db=/tmp/sa-reth --client=reth --target-size=100MB        # MDBX + RocksDB + static files
 go run . --db=/tmp/sa-besu --client=besu --target-size=100MB        # single RocksDB, 8 Bonsai CFs
-go run . --db=/tmp/sa-neth --client=nethermind --target-size=100MB  # 7 RocksDB instances
+go run . --db=/tmp/sa-neth --client=nethermind --target-size=100MB  # 7 RocksDB + flat column DB
 go run . --db=/tmp/sa-ethrex --client=ethrex --target-size=100MB   # single RocksDB, 20 CFs
 go run . --db=/tmp/sa-erigon --client=erigon --target-size=100MB   # Erigon v3 flat .kv snapshots + minimal MDBX
 ```

@@ -160,8 +160,8 @@ smoke-nethermind-spamoor: docker-nethermind
 	  -v $(PWD)/client/nethermind/testdata:/test:ro \
 	  -v $(SA_DB):/data \
 	  -p 127.0.0.1:8545:8545 \
-	  nethermind/nethermind:1.37.0 \
-	  --config /test/configs/sa-dev-v2.json --log Info
+	  nethermind/nethermind:1.39.0 \
+	  --config /test/configs/sa-dev-v2.json --FlatDb.Enabled=true --log Info
 	@printf 'waiting for Nethermind RPC ' ; \
 	  until curl -s -o /dev/null --connect-timeout 1 -X POST -H 'Content-Type: application/json' \
 	    --data '{"jsonrpc":"2.0","method":"eth_chainId","params":[],"id":1}' http://127.0.0.1:8545; do \

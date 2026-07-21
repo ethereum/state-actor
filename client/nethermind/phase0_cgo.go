@@ -13,14 +13,13 @@ import (
 	"github.com/ethereum/go-ethereum/crypto"
 
 	"github.com/ethereum/state-actor/generator"
-	nethtrie "github.com/ethereum/state-actor/internal/neth/trie"
 	"github.com/ethereum/state-actor/internal/streamingtrie"
 )
 
 // runPhase0 drains each PreAlloc entity's storage iter in parallel, splicing
 // the computed storage root into genesisAccounts. Workers own per-instance
-// stateDBSinks + nethtrie.Builders; codeSink is shared via internal mutex.
-// addrHash-prefixed keyspaces make concurrent grocksdb.Write safe.
+// flatStateWriters (flat sink + nethtrie.Builder); codeSink is shared via
+// internal mutex. addrHash-prefixed keyspaces make concurrent grocksdb.Write safe.
 // Determinism: per-entity storage roots are content-addressed (keccak), so
 // worker completion order doesn't affect the final state root.
 func runPhase0(
@@ -79,13 +78,12 @@ func runPhase0(
 		go func() {
 			defer wg.Done()
 			slotW := slotMeter.Worker()
-			workerSink := newStateDBSink(dbs.state)
+			workerWriter, closeWorker := newFlatStateWriter(dbs)
 			defer func() {
-				if err := workerSink.close(); err != nil {
+				if err := closeWorker(); err != nil {
 					cancelDrain(fmt.Errorf("nethermind phase 0: worker sink close: %w", err))
 				}
 			}()
-			workerBuilder := nethtrie.NewBuilder(workerSink)
 
 			for i := range drainCh {
 				if drainCtx.Err() != nil {
@@ -95,7 +93,7 @@ func runPhase0(
 				addr := pe.Address
 				addrHash := crypto.Keccak256Hash(addr[:])
 				ah := [32]byte(addrHash)
-				hb := &nethermindStorageHashBuilder{builder: workerBuilder, ah: ah}
+				hb := &nethermindStorageHashBuilder{builder: workerWriter, ah: ah}
 
 				var entityStorageBytes uint64
 				statSink := func(_, _, value common.Hash) error {

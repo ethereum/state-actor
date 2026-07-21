@@ -218,7 +218,7 @@ docker run --rm \
 **On-disk layout:**
 
 - `/data/parity-chainspec.json` — Parity-format chainspec referenced by the boot config
-- `/data/<7 RocksDB instances>` — `state`, `code`, `blocks`, `headers`, `blockNumbers`, `blockInfos`, `receipts`
+- `/data/<8 RocksDB instances>` — `state`, `code`, `blocks`, `headers`, `blockNumbers`, `blockInfos`, `receipts`, plus a `flat` column DB (Nethermind's flat-state backend)
 
 **Pre-launch: write a boot.cfg.** Nethermind doesn't take chainspec + datadir as command-line flags — it reads them from a JSON config. Write this to `/data/boot.cfg` (substituting `/data/parity-chainspec.json` for `%CHAINSPEC%` and `/data` for `%BASEDB%`):
 
@@ -263,10 +263,17 @@ The full template is in `client/nethermind/e2e_test.go`'s `nethermindE2EConfigTe
 docker run -d \
   --name state-actor-neth \
   -v /tmp/sa-neth:/data \
-  nethermind/nethermind:1.37.0 \
+  nethermind/nethermind:1.39.0 \
   --config=/data/boot.cfg \
+  --FlatDb.Enabled=true \
   --log=Info
 ```
+
+state-actor writes Nethermind's **flat** state layout, so the boot MUST pass
+`--FlatDb.Enabled=true` — without it Nethermind selects the patricia backend,
+finds an empty `state` DB, and `eth_getBalance` returns zero for every account.
+A correct boot logs `State backend: flat (existing flat DB detected).`; a
+missing flag logs `State backend: patricia (existing patricia state detected).`
 
 Like besu, Nethermind has no native post-Merge dev mode in our setup — `Merge.Enabled=true` + `TerminalTotalDifficulty=0` + the Ethash-from-genesis chainspec hand block production to MergePlugin via the Engine API. Drive blocks from an external CL mock (the state-actor repo's `internal/engineapi/`).
 

@@ -1,12 +1,12 @@
 # client/nethermind/testdata
 
 Boot + integration smoke artifacts for `--client=nethermind`. These pair with the
-two-image build (state-actor + `nethermind/nethermind:1.37.0`) to validate that a
+two-image build (state-actor + `nethermind/nethermind:1.39.0`) to validate that a
 freshly-emitted RocksDB datadir boots cleanly and sustains real dev-mode workloads.
 
 ## Pinned target
 
-**Nethermind `nethermind/nethermind:1.37.0`** (the released image that ships at the
+**Nethermind `nethermind/nethermind:1.39.0`** (the released image that ships at the
 time of writing). The plan originally pinned upstream/master at SHA `09bd5a2d`,
 but building from that SHA tripped a Roslyn / .NET-SDK version mismatch in
 `Nethermind.Analyzers`; the boot contract Nethermind enforces (`WasProcessed=true`
@@ -36,7 +36,7 @@ make docker-nethermind
 make smoke-nethermind ACCOUNTS=1000 CONTRACTS=100
 ```
 
-`make smoke-nethermind` runs state-actor, boots `nethermind/nethermind:1.37.0`,
+`make smoke-nethermind` runs state-actor, boots `nethermind/nethermind:1.39.0`,
 and runs `validate-big-db.sh` end-to-end.
 
 ## Full pipeline (50 GB scale + spamoor `erc20_bloater`)
@@ -64,8 +64,9 @@ docker run --rm -d --name neth-50g \
   -v $PWD/client/nethermind/testdata:/test:ro \
   -v /tmp/sa-neth-big:/data \
   -p 127.0.0.1:8545:8545 \
-  nethermind/nethermind:1.37.0 \
-  --config /test/configs/sa-dev-v2.json
+  nethermind/nethermind:1.39.0 \
+  --config /test/configs/sa-dev-v2.json \
+  --FlatDb.Enabled=true
 
 # 4. Smoke 1 — simple self-transfers
 bash client/nethermind/testdata/send-100-txs.sh
@@ -78,6 +79,10 @@ bash client/nethermind/testdata/spamoor-100-blocks.sh
 # 6. Cleanup
 docker stop neth-50g
 ```
+
+State-actor writes Nethermind's flat-state layout, so the boot must pass
+`--FlatDb.Enabled=true` — without it Nethermind selects the patricia backend
+and serves empty state.
 
 `spamoor-100-blocks.sh` deploys an ERC20 contract and runs sustained `bloatStorage()`
 calls at ~16.5M gas/tx (50% of the 30M block limit). 100 blocks complete in ~1m45s

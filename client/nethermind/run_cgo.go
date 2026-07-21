@@ -37,20 +37,25 @@ import (
 // Pipeline:
 //  1. Resolve genesis fields (gasLimit, extraData, timestamp, …) from
 //     cfg.* / --genesis path.
-//  2. Open 7 grocksdb instances directly under cfg.DBPath/ via openNethDBs
-//     (which enforces the fresh-dir precondition).
+//  2. Open 8 grocksdb instances (7 block/state DBs + the flat column DB)
+//     directly under cfg.DBPath/ via openNethDBs (which enforces the
+//     fresh-dir precondition).
 //  3. Dispatch to writeSyntheticAccounts (handles synthetic generation,
 //     genesis-alloc, AND spec-PreAlloc entities via the spec-storage
 //     streaming Phase 0). Empty alloc + zero synthetic counts → state
 //     stays empty and root = EmptyTreeHash.
 //  4. Build the genesis header with the computed state root.
-//  5. writeGenesisBlockToDBs assembles the 5 metadata DBs at block 0
+//  5. writeFlatMetadata stamps the flat DB's Layout/SlotEncoding/CurrentState
+//     markers (CurrentState LAST, synced) — the flat boot-detection gate.
+//  6. writeGenesisBlockToDBs assembles the metadata DBs at block 0
 //     (headers/blocks/blockNumbers/receipts, blockInfos LAST as the boot
 //     gate; see genesis_cgo.go for the failure-window discipline).
-//  6. Close cleanly and return Stats.
+//  7. Close cleanly and return Stats.
 //
-// opts is reserved for future boot-validation wiring; runImpl's body
-// runs synchronously today.
+// The writer always emits Nethermind's flat-state layout (a `flat` column DB
+// whose CurrentState marker makes Nethermind >= 1.39.0 detect and serve the DB
+// as its flat backend — booting requires `--FlatDb.Enabled=true`). opts
+// currently carries no options.
 func runImpl(ctx context.Context, cfg generator.Config, opts Options) (*generator.Stats, error) {
 	_ = opts
 
@@ -103,6 +108,15 @@ func runImpl(ctx context.Context, cfg generator.Config, opts Options) (*generato
 	// BlobGasUsed/RequestsHash) is centralized there.
 	header := genesisheader.Build(g, 0, common.Hash{}, stateRoot)
 
+	// Stamp the flat-DB Metadata markers (Layout / SlotEncoding / CurrentState)
+	// now that all state is flushed and the genesis state root is known. Written
+	// outside the non-empty-state gate above so an empty-alloc DB still stamps
+	// CurrentState=(0, EmptyTreeHash) and is detected as flat. Precedes the
+	// block-tree write; blockInfos remains the boot gate.
+	if err := writeFlatMetadata(dbs, header.Root); err != nil {
+		return nil, fmt.Errorf("nethermind: %w", err)
+	}
+
 	hash, err := writeGenesisBlockToDBs(dbs, header)
 	if err != nil {
 		return nil, fmt.Errorf("write genesis: %w", err)
@@ -118,7 +132,7 @@ func runImpl(ctx context.Context, cfg generator.Config, opts Options) (*generato
 	if cfg.Verbose {
 		log.Printf("nethermind: genesis hash = %s", hash.Hex())
 		log.Printf("nethermind: state root  = %s", header.Root.Hex())
-		log.Printf("nethermind: 7 RocksDBs written under %s/", cfg.DBPath)
+		log.Printf("nethermind: 7 RocksDBs + flat column DB written under %s/ (flat backend, CurrentState=(0, %s))", cfg.DBPath, header.Root.Hex())
 		if len(allocAccounts) > 0 {
 			log.Printf("nethermind: preallocated %d accounts from cfg.GenesisAccounts (test-only path)", len(allocAccounts))
 		}
