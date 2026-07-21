@@ -65,6 +65,7 @@ type createPreimageDeploysParams struct {
 	startNonce  uint64
 	count       uint64 // in [1, 2^32]
 	patternName string // "" in literal runtime mode
+	codeSize    uint64 // resolved code_size; 0 for fixed-size patterns
 	runtime     []byte // shared literal runtime; nil in pattern mode
 	storageInit map[common.Hash]common.Hash
 }
@@ -76,7 +77,7 @@ type createPreimageDeploysParams struct {
 func parseCreatePreimageDeploysParams(params map[string]any) (createPreimageDeploysParams, error) {
 	var pp createPreimageDeploysParams
 	if err := RejectUnknownKeys(params, "create_preimage_deploys", []string{
-		"sender", "start_nonce", "count", "runtime", "storage_init", "code_pattern",
+		"sender", "start_nonce", "count", "runtime", "storage_init", "code_pattern", "code_size",
 	}); err != nil {
 		return pp, err
 	}
@@ -101,7 +102,15 @@ func parseCreatePreimageDeploysParams(params map[string]any) (createPreimageDepl
 			return pp, fmt.Errorf("create_preimage_deploys: `runtime` is forbidden when `code_pattern` is set (the pattern generates per-address runtime)")
 		}
 		pp.patternName = name
+		codeSize, err := parseCodePatternCodeSize(params, name)
+		if err != nil {
+			return pp, fmt.Errorf("create_preimage_deploys: %w", err)
+		}
+		pp.codeSize = codeSize
 	} else {
+		if _, has := params["code_size"]; has {
+			return pp, fmt.Errorf("create_preimage_deploys: `code_size` is only valid together with `code_pattern:`")
+		}
 		if _, ok := params["runtime"]; !ok {
 			return pp, fmt.Errorf("create_preimage_deploys: missing required parameter %q (or set `code_pattern:`)", "runtime")
 		}
@@ -135,7 +144,7 @@ func parseCreatePreimageDeploysParams(params map[string]any) (createPreimageDepl
 	// host survives. (count <= 2^32 and runtime sizes are small, so the
 	// product cannot overflow uint64.)
 	if pp.patternName != "" {
-		if est := count * CodePatternRuntimeSize(pp.patternName); est > patternResidentCodeCapBytes {
+		if est := count * CodePatternRuntimeSize(pp.patternName, pp.codeSize); est > patternResidentCodeCapBytes {
 			return pp, fmt.Errorf("create_preimage_deploys: code_pattern %q with count=%d would materialize ≈%.0f GiB of unique runtime code in memory (cap %d GiB); split into multiple entities or reduce count",
 				pp.patternName, count, float64(est)/float64(1<<30), patternResidentCodeCapBytes>>30)
 		}
@@ -170,7 +179,7 @@ func (createPreimageDeploysTemplate) Expand(ctx Context, e spec.Entity) ([]PreAl
 		derived := crypto.CreateAddress(pp.sender, pp.startNonce+i)
 		runtime := pp.runtime
 		if pp.patternName != "" {
-			runtime, err = codePatternRuntimeFor(pp.patternName, derived)
+			runtime, err = codePatternRuntimeFor(pp.patternName, pp.codeSize, derived)
 			if err != nil {
 				return nil, fmt.Errorf("create_preimage_deploys: nonce=%d: %w", pp.startNonce+i, err)
 			}

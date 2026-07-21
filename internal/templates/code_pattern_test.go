@@ -310,10 +310,10 @@ func TestCreatePreimageDeploysCodePattern(t *testing.T) {
 // Production scale (1.5M ≈ 34.3 GiB) must pass. Validation-only — the
 // counts here are never expanded.
 func TestPatternResidentCodeCap(t *testing.T) {
-	if got := CodePatternRuntimeSize(CodePatternUniqueJumpdestPreAmsterdam); got != 24576 {
+	if got := CodePatternRuntimeSize(CodePatternUniqueJumpdestPreAmsterdam, 0); got != 24576 {
 		t.Fatalf("CodePatternRuntimeSize(pattern) = %d, want 24576", got)
 	}
-	if got := CodePatternRuntimeSize("bogus"); got != 0 {
+	if got := CodePatternRuntimeSize("bogus", 0); got != 0 {
 		t.Fatalf("CodePatternRuntimeSize(bogus) = %d, want 0", got)
 	}
 	// floor(64 GiB / 24576) = 2_796_202 fits; +1 exceeds.

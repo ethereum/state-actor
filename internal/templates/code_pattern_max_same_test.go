@@ -64,7 +64,7 @@ func TestCreate2DeploysMaxSameAddressesMatchEEST(t *testing.T) {
 }
 
 func TestMaxSameRuntimeSharedAndExempt(t *testing.T) {
-	if got := CodePatternRuntimeSize(CodePatternMaxSamePreAmsterdam); got != 0 {
+	if got := CodePatternRuntimeSize(CodePatternMaxSamePreAmsterdam, 0); got != 0 {
 		t.Fatalf("CodePatternRuntimeSize(max_same) = %d, want 0 (shared/exempt)", got)
 	}
 

@@ -112,7 +112,7 @@ func TestCreate2DeploysMaxDiffAddressesMatchEEST(t *testing.T) {
 // TestMaxDiffRuntimeSizeCounted pins that max-diff is treated as a
 // byte-unique pattern for residency accounting (unlike max-same).
 func TestMaxDiffRuntimeSizeCounted(t *testing.T) {
-	if got := CodePatternRuntimeSize(CodePatternMaxDiffPreAmsterdam); got != 0x6000 {
+	if got := CodePatternRuntimeSize(CodePatternMaxDiffPreAmsterdam, 0); got != 0x6000 {
 		t.Fatalf("CodePatternRuntimeSize(max_diff) = %d, want 24576 (unique/counted)", got)
 	}
 }

@@ -3,6 +3,7 @@ package templates
 import (
 	"encoding/binary"
 	"fmt"
+	"math/bits"
 	"slices"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -37,6 +38,20 @@ const (
 	// address at bytes 0x0C..0x20 (STOP + padding + address + JUMPDESTs).
 	// Byte-unique per contract. Used by AccountMode.EXISTING_CONTRACT_DIFF.
 	CodePatternMaxDiffPreAmsterdam = "max_diff_pre_amsterdam"
+
+	// CodePatternUniqueJumpdest — size-adjustable variant of the
+	// unique-jumpdest layout. The runtime size comes from the optional
+	// `code_size:` template parameter (default 24576, max 0x01000000);
+	// matches execution-specs `JochemnetPredeployContractInitcode`
+	// with the same code_size.
+	//
+	// The entry jump target is a fixed-width push: PUSH2 for any
+	// code_size up to 0x010000 (so the default size reproduces the
+	// pre-Amsterdam initcode byte-for-byte — state already deployed on
+	// live testnets keeps its CREATE2 addresses), PUSH3 above it (the
+	// target no longer fits two bytes, which changes the initcode and
+	// therefore the derived addresses).
+	CodePatternUniqueJumpdest = "unique_jumpdest"
 )
 
 // preAmsterdamMaxCodeSize is the EIP-170 contract-code limit applied
@@ -44,11 +59,27 @@ const (
 // amsterdam pattern variant will live alongside this one when scheduled.
 const preAmsterdamMaxCodeSize = 0x6000 // 24576 bytes.
 
+// maxPatternCodeSize caps the size-adjustable patterns: the entry jump
+// target is at most a 3-byte PUSH3 immediate (0xFFFFFF), so the runtime
+// can be at most 0x01000000 bytes long.
+const maxPatternCodeSize = 0x01000000 // 16 MiB
+
+// minUniqueJumpdestCodeSize is the smallest runtime the unique-jumpdest
+// layout supports: the embedded-address region ends at byte 0x40 and
+// the entry JUMP must land on a JUMPDEST after it.
+const minUniqueJumpdestCodeSize = 0x41
+
+// entryPush3Boundary: code sizes up to this bound encode the entry jump
+// target as a fixed-width PUSH2 (matching state already deployed on
+// live testnets); above it the target needs three bytes (PUSH3).
+const entryPush3Boundary = 0x010000
+
 // single source of truth for recognized pattern names.
 var knownCodePatterns = []string{
 	CodePatternUniqueJumpdestPreAmsterdam,
 	CodePatternMaxSamePreAmsterdam,
 	CodePatternMaxDiffPreAmsterdam,
+	CodePatternUniqueJumpdest,
 }
 
 // IsKnownCodePattern reports whether the given string is one of the
@@ -57,9 +88,18 @@ func IsKnownCodePattern(name string) bool {
 	return slices.Contains(knownCodePatterns, name)
 }
 
+// CodePatternSupportsCodeSize reports whether the named pattern accepts
+// the optional `code_size:` template parameter. Fixed-size patterns
+// (the *_pre_amsterdam family) are locked to 24576 by their name.
+func CodePatternSupportsCodeSize(name string) bool {
+	return name == CodePatternUniqueJumpdest
+}
+
 // CodePatternRuntimeSize returns runtime size for unique patterns,
 // 0 for unknown/shared patterns. Used for resident memory estimation.
-func CodePatternRuntimeSize(name string) uint64 {
+// codeSize is the resolved `code_size:` parameter for size-adjustable
+// patterns; pass 0 for "parameter omitted" (pattern default applies).
+func CodePatternRuntimeSize(name string, codeSize uint64) uint64 {
 	switch name {
 	case CodePatternUniqueJumpdestPreAmsterdam:
 		return preAmsterdamMaxCodeSize
@@ -67,8 +107,41 @@ func CodePatternRuntimeSize(name string) uint64 {
 		return preAmsterdamMaxCodeSize
 	case CodePatternMaxSamePreAmsterdam:
 		return 0
+	case CodePatternUniqueJumpdest:
+		if codeSize == 0 {
+			return preAmsterdamMaxCodeSize
+		}
+		return codeSize
 	}
 	return 0
+}
+
+// parseCodePatternCodeSize resolves the optional `code_size` parameter
+// against the chosen pattern. Returns the effective runtime size for
+// size-adjustable patterns (the 24576 default when omitted) and 0 for
+// fixed-size patterns; `code_size` on a fixed-size pattern is an error
+// rather than silently ignored.
+func parseCodePatternCodeSize(params map[string]any, patternName string) (uint64, error) {
+	v, has := params["code_size"]
+	if !has {
+		if CodePatternSupportsCodeSize(patternName) {
+			return preAmsterdamMaxCodeSize, nil
+		}
+		return 0, nil
+	}
+	if !CodePatternSupportsCodeSize(patternName) {
+		return 0, fmt.Errorf("`code_size` is not valid with fixed-size code_pattern %q (use %q for adjustable sizes)",
+			patternName, CodePatternUniqueJumpdest)
+	}
+	cs, err := ParseUint64Param(v, "code_size")
+	if err != nil {
+		return 0, err
+	}
+	if cs < minUniqueJumpdestCodeSize || cs > maxPatternCodeSize {
+		return 0, fmt.Errorf("code_size=%#x out of range [%#x, %#x]",
+			cs, minUniqueJumpdestCodeSize, maxPatternCodeSize)
+	}
+	return cs, nil
 }
 
 // patternResidentCodeCapBytes hard-caps the estimated unique-runtime
@@ -97,7 +170,20 @@ const patternResidentCodeCapBytes = uint64(64) << 30 // 64 GiB
 // off-by-one access (e.g. a future EXTCODECOPY at a random offset) hits
 // well-defined behavior instead of an invalid jump.
 func BuildUniqueJumpdestRuntimePreAmsterdam(addr common.Address) []byte {
-	out := make([]byte, preAmsterdamMaxCodeSize)
+	return BuildUniqueJumpdestRuntime(addr, preAmsterdamMaxCodeSize)
+}
+
+// BuildUniqueJumpdestRuntime returns the codeSize-byte runtime for one
+// derived contract under the size-adjustable unique-jumpdest pattern.
+// Same layout as the pre-Amsterdam variant, with the entry jump target
+// at codeSize-1: `PUSH2 target; JUMP` (4 bytes) for codeSize up to
+// 0x010000, `PUSH3 target; JUMP` (5 bytes) above it. All bytes outside
+// the entry and the embedded address at 0x2C..0x40 are JUMPDEST.
+//
+// codeSize must be in [minUniqueJumpdestCodeSize, maxPatternCodeSize];
+// parseCodePatternCodeSize enforces this before any builder runs.
+func BuildUniqueJumpdestRuntime(addr common.Address, codeSize uint64) []byte {
+	out := make([]byte, codeSize)
 
 	// Default-fill with JUMPDEST (0x5B). The doubling-MCOPY loop in the
 	// initcode produces the same end state, but a direct fill is faster
@@ -106,28 +192,42 @@ func BuildUniqueJumpdestRuntimePreAmsterdam(addr common.Address) []byte {
 		out[i] = 0x5B
 	}
 
-	// Bytes 0x000..0x003 — entry: PUSH2 0x5FFF; JUMP.
-	out[0] = 0x61 // PUSH2
-	out[1] = 0x5F
-	out[2] = 0xFF
-	out[3] = 0x56 // JUMP
+	// Entry: PUSH2/PUSH3 codeSize-1; JUMP.
+	copy(out, appendEntryJump(nil, codeSize))
 
-	// Bytes 0x004..0x02B already JUMPDEST from default fill.
+	// Bytes up to 0x02C already JUMPDEST from default fill.
 
 	// Bytes 0x02C..0x03F — the 20-byte address.
 	copy(out[0x2C:0x40], addr[:])
 
-	// Bytes 0x040..0x5FFF already JUMPDEST from default fill (the JUMP
-	// target at 0x5FFF is just another byte in the JUMPDEST sea).
+	// Bytes 0x040..codeSize-1 already JUMPDEST from default fill (the
+	// JUMP target at codeSize-1 is just another byte in the JUMPDEST
+	// sea).
 
 	return out
 }
 
-// appendJumpdestFillSeed appends the shared initcode prologue for
-// pre-Amsterdam max-size patterns: fills mem[0:0x8000] with JUMPDESTs
-// via PUSH32 + MCOPY loop. The unique, max-same, and max-diff patterns
-// all build on this prefix; kept centralized to prevent hash drift.
-func appendJumpdestFillSeed(buf []byte) []byte {
+// appendEntryJump appends the runtime entry `PUSHn codeSize-1; JUMP`.
+// The push is fixed-width per size class — PUSH2 for codeSize up to
+// entryPush3Boundary, PUSH3 above — NOT a minimal push: state already
+// deployed on live testnets used the PUSH2 encoding, so sizes in the
+// PUSH2 range must keep producing byte-identical initcode (and thereby
+// unchanged CREATE2 addresses).
+func appendEntryJump(buf []byte, codeSize uint64) []byte {
+	target := codeSize - 1
+	if codeSize <= entryPush3Boundary {
+		buf = append(buf, 0x61, byte(target>>8), byte(target)) // PUSH2
+	} else {
+		buf = append(buf, 0x62, byte(target>>16), byte(target>>8), byte(target)) // PUSH3
+	}
+	return append(buf, 0x56) // JUMP
+}
+
+// appendJumpdestFillSeed appends the shared initcode prologue: fills
+// memory with JUMPDESTs via PUSH32 + doubling MCOPY until the filled
+// span covers codeSize. The unique, max-same, and max-diff patterns all
+// build on this prefix; kept centralized to prevent hash drift.
+func appendJumpdestFillSeed(buf []byte, codeSize uint64) []byte {
 	// PUSH32 (32 × JUMPDEST); PUSH1 0x00; MSTORE.
 	buf = append(buf, 0x7F) // PUSH32
 	for range 32 {
@@ -136,9 +236,11 @@ func appendJumpdestFillSeed(buf []byte) []byte {
 	buf = append(buf, 0x60, 0x00) // PUSH1 0
 	buf = append(buf, 0x52)       // MSTORE
 
-	// Doubling MCOPY: sizes {32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384}.
-	// Push order: len, src, dst (MCOPY pops with dst on top).
-	for s := uint(5); s < 15; s++ {
+	// Doubling MCOPY: sizes {32, 64, ...} until the copied span covers
+	// codeSize (for the 24576 default: up to 16384, span 32768). Push
+	// order: len, src, dst (MCOPY pops with dst on top). Mirrors the
+	// Python `range(5, (code_size - 1).bit_length())` loop.
+	for s := uint(5); s < uint(bits.Len64(codeSize-1)); s++ {
 		size := uint64(1) << s
 		buf = append(buf, pushImmediate(size)...) // len
 		buf = append(buf, 0x60, 0x00)             // PUSH1 0 (src)
@@ -166,14 +268,30 @@ func appendJumpdestFillSeed(buf []byte) []byte {
 //  5. PUSH2 0x6000; PUSH1 0x00; RETURN — emit the first 0x6000 bytes
 //     of memory as the runtime.
 func BuildUniqueJumpdestInitcodePreAmsterdam() []byte {
-	// Step 1 and 2: seed mem[0:0x8000] with JUMPDEST (shared prologue).
-	buf := appendJumpdestFillSeed(nil)
+	return BuildUniqueJumpdestInitcode(preAmsterdamMaxCodeSize)
+}
+
+// BuildUniqueJumpdestInitcode returns the initcode that — if run —
+// would deploy the codeSize-byte unique-jumpdest runtime. Same shape as
+// the pre-Amsterdam variant with two size-dependent spots: the entry
+// pushed in step 3 (PUSH2 target for codeSize up to 0x010000, PUSH3
+// above — see appendEntryJump) and the RETURN length in step 5
+// (minimal push of codeSize, matching Python's Op.RETURN encoding).
+// For the 24576 default the output is byte-identical to
+// BuildUniqueJumpdestInitcodePreAmsterdam. Vendored from
+// execution-specs `JochemnetPredeployContractInitcode`; only the
+// keccak256 hash is used (the initcode never executes).
+func BuildUniqueJumpdestInitcode(codeSize uint64) []byte {
+	// Step 1 and 2: seed memory covering codeSize with JUMPDEST
+	// (shared prologue).
+	buf := appendJumpdestFillSeed(nil, codeSize)
 
 	// 3. PUSH32 entry; PUSH1 0x00; MSTORE.
-	// entry = PUSH2 0x5FFF; JUMP (4 bytes) + JUMPDEST × 28.
+	// entry = PUSH2/PUSH3 codeSize-1; JUMP + JUMPDEST padding to 32.
 	buf = append(buf, 0x7F) // PUSH32
-	buf = append(buf, 0x61, 0x5F, 0xFF, 0x56)
-	for range 28 {
+	entry := appendEntryJump(nil, codeSize)
+	buf = append(buf, entry...)
+	for range 32 - len(entry) {
 		buf = append(buf, 0x5B)
 	}
 	buf = append(buf, 0x60, 0x00) // PUSH1 0
@@ -199,10 +317,10 @@ func BuildUniqueJumpdestInitcodePreAmsterdam() []byte {
 	buf = append(buf, 0x60, 0x20) // PUSH1 0x20 (offset)
 	buf = append(buf, 0x52)       // MSTORE
 
-	// 5. PUSH2 0x6000; PUSH1 0x00; RETURN.
-	buf = append(buf, 0x61, 0x60, 0x00) // PUSH2 0x6000 (length)
-	buf = append(buf, 0x60, 0x00)       // PUSH1 0 (offset)
-	buf = append(buf, 0xF3)             // RETURN
+	// 5. PUSH codeSize; PUSH1 0x00; RETURN.
+	buf = append(buf, pushImmediate(codeSize)...) // length
+	buf = append(buf, 0x60, 0x00)                 // PUSH1 0 (offset)
+	buf = append(buf, 0xF3)                       // RETURN
 
 	return buf
 }
@@ -232,7 +350,7 @@ func buildMaxSameRuntimePreAmsterdam() []byte {
 // Steps: fill mem with JUMPDESTs, overwrite mem[0] with STOP, return 0x6000 bytes.
 func BuildMaxSameInitcodePreAmsterdam() []byte {
 	// 1+2. Seed mem[0:0x8000] with JUMPDEST (shared prologue).
-	buf := appendJumpdestFillSeed(nil)
+	buf := appendJumpdestFillSeed(nil, preAmsterdamMaxCodeSize)
 
 	// 3. MSTORE8(0, 0): MSTORE8 pops (offset, value) with offset on top,
 	// so push value first, then offset.
@@ -271,7 +389,7 @@ func BuildMaxDiffRuntimePreAmsterdam(addr common.Address) []byte {
 // Vendored for CREATE2; only hash used (never executes).
 func BuildMaxDiffInitcodePreAmsterdam() []byte {
 	// 1+2. Seed mem[0:0x8000] with JUMPDEST (shared prologue).
-	buf := appendJumpdestFillSeed(nil)
+	buf := appendJumpdestFillSeed(nil, preAmsterdamMaxCodeSize)
 
 	// 3. MSTORE(0, ADDRESS): MSTORE pops (offset, value) with offset on
 	// top, so push value (ADDRESS) first, then offset.
@@ -311,8 +429,10 @@ func pushImmediate(v uint64) []byte {
 
 // codePatternRuntimeFor returns the per-address runtime for the named
 // pattern. Templates dispatch through this so the named-pattern logic
-// stays in one place. Unknown names yield an error.
-func codePatternRuntimeFor(name string, addr common.Address) ([]byte, error) {
+// stays in one place. Unknown names yield an error. codeSize is the
+// resolved `code_size:` parameter (parseCodePatternCodeSize output);
+// fixed-size patterns receive 0 and ignore it.
+func codePatternRuntimeFor(name string, codeSize uint64, addr common.Address) ([]byte, error) {
 	switch name {
 	case CodePatternUniqueJumpdestPreAmsterdam:
 		return BuildUniqueJumpdestRuntimePreAmsterdam(addr), nil
@@ -320,6 +440,8 @@ func codePatternRuntimeFor(name string, addr common.Address) ([]byte, error) {
 		return maxSameRuntimePreAmsterdam, nil
 	case CodePatternMaxDiffPreAmsterdam:
 		return BuildMaxDiffRuntimePreAmsterdam(addr), nil
+	case CodePatternUniqueJumpdest:
+		return BuildUniqueJumpdestRuntime(addr, codeSize), nil
 	}
 	return nil, fmt.Errorf("unknown code_pattern %q", name)
 }
@@ -328,8 +450,9 @@ func codePatternRuntimeFor(name string, addr common.Address) ([]byte, error) {
 // for CREATE2 address derivation. The initcode is the SAME for every
 // derived address — only the deployed runtime is per-address-unique.
 // create_preimage_deploys ignores initcode entirely (CREATE address
-// derivation doesn't hash the initcode).
-func codePatternInitcodeFor(name string) ([]byte, error) {
+// derivation doesn't hash the initcode). codeSize as in
+// codePatternRuntimeFor.
+func codePatternInitcodeFor(name string, codeSize uint64) ([]byte, error) {
 	switch name {
 	case CodePatternUniqueJumpdestPreAmsterdam:
 		return BuildUniqueJumpdestInitcodePreAmsterdam(), nil
@@ -337,6 +460,8 @@ func codePatternInitcodeFor(name string) ([]byte, error) {
 		return BuildMaxSameInitcodePreAmsterdam(), nil
 	case CodePatternMaxDiffPreAmsterdam:
 		return BuildMaxDiffInitcodePreAmsterdam(), nil
+	case CodePatternUniqueJumpdest:
+		return BuildUniqueJumpdestInitcode(codeSize), nil
 	}
 	return nil, fmt.Errorf("unknown code_pattern %q", name)
 }

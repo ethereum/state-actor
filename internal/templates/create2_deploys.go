@@ -69,6 +69,7 @@ type create2DeploysParams struct {
 	saltCount   uint64         // in [1, 2^32]
 	factory     common.Address // defaults to CanonicalCREATE2FactoryAddress
 	patternName string         // "" in literal initcode/runtime mode
+	codeSize    uint64         // resolved code_size; 0 for fixed-size patterns
 	initcode    []byte         // literal parameter, or the pattern-owned constant
 	runtime     []byte         // shared literal runtime; nil in pattern mode
 	storageInit map[common.Hash]common.Hash
@@ -81,7 +82,7 @@ type create2DeploysParams struct {
 func parseCreate2DeploysParams(params map[string]any) (create2DeploysParams, error) {
 	var pp create2DeploysParams
 	if err := RejectUnknownKeys(params, "create2_deploys", []string{
-		"initcode", "salt_start", "salt_count", "runtime", "factory", "storage_init", "code_pattern",
+		"initcode", "salt_start", "salt_count", "runtime", "factory", "storage_init", "code_pattern", "code_size",
 	}); err != nil {
 		return pp, err
 	}
@@ -109,12 +110,20 @@ func parseCreate2DeploysParams(params map[string]any) (create2DeploysParams, err
 			return pp, fmt.Errorf("create2_deploys: `runtime` is forbidden when `code_pattern` is set (the pattern generates per-address runtime)")
 		}
 		pp.patternName = name
-		initcode, err := codePatternInitcodeFor(name)
+		codeSize, err := parseCodePatternCodeSize(params, name)
+		if err != nil {
+			return pp, fmt.Errorf("create2_deploys: %w", err)
+		}
+		pp.codeSize = codeSize
+		initcode, err := codePatternInitcodeFor(name, codeSize)
 		if err != nil {
 			return pp, fmt.Errorf("create2_deploys: %w", err)
 		}
 		pp.initcode = initcode
 	} else {
+		if _, has := params["code_size"]; has {
+			return pp, fmt.Errorf("create2_deploys: `code_size` is only valid together with `code_pattern:`")
+		}
 		for _, required := range []string{"initcode", "runtime"} {
 			if _, ok := params[required]; !ok {
 				return pp, fmt.Errorf("create2_deploys: missing required parameter %q (or set `code_pattern:`)", required)
@@ -153,7 +162,7 @@ func parseCreate2DeploysParams(params map[string]any) (create2DeploysParams, err
 	// host survives. (saltCount <= 2^32 and runtime sizes are small, so
 	// the product cannot overflow uint64.)
 	if pp.patternName != "" {
-		if est := saltCount * CodePatternRuntimeSize(pp.patternName); est > patternResidentCodeCapBytes {
+		if est := saltCount * CodePatternRuntimeSize(pp.patternName, pp.codeSize); est > patternResidentCodeCapBytes {
 			return pp, fmt.Errorf("create2_deploys: code_pattern %q with salt_count=%d would materialize ≈%.0f GiB of unique runtime code in memory (cap %d GiB); split into multiple entities or reduce salt_count",
 				pp.patternName, saltCount, float64(est)/float64(1<<30), patternResidentCodeCapBytes>>30)
 		}
@@ -201,7 +210,7 @@ func (create2DeploysTemplate) Expand(ctx Context, e spec.Entity) ([]PreAllocEnti
 
 		runtime := pp.runtime
 		if pp.patternName != "" {
-			runtime, err = codePatternRuntimeFor(pp.patternName, derived)
+			runtime, err = codePatternRuntimeFor(pp.patternName, pp.codeSize, derived)
 			if err != nil {
 				return nil, fmt.Errorf("create2_deploys: salt=%d: %w", pp.saltStart+k, err)
 			}

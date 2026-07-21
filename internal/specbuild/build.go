@@ -260,17 +260,29 @@ func appendPatternResidentCodeWarnings(entities []spec.Entity, diag *Diagnostics
 			continue
 		}
 		pat, ok := e.Parameters["code_pattern"].(string)
-		if !ok || templates.CodePatternRuntimeSize(pat) == 0 {
+		if !ok {
+			continue
+		}
+		var codeSize uint64
+		if v, has := e.Parameters["code_size"]; has {
+			cs, err := templates.ParseUint64Param(v, "code_size")
+			if err != nil {
+				continue // schema validation reports this with a better message
+			}
+			codeSize = cs
+		}
+		size := templates.CodePatternRuntimeSize(pat, codeSize)
+		if size == 0 {
 			continue
 		}
 		n, err := templates.ParseUint64Param(e.Parameters[knob], knob)
 		if err != nil {
 			continue // schema validation reports this with a better message
 		}
-		if est := n * templates.CodePatternRuntimeSize(pat); est > patternResidentWarnBytes {
+		if est := n * size; est > patternResidentWarnBytes {
 			diag.Warnings = append(diag.Warnings, fmt.Sprintf(
 				"entities[%d] (template %s): code_pattern %q materializes %d unique %d-byte runtimes ≈ %.1f GiB held in memory for the entire run (per-address code is not streamed, unlike storage); ensure the build host has the RAM headroom or lower %s (true code streaming is a tracked follow-up)",
-				i, e.Template, pat, n, templates.CodePatternRuntimeSize(pat),
+				i, e.Template, pat, n, size,
 				float64(est)/float64(1<<30), knob))
 		}
 	}
