@@ -45,6 +45,13 @@
 # would re-build RocksDB from scratch (~15 min, almost the entire job
 # timeout). Inlining the `docker run` step skips Make's prereq and uses
 # the just-loaded image directly. Local dev still uses `make` normally.
+#
+# Action versions are pinned by SHA for reproducibility, same as
+# deploy-docker.yaml; the trailing comment is the human-readable tag. A
+# floating `@v7` re-points whenever upstream moves the major tag, so a
+# green run says nothing about what the next one will execute. Bump the
+# SHA and the comment together — the composite action at
+# .github/actions/cgo-suite/ pins its own steps the same way.
 
 name: CI
 
@@ -63,7 +70,7 @@ concurrency:
 env:
   # Pinned spamoor commit (NOT a branch — ethpandaops/spamoor's default
   # branch is `master`, not `main`, so bare branch names are fragile).
-  # Bump when picking up upstream improvements. The `actions/cache@v6`
+  # Bump when picking up upstream improvements. The `actions/cache`
   # key derives from this; a bump invalidates cache and rebuilds
   # (~2 min). Each suite job installs spamoor via the same key, so
   # warm cache shares across jobs.
@@ -75,8 +82,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
           cache: true
@@ -165,7 +172,7 @@ jobs:
             test-pkg: ./client/erigon/
             test-run-filter: 'TestErigonGoldenStateRoot|TestE2ESuite|TestPatchGenesisHeaderStateRoot'
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: ./.github/actions/cgo-suite
         with:
           client: ${{ matrix.client }}
@@ -183,8 +190,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
           cache: true
@@ -194,7 +201,7 @@ jobs:
       # no engine-API mock needed.
       - name: Cache spamoor binary
         id: spamoor-cache
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: /usr/local/bin/spamoor
           key: spamoor-${{ env.SPAMOOR_REF }}-${{ runner.os }}
@@ -210,7 +217,7 @@ jobs:
           REQUIRE_SPAMOOR=1 \
             go test -tags oracle -run TestE2ESuite -v -timeout 30m ./client/geth/...
 
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: always()
         with:
           name: geth-result
@@ -243,7 +250,7 @@ jobs:
       # image build — five extra multi-MB artifacts this job would fetch
       # and then ignore. The checks below glob `*-result.json`, so they
       # stayed correct either way; this just stops paying for the rest.
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           path: _artifacts
           pattern: '*-result'
