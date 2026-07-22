@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -13,6 +14,7 @@ import (
 	"github.com/ethereum/state-actor/generator"
 	"github.com/ethereum/state-actor/genesis"
 	"github.com/ethereum/state-actor/internal/genesisheader"
+	"github.com/ethereum/state-actor/internal/memlimit"
 )
 
 // runImpl is the cgo_ethrex orchestrator.
@@ -37,6 +39,14 @@ func runImpl(ctx context.Context, cfg generator.Config, opts Options) (*generato
 	if cfg.Archive {
 		return nil, errors.New("ethrex: --archive is not supported by the ethrex writer")
 	}
+
+	// Bound the Go heap against what RocksDB and Pebble have NOT already
+	// claimed. Without this the default GOGC=100 lets the heap reach ~2x the
+	// live set, and a spec that pins several GiB of PreAlloc bytecode for the
+	// whole run makes that doubling large enough to matter. An explicit
+	// GOMEMLIMIT wins; a declined limit is logged rather than swallowed,
+	// because it means this host gets no protection.
+	log.Printf("ethrex: %s", memlimit.Set(ethrexOffHeapReserveBytes))
 
 	g := cfg.Genesis
 	if g == nil {

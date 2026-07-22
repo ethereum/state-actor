@@ -20,7 +20,53 @@ const bulkBackgroundJobs = 8
 
 // ethrexBlockCacheBytes is the shared LRU block cache, mirroring ethrex's
 // crates/storage/backend/rocksdb.rs (4 GiB, shared across all CFs).
+//
+// Paired with cache_index_and_filter_blocks (set per-CF below), this is also
+// the ceiling for index and bloom-filter blocks. That pairing is the point:
+// RocksDB's default pre-loads them into each table reader instead, outside
+// every budget and unevictable for as long as the SST stays open. At the
+// scale this writer targets — billions of keys across the four big state CFs,
+// with 10-bit filters and 131-byte storage_flatkeyvalue keys — that is several
+// GiB of RAM that grows monotonically with every SST written, and it is one
+// of the terms that OOM-killed a 350 GB ethrex run mid-import.
 const ethrexBlockCacheBytes = 4 * 1024 * 1024 * 1024
+
+// ethrexDBWriteBufferBytes caps TOTAL memtable memory across all CFs.
+//
+// The per-CF write buffers below mirror ethrex, but they are per-CF ceilings
+// that RocksDB does not sum: the four big state CFs alone would permit
+// 512 MiB x 6 = 12 GiB resident. db_write_buffer_size bounds the sum, flushing
+// the largest memtable when the budget is exceeded. Keeping the per-CF shape
+// intact matters — it governs flushed SST sizes, and Close()'s CompactRange
+// rewrites with the same per-CF options either way.
+const ethrexDBWriteBufferBytes = 4 * 1024 * 1024 * 1024
+
+// ethrexMaxOpenFiles is a backstop on RocksDB's table cache, deliberately set
+// where it cannot bind. With L0 compaction triggers pinned to MaxInt32 (below)
+// SSTs accumulate for the whole import — a 700 GB DB at ~512 MiB per flushed
+// file is ~1400 of them, and the db_write_buffer_size cap can only shrink
+// files, not enlarge them. Sizing this an order of magnitude above that keeps
+// residual per-table-reader overhead bounded (a handle plus footer metadata,
+// once cache_index_and_filter_blocks moves the expensive part into the cache)
+// without risking reopen churn during Close()'s CompactRange, which needs
+// every input file open at once. RLIMIT_NOFILE is not the constraint: CI
+// raises it to the kernel max before the container starts.
+const ethrexMaxOpenFiles = 32768
+
+// ethrexAuxOffHeapBytes is an ESTIMATE (not a bound) of the off-heap RAM this
+// writer commits beyond the two budgets above: the batchSink WriteBatches
+// (six in Phase 2; up to 8 workers x 2 in Phase 0, each flushing at 64 MiB),
+// the Pebble streamsort store's two 256 MiB memtable arenas, and RocksDB's
+// compaction/iterator scratch.
+const ethrexAuxOffHeapBytes = 2 * 1024 * 1024 * 1024
+
+// ethrexOffHeapReserveBytes is the total RAM this writer commits OUTSIDE the
+// Go heap. runImpl subtracts it from the host's memory ceiling before deriving
+// GOMEMLIMIT, so the Go runtime budgets against what is actually left rather
+// than against memory RocksDB and Pebble have already claimed.
+const ethrexOffHeapReserveBytes = ethrexBlockCacheBytes +
+	ethrexDBWriteBufferBytes +
+	ethrexAuxOffHeapBytes
 
 // ethrexCompressibleCF reports whether a CF uses LZ4 in the real ethrex client.
 // Mirrors `compressible_tables` in ethrex rocksdb.rs: only block-metadata CFs
@@ -142,6 +188,12 @@ func openEthrexDB(dbPath string) (*ethrexDB, error) {
 
 		bbto := grocksdb.NewDefaultBlockBasedTableOptions()
 		bbto.SetBlockCache(cache)
+		// Route index + filter blocks through the shared cache instead of
+		// pre-loading them into per-SST table readers. This is a read-path
+		// memory-placement option only: it changes nothing about the bytes
+		// written, and nothing is read during bulk import, so eviction costs
+		// nothing here. See ethrexBlockCacheBytes for why it is load-bearing.
+		bbto.SetCacheIndexAndFilterBlocks(true)
 
 		switch i {
 		case cfIdxHeaders, cfIdxBodies:
@@ -194,6 +246,12 @@ func openEthrexDB(dbPath string) (*ethrexDB, error) {
 	dbOpts := grocksdb.NewDefaultOptions()
 	dbOpts.SetCreateIfMissing(true)
 	dbOpts.SetCreateIfMissingColumnFamilies(true)
+	// Memory ceilings. Neither affects the produced SSTs — db_write_buffer_size
+	// changes how often memtables flush (and Close()'s CompactRange rewrites
+	// the result at target_file_size_base regardless), max_open_files only
+	// governs the table cache.
+	dbOpts.SetDbWriteBufferSize(ethrexDBWriteBufferBytes)
+	dbOpts.SetMaxOpenFiles(ethrexMaxOpenFiles)
 
 	parallelism := runtime.NumCPU()
 	if parallelism > bulkBackgroundJobs {

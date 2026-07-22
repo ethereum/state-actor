@@ -33,9 +33,12 @@ import (
 //     Stage B (N workers): compute storage trie in memory for normal accounts.
 //     Stage C (writer): apply results in strict seq order — always addrHash-sorted.
 //
-// RAM bound: internal/ethrex.Builder accumulates all leaves in memory. This
-// is correct for the e2e fixture and moderate --target-size. See doc.go for
-// the ceiling note.
+// RAM bound: internal/ethrex.Builder is streaming — O(keyLen), independent of
+// leaf count (see its doc comment). The Go-heap terms that DO scale with the
+// run are seenCodeHash below (one entry per distinct code hash) and the
+// in-flight pipeline (~5x numWorkers accountResults, each holding one
+// account's buffered storage rows). Everything else lives off-heap in RocksDB
+// and Pebble; see doc.go's "Memory" section for the whole budget.
 //
 // Flat-KV / snap-sync layout: leaf full-path rows are routed ONLY to the
 // flat-KV CFs (never duplicated into the trie-node CFs), modelling a snap-synced

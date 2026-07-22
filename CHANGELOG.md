@@ -30,6 +30,24 @@
   Besu answers `SYNCING`.
 
 ### Fixed
+- **`--client=ethrex` no longer OOM-kills on large `--target-size` runs.** A
+  350 GB fill was SIGKILLed ~38% into Phase 2 on a 62 GiB host because nothing
+  bounded three compounding memory terms. Now: RocksDB's index and bloom-filter
+  blocks are routed through the existing 4 GiB shared block cache
+  (`cache_index_and_filter_blocks`) instead of RocksDB's default of pre-loading
+  them into per-SST table readers, where they sat outside every budget and grew
+  with each SST written; `db_write_buffer_size` caps total memtable memory,
+  which the per-CF write buffers (mirrored from ethrex, and not summed by
+  RocksDB) would otherwise allow to reach 12 GiB across the four big state CFs;
+  and the new `internal/memlimit` package derives a `GOMEMLIMIT` from the host's
+  real ceiling (cgroup v2, cgroup v1, then `/proc/meminfo`) minus the writer's
+  declared off-heap reserve, so `GOGC=100` can no longer double a bytecode-heavy
+  live heap unchecked. An explicit `GOMEMLIMIT` still wins, and a limit too
+  small to help is declined and logged rather than applied — one below the live
+  heap trades an OOM kill for an unbounded GC stall. **These are process-runtime
+  knobs only: the produced datadir is byte-identical, which
+  `TestEthrexGoldenStateRoot` and `TestGenesisDumpGolden` pin.**
+
 - **`erc20` template now honors `approximate_size_bytes`.** Previously
   the universal entity-level sizing knob was silently ignored on the
   `erc20` template (only `raw` and `eoa` consumed it), even though
