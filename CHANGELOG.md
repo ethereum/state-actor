@@ -43,6 +43,18 @@
   exit code to reason from.
 
 ### Fixed
+- **`MALLOC_ARENA_MAX=2` in `Dockerfile.ethrex`, and the ethrex memory budget
+  recalibrated against a kernel OOM report.** The kill was confirmed genuine —
+  `state-actor` held **51.3 GiB of anonymous RSS** — but not for the reason
+  first assumed. The kernel showed only 15 MB of page cache and 16 GiB in
+  transparent huge pages, while RocksDB's own properties accounted for under
+  10 GiB (`estimate-table-readers-mem` held 388 KB). The unaccounted remainder
+  was glibc arena fragmentation, which grows with allocation churn and so with
+  bytes written. Capping arenas, dropping the write-only block cache 4 GiB →
+  512 MiB, and reserving for fragmentation explicitly cut peak RSS **9.4 → 7.3
+  GiB** and off-heap **8.1 → 5.4 GiB** on an identical 40 GB fill, with a
+  byte-identical state root.
+
 - **`--client=ethrex` no longer OOM-kills on large `--target-size` runs.** A
   350 GB fill was SIGKILLed ~38% into Phase 2 on a 62 GiB host because nothing
   bounded three compounding memory terms. Now: RocksDB's index and bloom-filter

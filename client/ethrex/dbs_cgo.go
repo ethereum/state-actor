@@ -19,18 +19,23 @@ import (
 // during bulk import.
 const bulkBackgroundJobs = 8
 
-// ethrexBlockCacheBytes is the shared LRU block cache, mirroring ethrex's
-// crates/storage/backend/rocksdb.rs (4 GiB, shared across all CFs).
+// ethrexBlockCacheBytes is the shared LRU block cache across all CFs.
 //
-// Paired with cache_index_and_filter_blocks (set per-CF below), this is also
-// the ceiling for index and bloom-filter blocks. That pairing is the point:
-// RocksDB's default pre-loads them into each table reader instead, outside
-// every budget and unevictable for as long as the SST stays open. At the
-// scale this writer targets — billions of keys across the four big state CFs,
-// with 10-bit filters and 131-byte storage_flatkeyvalue keys — that is several
-// GiB of RAM that grows monotonically with every SST written, and it is one
-// of the terms that OOM-killed a 350 GB ethrex run mid-import.
-const ethrexBlockCacheBytes = 4 * 1024 * 1024 * 1024
+// ethrex's own crates/storage/backend/rocksdb.rs uses 4 GiB. This writer uses
+// far less BY DESIGN: a block cache only accelerates reads, and generation is
+// write-only until Close()'s CompactRange. Cache size is a process-runtime
+// knob — it does not change a single byte of the produced DB — so mirroring
+// ethrex here would buy representativeness that does not exist while costing
+// RAM that demonstrably does.
+//
+// Paired with cache_index_and_filter_blocks (set per-CF below) it is also the
+// ceiling for index and bloom-filter blocks. RocksDB's default pre-loads those
+// into each table reader instead, outside every budget. Measurement says the
+// pairing works and the sizing is safe: over a 79 GB fill,
+// estimate-table-readers-mem stayed at 388 KB while cache usage climbed to
+// 1.5 GiB — so index/filter memory is bounded here, and capping the cache
+// merely evicts blocks nothing is reading.
+const ethrexBlockCacheBytes = 512 * 1024 * 1024
 
 // ethrexDBWriteBufferBytes caps TOTAL memtable memory across all CFs.
 //
@@ -61,13 +66,30 @@ const ethrexMaxOpenFiles = 32768
 // compaction/iterator scratch.
 const ethrexAuxOffHeapBytes = 2 * 1024 * 1024 * 1024
 
+// ethrexFragmentationReserveBytes covers allocator memory that no component
+// reports and no cap governs: glibc arena free lists and the transparent huge
+// pages backing them.
+//
+// This term exists because omitting it got a run killed. A 350 GB fill died
+// with 51.3 GiB of anonymous RSS while RocksDB's own properties accounted for
+// under 10 GiB and the kernel showed only 15 MB of page cache — so roughly
+// half the process was allocator overhead invisible to every budget here. The
+// kernel's own numbers put 16 GiB of that in transparent huge pages.
+//
+// MALLOC_ARENA_MAX=2 in Dockerfile.ethrex attacks the cause and should shrink
+// this considerably; the reserve stays conservative until the memory samples
+// from a full-scale run say otherwise. Reserving too much only makes the Go
+// heap tighter, which costs GC cycles. Reserving too little costs the run.
+const ethrexFragmentationReserveBytes = 12 * 1024 * 1024 * 1024
+
 // ethrexOffHeapReserveBytes is the total RAM this writer commits OUTSIDE the
 // Go heap. runImpl subtracts it from the host's memory ceiling before deriving
 // GOMEMLIMIT, so the Go runtime budgets against what is actually left rather
-// than against memory RocksDB and Pebble have already claimed.
+// than against memory RocksDB, Pebble, and the C allocator have already taken.
 const ethrexOffHeapReserveBytes = ethrexBlockCacheBytes +
 	ethrexDBWriteBufferBytes +
-	ethrexAuxOffHeapBytes
+	ethrexAuxOffHeapBytes +
+	ethrexFragmentationReserveBytes
 
 // ethrexCompressibleCF reports whether a CF uses LZ4 in the real ethrex client.
 // Mirrors `compressible_tables` in ethrex rocksdb.rs: only block-metadata CFs

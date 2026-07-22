@@ -20,13 +20,19 @@ const (
 )
 
 const (
-	// heapDivisor splits the post-reserve memory between the Go heap and
-	// everything the limit cannot govern: page cache, the writer's dirty
-	// writeback, and the overshoot a SOFT limit tolerates between the
-	// collector noticing and finishing. Half each is deliberately
-	// unaggressive — the goal is to cap a 2x GOGC blowup, not to run the
-	// heap as tight as it will go.
-	heapDivisor = 2
+	// heapDivisor splits the post-reserve memory between the Go heap and the
+	// margin absorbing what a soft limit cannot govern.
+	//
+	// A third, not a half, and the difference is a lesson rather than a
+	// preference. The margin's real job turned out not to be page cache — a
+	// host that OOM-killed this writer showed only 15 MB of it — but the
+	// caller's reserve being WRONG. That run reserved 10 GiB off-heap against
+	// an actual ~25 GiB, so the heap was handed memory that was already spoken
+	// for. A reserve is an estimate of memory nobody measures directly; the
+	// margin has to be big enough to absorb the estimate being under.
+	//
+	// Erring high costs GC cycles. Erring low costs the whole run, hours in.
+	heapDivisor = 3
 
 	// minUsefulLimit is the floor below which applying a limit does more
 	// harm than not applying one. See the package doc: a limit under the

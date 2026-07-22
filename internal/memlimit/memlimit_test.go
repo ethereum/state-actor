@@ -8,6 +8,10 @@ import (
 
 const gib = uint64(1) << 30
 
+// benchmarkHostBytes is MemTotal on the CI host that OOM-killed a 350 GB
+// ethrex fill (61.9 GiB), taken from that run's podman info.
+const benchmarkHostBytes = uint64(66467475456)
+
 // TestBudget pins the split arithmetic, including the two cases where Budget
 // must decline: a reserve that swallows the host, and a remainder too small
 // for a limit to help rather than stall the collector.
@@ -19,12 +23,14 @@ func TestBudget(t *testing.T) {
 		want    int64
 	}{
 		{
-			// The host that OOM-killed the ethrex 350 GB run: 61.9 GiB with
-			// the writer's 10 GiB off-heap reserve subtracted, halved.
+			// The host that OOM-killed the ethrex 350 GB run, with the
+			// writer's off-heap reserve subtracted. Expressed via heapDivisor
+			// so retuning the split does not require editing arithmetic here;
+			// TestBudgetLeavesRoomForTheReserve pins the property that matters.
 			name:    "benchmark host",
-			total:   66467475456,
-			reserve: 10 * gib,
-			want:    int64((66467475456 - 10*gib) / 2),
+			total:   benchmarkHostBytes,
+			reserve: 18*gib + 512*1024*1024,
+			want:    int64((benchmarkHostBytes - (18*gib + 512*1024*1024)) / heapDivisor),
 		},
 		{
 			name:    "reserve equals total",
@@ -46,7 +52,7 @@ func TestBudget(t *testing.T) {
 		},
 		{
 			name:    "remainder exactly at the useful floor",
-			total:   14 * gib,
+			total:   10*gib + heapDivisor*minUsefulLimit,
 			reserve: 10 * gib,
 			want:    minUsefulLimit,
 		},
@@ -57,12 +63,13 @@ func TestBudget(t *testing.T) {
 			want:    0,
 		},
 		{
-			// Halving MaxUint64 lands exactly on MaxInt64; the conversion in
-			// Budget must not wrap negative.
+			// The widest possible input: the conversion in Budget must not
+			// wrap negative. At heapDivisor 2 this lands exactly on MaxInt64,
+			// so the guard is load-bearing for any divisor below that.
 			name:    "maximum total does not overflow int64",
 			total:   math.MaxUint64,
 			reserve: 0,
-			want:    math.MaxInt64,
+			want:    int64(uint64(math.MaxUint64) / heapDivisor),
 		},
 	}
 
@@ -72,6 +79,32 @@ func TestBudget(t *testing.T) {
 				t.Errorf("Budget(%d, %d) = %d, want %d", tt.total, tt.reserve, got, tt.want)
 			}
 		})
+	}
+}
+
+// TestBudgetLeavesRoomForTheReserve pins the invariant whose violation caused
+// a 350 GB run to be OOM-killed: the heap limit plus the caller's reserve must
+// leave real headroom under the host, so that a reserve which turns out to be
+// an underestimate still has somewhere to grow.
+//
+// The failing run handed the heap 26 GiB against a 10 GiB reserve on a 61.9
+// GiB host — 36 GiB "budgeted" — and then died at 51.3 GiB RSS because the
+// true off-heap cost was ~25 GiB, not 10. Requiring the budget to sit at or
+// under two thirds of the host keeps that class of miss survivable.
+func TestBudgetLeavesRoomForTheReserve(t *testing.T) {
+	// Reserves spanning plausible mis-estimates of the off-heap cost.
+	for _, reserve := range []uint64{4 * gib, 10 * gib, 18 * gib, 24 * gib} {
+		limit := Budget(benchmarkHostBytes, reserve)
+		if limit == 0 {
+			continue // declined; nothing is committed, so nothing to check
+		}
+
+		budgeted := uint64(limit) + reserve
+		if ceiling := benchmarkHostBytes / 3 * 2; budgeted > ceiling {
+			t.Errorf("reserve %s: budgeted %s exceeds two thirds of the %s host (%s)",
+				formatGiB(reserve), formatGiB(budgeted),
+				formatGiB(benchmarkHostBytes), formatGiB(ceiling))
+		}
 	}
 }
 
