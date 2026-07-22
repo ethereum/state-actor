@@ -63,7 +63,7 @@ concurrency:
 env:
   # Pinned spamoor commit (NOT a branch — ethpandaops/spamoor's default
   # branch is `master`, not `main`, so bare branch names are fragile).
-  # Bump when picking up upstream improvements. The `actions/cache@v4`
+  # Bump when picking up upstream improvements. The `actions/cache@v6`
   # key derives from this; a bump invalidates cache and rebuilds
   # (~2 min). Each suite job installs spamoor via the same key, so
   # warm cache shares across jobs.
@@ -75,8 +75,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
           cache: true
@@ -165,7 +165,7 @@ jobs:
             test-pkg: ./client/erigon/
             test-run-filter: 'TestErigonGoldenStateRoot|TestE2ESuite|TestPatchGenesisHeaderStateRoot'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/cgo-suite
         with:
           client: ${{ matrix.client }}
@@ -183,8 +183,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
           cache: true
@@ -194,7 +194,7 @@ jobs:
       # no engine-API mock needed.
       - name: Cache spamoor binary
         id: spamoor-cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: /usr/local/bin/spamoor
           key: spamoor-${{ env.SPAMOOR_REF }}-${{ runner.os }}
@@ -210,7 +210,7 @@ jobs:
           REQUIRE_SPAMOOR=1 \
             go test -tags oracle -run TestE2ESuite -v -timeout 30m ./client/geth/...
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: geth-result
@@ -237,9 +237,16 @@ jobs:
     if: always() && !cancelled()
     timeout-minutes: 5
     steps:
-      - uses: actions/download-artifact@v4
+      # `pattern` scopes this to the six *-result artifacts the suite jobs
+      # upload. Without it the step downloads EVERY artifact in the run,
+      # and docker/build-push-action >= v6 exports a build record per
+      # image build — five extra multi-MB artifacts this job would fetch
+      # and then ignore. The checks below glob `*-result.json`, so they
+      # stayed correct either way; this just stops paying for the rest.
+      - uses: actions/download-artifact@v8
         with:
           path: _artifacts
+          pattern: '*-result'
           merge-multiple: true
       - name: Compare genesis state-roots across all 6 clients
         run: |

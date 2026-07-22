@@ -45,15 +45,15 @@ inputs:
 runs:
   using: composite
   steps:
-    - uses: docker/setup-buildx-action@v3
-    - uses: actions/setup-go@v5
+    - uses: docker/setup-buildx-action@v4
+    - uses: actions/setup-go@v7
       with:
         go-version-file: go.mod
         cache: true
 
     - name: Cache spamoor binary
       id: spamoor-cache
-      uses: actions/cache@v4
+      uses: actions/cache@v6
       with:
         path: /usr/local/bin/spamoor
         key: spamoor-${{ inputs.spamoor-ref }}-${{ runner.os }}
@@ -62,7 +62,7 @@ runs:
       shell: bash
       run: make spamoor-install SPAMOOR_COMMIT=${{ inputs.spamoor-ref }}
 
-    - uses: docker/build-push-action@v5
+    - uses: docker/build-push-action@v7
       with:
         context: .
         file: ${{ inputs.dockerfile }}
@@ -108,7 +108,7 @@ runs:
           go test -tags "$TEST_TAGS" "$TEST_PKG" "${run_filter[@]}" -v -timeout 45m
         docker volume rm -f "$VOL" >/dev/null 2>&1 || true
 
-    - uses: actions/upload-artifact@v4
+    - uses: actions/upload-artifact@v7
       if: always()
       with:
         name: ${{ inputs.client }}-result
