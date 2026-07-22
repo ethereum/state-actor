@@ -76,6 +76,12 @@ func runImpl(ctx context.Context, cfg generator.Config, opts Options) (*generato
 	}
 	defer db.Close()
 
+	// Ordering matters: defers run LIFO, so this stops the sampler BEFORE
+	// db.Close() runs — it reads DB properties and grocksdb does not guard
+	// against a closed handle.
+	stopMemorySampler := startMemorySampler(ctx, db)
+	defer stopMemorySampler()
+
 	accountSink := newBatchSink(db, cfIdxAccountTrieNodes)
 	defer accountSink.Close()
 	storageSink := newBatchSink(db, cfIdxStorageTrieNodes)

@@ -29,6 +29,19 @@
   p2p enabled — its synchronizer must register the post-merge head as in-sync, otherwise
   Besu answers `SYNCING`.
 
+### Added
+- **`--client=ethrex` reports its memory split every 30s.** New
+  `internal/memstat` samples process RSS against the Go runtime's own total —
+  their difference being the cgo memory no `GOMEMLIMIT` can govern — plus
+  host-wide `MemAvailable`/`Dirty`/`Writeback`, which distinguish "this process
+  exhausted memory" from "unreclaimable page cache did". Alongside it the
+  ethrex writer logs RocksDB's own accounting (`cur-size-all-mem-tables`,
+  `estimate-table-readers-mem`, block-cache usage, L0 file count), so the
+  budget constants can be checked against ground truth instead of trusted.
+  A SIGKILL cannot log anything, so the last line before a kill is the only
+  record — this exists because two 350 GB runs died leaving nothing but an
+  exit code to reason from.
+
 ### Fixed
 - **`--client=ethrex` no longer OOM-kills on large `--target-size` runs.** A
   350 GB fill was SIGKILLed ~38% into Phase 2 on a 62 GiB host because nothing

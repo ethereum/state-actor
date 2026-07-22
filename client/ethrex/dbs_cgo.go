@@ -12,6 +12,7 @@ import (
 	"github.com/linxGnu/grocksdb"
 
 	ethrexinternal "github.com/ethereum/state-actor/internal/ethrex"
+	"github.com/ethereum/state-actor/internal/memstat"
 )
 
 // bulkBackgroundJobs caps RocksDB's background compaction/flush thread pool
@@ -369,6 +370,64 @@ func (d *ethrexDB) Close() {
 		d.cache.Destroy()
 		d.cache = nil
 	}
+}
+
+// stateCFsForMemoryReport are the CFs whose memory is worth attributing
+// individually: the four that carry essentially all of a bulk import's bytes.
+var stateCFsForMemoryReport = []int{
+	cfIdxAccountTrieNodes,
+	cfIdxStorageTrieNodes,
+	cfIdxAccountFlatKeyValue,
+	cfIdxStorageFlatKeyValue,
+}
+
+// memoryReport renders RocksDB's own accounting of where its memory has gone.
+//
+// This exists because the budget constants in this file are ceilings, not
+// measurements: they say what RocksDB is ALLOWED to use, and an OOM means
+// something exceeded an estimate rather than a bound. These properties are
+// RocksDB's ground truth.
+//
+//   - memtables: charged against ethrexDBWriteBufferBytes.
+//   - table-readers: per-SST index/filter/metadata. cache_index_and_filter_blocks
+//     should keep the expensive part in the cache and this number small; if it
+//     grows with the import instead, that setting is not covering what it
+//     should.
+//   - cache / pinned: usage of the shared ethrexBlockCacheBytes LRU. An LRU is
+//     not a hard bound — pinned entries can push usage past capacity — so
+//     cache exceeding its capacity is itself a finding.
+//   - L0 files: the SST count, since nothing compacts them during the import.
+func (d *ethrexDB) memoryReport() string {
+	sum := func(prop string) uint64 {
+		var total uint64
+		for _, idx := range stateCFsForMemoryReport {
+			if idx >= len(d.cfs) || d.cfs[idx] == nil {
+				continue
+			}
+			if v, ok := d.db.GetIntPropertyCF(prop, d.cfs[idx]); ok {
+				total += v
+			}
+		}
+
+		return total
+	}
+
+	// Block-cache usage is a property of the shared cache, so it reads the
+	// same from every CF — take it from one rather than summing four copies.
+	var cacheUsage, cachePinned uint64
+	if len(d.cfs) > cfIdxAccountTrieNodes && d.cfs[cfIdxAccountTrieNodes] != nil {
+		cacheUsage, _ = d.db.GetIntPropertyCF("rocksdb.block-cache-usage", d.cfs[cfIdxAccountTrieNodes])
+		cachePinned, _ = d.db.GetIntPropertyCF("rocksdb.block-cache-pinned-usage", d.cfs[cfIdxAccountTrieNodes])
+	}
+
+	return fmt.Sprintf(
+		"rocksdb memtables=%s table-readers=%s cache=%s cache-pinned=%s L0-files=%d",
+		memstat.FormatBytes(sum("rocksdb.cur-size-all-mem-tables")),
+		memstat.FormatBytes(sum("rocksdb.estimate-table-readers-mem")),
+		memstat.FormatBytes(cacheUsage),
+		memstat.FormatBytes(cachePinned),
+		sum("rocksdb.num-files-at-level0"),
+	)
 }
 
 // put writes a key/value to the CF at cfIdx.
