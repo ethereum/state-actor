@@ -120,7 +120,7 @@ jobs:
           # two commits. PR builds therefore stamp VERSION as a bare sha.
           echo "checkout_ref=${HEAD_SHA}" >> "$GITHUB_OUTPUT"
 
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ steps.resolve.outputs.checkout_ref }}
           fetch-depth: 0
@@ -218,7 +218,7 @@ jobs:
       GHCR_REPO: ghcr.io/${{ github.repository }}${{ matrix.suffix }}
       DOCKERFILE: ${{ matrix.dockerfile }}
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.meta.outputs.checkout_ref }}
           fetch-depth: 0
@@ -271,7 +271,7 @@ jobs:
       GHCR_REPO: ghcr.io/${{ github.repository }}${{ matrix.suffix }}
       DOCKERFILE: ${{ matrix.dockerfile }}
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.meta.outputs.checkout_ref }}
           fetch-depth: 0
