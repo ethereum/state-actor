@@ -238,10 +238,13 @@ configurable worker pool / batch size at the generator level.
   / code / commitment) streams into Erigon v3 flat snapshot `.kv` files
   (plus `.bt` / `.kvi` / `.kvei` accessors) via `internal/erigon`; the
   MDBX stays minimal (genesis header with a patched `stateRoot` + chain
-  config). The "fat genesis" construction (`MaxTxNum[0]=StepSize-1` + a
-  commitment anchor, see `client/erigon/genesis_patch.go` +
-  `snapshot_cgo.go`) keeps the commitment continuable past block 2.
-  Behind the `cgo_erigon` build tag.
+  config). The "fat genesis" construction (`MaxTxNum[0]=StepSize-1`,
+  genesis `BodyForStorage.TxCount=StepSize` + `Sequence[EthTx]=StepSize`
+  so erigon's body-derived TxNums rebuild on FCU(head=genesis)
+  reproduces it, + a commitment anchor — see
+  `client/erigon/genesis_patch.go` + `snapshot_cgo.go`) keeps the
+  commitment continuable past block 2. Behind the `cgo_erigon` build
+  tag.
 
 Each adapter implements the `generator.Writer` interface
 (`WriteAccount`, `WriteStorage`, `WriteCode`, `SetStateRoot`, …); the
@@ -367,10 +370,11 @@ Today's client adapters:
   their `.bt` / `.kvi` / `.kvei` accessors (built via `internal/erigon/`),
   alongside a minimal MDBX (genesis header with a patched `stateRoot` +
   chain config) laid down by the pinned `erigon init` CLI. The "fat
-  genesis" construction (`MaxTxNum[0]=StepSize-1` + a commitment anchor,
-  see `client/erigon/genesis_patch.go` + `snapshot_cgo.go`) keeps the
-  commitment continuable across genesis → first-live-block. Behind the
-  `cgo_erigon` build tag.
+  genesis" construction (`MaxTxNum[0]=StepSize-1`, genesis
+  `BodyForStorage.TxCount=StepSize` + `Sequence[EthTx]=StepSize`, + a
+  commitment anchor, see `client/erigon/genesis_patch.go` +
+  `snapshot_cgo.go`) keeps the commitment continuable across genesis →
+  first-live-block. Behind the `cgo_erigon` build tag.
 
 The Nethermind adapter takes a different route from the others: instead of
 writing a chainspec for the client to consume, it writes the seven RocksDB

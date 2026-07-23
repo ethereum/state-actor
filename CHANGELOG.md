@@ -40,6 +40,24 @@
   duration and memory — the phases a SIGKILL would otherwise leave unrecorded.
 
 ### Fixed
+- **Erigon datadirs survive `FCU(head=genesis)` on erigon ≥ 2e41aa8308
+  (PR erigontech/erigon#22344, 2026-07-09).** That upstream change routes a
+  genesis-head forkchoiceUpdated — benchmarkoor's bootstrap FCU, since a
+  state-actor datadir's head IS block 0 — through the general reorg path,
+  which wipes the `MaxTxNum` table (`TxNums.Truncate(tx, 0)`) and rebuilds
+  block 0's entry from the stored genesis body
+  (`AppendCanonicalTxNums(tx, 0)` → `TxCount-1 = 1`). This clobbered the
+  fat-genesis `MaxTxNum[0]=StepSize-1` inside the FCU's own transaction, so
+  the Execution stage could no longer map the commitment anchor
+  (`txNum=StepSize-1`) to a block and every FCU failed with
+  `seems broken TxNums index not filled … in db: (0-0, 1-1)`.
+  `patchGenesisHeaderStateRoot` now makes the fat genesis self-healing:
+  step 5 fattens the genesis `BodyForStorage.TxCount` from 2 to `StepSize`
+  (so any body-derived rebuild reproduces `StepSize-1`), and a new step 10
+  bumps `Sequence[EthTx]` to `StepSize` (so runtime blocks' txn-ids start
+  where genesis's fattened claim ends, keeping the body txn-id space aligned
+  with the txNum space). Inert on pre-22344 daemons, which never rebuild
+  block 0's entry. Erigon datadirs must be regenerated to pick up the fix.
 - **`--client=ethrex` no longer OOM-kills on large `--target-size` runs
   (closes #116).** A 350 GB fill died at 51.3 GiB anon RSS on a 62 GiB host
   (kernel-confirmed OOM; 16 GiB of it transparent huge pages). Fixed on two
