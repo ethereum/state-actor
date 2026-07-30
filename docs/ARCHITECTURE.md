@@ -96,7 +96,7 @@ State Actor generates Ethereum state in three phases:
 │  │  Key: ethereum-config-...      Value: chain_config_json            │ │
 │  ├─────────────────────────────────────────────────────────────────────┤ │
 │  │  reth: MDBX state tables + RocksDB history + nippy-jar static_files│ │
-│  │  besu: single RocksDB w/ 8 Bonsai column families + chainspec.json │ │
+│  │  besu: single RocksDB w/ 16 Bonsai column families + chainspec.json│ │
 │  │  nethermind: 7 RocksDB + flat column DB + parity chainspec sidecar │ │
 │  │  ethrex: single RocksDB w/ 20 CFs + metadata.json + genesis sidecar│ │
 │  │  erigon: Erigon v3 flat .kv snapshots + minimal MDBX               │ │
@@ -220,7 +220,7 @@ configurable worker pool / batch size at the generator level.
   tables, with a per-batch `dirSize` sample driving the target-size
   early stop.
 - **besu** (`client/besu/state_writer_cgo.go:60-160`): cgo + librocksdb.
-  Single RocksDB with 8 Bonsai column families; per-entity raw-bytes
+  Single RocksDB with 16 Bonsai column families; per-entity raw-bytes
   accumulator drives the target-size stop.
 - **nethermind** (`client/nethermind/{run_cgo,entitygen_cgo}.go`): cgo
   + grocksdb. Seven RocksDB instances plus an eighth flat-state column DB

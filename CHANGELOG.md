@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+### Changed
+- **Besu DB now created with all 16 mainnet Bonsai column families.**
+  A fresh mainnet Besu init creates every `KeyValueSegmentIdentifier`
+  segment with `BONSAI` in its format set except the ignorable
+  `CHAIN_PRUNER_STATE` — 16 CFs. state-actor previously created only the
+  8 it writes to, leaving Besu to auto-create the other 8 on first boot
+  (`create_missing_column_families`), so the pre-boot DB layout and CF-ID
+  assignment did not match a Besu-initialized database. The 8 additional
+  CFs (legacy privacy 0x03/0x04/0x0c, backward-sync 0x0d–0x0f, snap-sync
+  0x10/0x11) are now created empty, in Besu's enum order, from the new
+  single-source-of-truth `keys.BonsaiCFNames()`. All persisted settings
+  (LZ4, SST format_version 5, 32 KiB blocks, BloomFilter(10), BlobDB on
+  BLOCKCHAIN + TRIE_LOG_STORAGE with GC on TRIE_LOG only) were verified
+  against a mainnet Besu RocksDB LOG and already matched.
+
 ### Added
 - **Nethermind flat-DB state generation (closes #111).** `--client=nethermind`
   now always writes Nethermind's flat-state layout — an eighth RocksDB

@@ -56,4 +56,70 @@ var (
 	// RocksDB requires "default" to be declared on open; no writes needed.
 	// Name is UTF-8 string "default", NOT a single-byte ID.
 	CFDefault = []byte("default")
+
+	// The CFs below receive no writes from state-actor. Besu still creates
+	// all of them on a fresh mainnet Bonsai init (every segment with BONSAI
+	// in its format set, minus ignorable CHAIN_PRUNER_STATE), so we create
+	// them empty to match a Besu-initialized database layout byte for byte.
+
+	// CFPrivateTransactions — legacy private transactions, retained for DB
+	// backwards compatibility. KeyValueSegmentIdentifier.java:33.
+	CFPrivateTransactions = []byte{3}
+
+	// CFPrivateState — legacy private state, retained for DB backwards
+	// compatibility. KeyValueSegmentIdentifier.java:34.
+	CFPrivateState = []byte{4}
+
+	// CFGoQuorumPrivateStorage — legacy GoQuorum private storage, retained
+	// for DB backwards compatibility. KeyValueSegmentIdentifier.java:60.
+	CFGoQuorumPrivateStorage = []byte{12}
+
+	// CFBackwardSyncHeaders — backward-sync header cache.
+	// KeyValueSegmentIdentifier.java:62.
+	CFBackwardSyncHeaders = []byte{13}
+
+	// CFBackwardSyncBlocks — backward-sync block cache.
+	// KeyValueSegmentIdentifier.java:63.
+	CFBackwardSyncBlocks = []byte{14}
+
+	// CFBackwardSyncChain — backward-sync chain cache.
+	// KeyValueSegmentIdentifier.java:64.
+	CFBackwardSyncChain = []byte{15}
+
+	// CFSnapsyncMissingAccountRange — snap-sync healing bookkeeping.
+	// KeyValueSegmentIdentifier.java:65.
+	CFSnapsyncMissingAccountRange = []byte{16}
+
+	// CFSnapsyncAccountToFix — snap-sync healing bookkeeping.
+	// KeyValueSegmentIdentifier.java:66.
+	CFSnapsyncAccountToFix = []byte{17}
 )
+
+// BonsaiCFNames returns the 16 column family names a fresh mainnet Bonsai
+// Besu creates, in KeyValueSegmentIdentifier enum order. Creation order
+// determines RocksDB CF IDs, so both the DB writer and any reopener must
+// use this exact ordering to mirror a Besu-initialized database.
+//
+// CHAIN_PRUNER_STATE (0x12) is deliberately absent: Besu registers it as
+// an ignorable segment when chain pruning and history-expiry pruning are
+// off (the mainnet default) and does not create it on a fresh init.
+func BonsaiCFNames() []string {
+	return []string{
+		string(CFDefault),
+		string(CFBlockchain),
+		string(CFPrivateTransactions),
+		string(CFPrivateState),
+		string(CFAccountInfoState),
+		string(CFCodeStorage),
+		string(CFAccountStorageStorage),
+		string(CFTrieBranchStorage),
+		string(CFTrieLogStorage),
+		string(CFVariables),
+		string(CFGoQuorumPrivateStorage),
+		string(CFBackwardSyncHeaders),
+		string(CFBackwardSyncBlocks),
+		string(CFBackwardSyncChain),
+		string(CFSnapsyncMissingAccountRange),
+		string(CFSnapsyncAccountToFix),
+	}
+}

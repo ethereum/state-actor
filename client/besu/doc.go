@@ -4,10 +4,13 @@
 //
 // # Approach
 //
-// Open one RocksDB instance under <datadir>/database/ with the 8 column
-// families Besu Bonsai expects (default + BLOCKCHAIN + ACCOUNT_INFO_STATE +
-// CODE_STORAGE + ACCOUNT_STORAGE_STORAGE + TRIE_BRANCH_STORAGE +
-// TRIE_LOG_STORAGE + VARIABLES). Stream synthetic accounts through a temp
+// Open one RocksDB instance under <datadir>/database/ with the 16 column
+// families a fresh mainnet Besu Bonsai init creates (keys.BonsaiCFNames:
+// default + BLOCKCHAIN + ACCOUNT_INFO_STATE + CODE_STORAGE +
+// ACCOUNT_STORAGE_STORAGE + TRIE_BRANCH_STORAGE + TRIE_LOG_STORAGE +
+// VARIABLES, which receive writes, plus the legacy-privacy /
+// backward-sync / snap-sync CFs, which stay empty but make the layout
+// match a Besu-initialized DB). Stream synthetic accounts through a temp
 // Pebble DB (Phase 1), iterate them in addrHash-sorted order to feed the
 // Bonsai path-keyed trie builder (Phase 2), write per-account flat state +
 // per-account storage trie nodes via NodeSink, then assemble the genesis
