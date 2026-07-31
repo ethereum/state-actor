@@ -85,7 +85,9 @@
 //   - run_cgo.go / run_stub.go: build-tag-gated RunCgo entry point
 //   - dbs_cgo.go: MDBX env + RocksDB column families
 //   - data_writer_cgo.go: per-EOA state-table writes
-//   - bytecode_writer_cgo.go: deduped bytecode writes
+//   - bytecode_writer_cgo.go: deduped bytecode writes; LegacyAnalyzed for
+//     contracts, Eip7702 for delegation designators (the variant tag is
+//     load-bearing even though the state root ignores it.)
 //   - storage_writer_cgo.go: per-slot storage-table writes
 //   - contracts_writer_cgo.go: composed contract writes
 //   - metadata_cgo.go: minimum-boot MDBX metadata

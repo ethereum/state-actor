@@ -3,6 +3,7 @@
 package reth
 
 import (
+	"bytes"
 	"encoding/binary"
 	"fmt"
 	"testing"
@@ -218,6 +219,123 @@ func TestEncodeBytecodeCompactWireFormat(t *testing.T) {
 			t.Errorf("jump_table byte = 0x%02X, want 0x80 (JUMPDEST at pos 7)", jtByte)
 		}
 	})
+}
+
+// delegationDesignator builds a well-formed EIP-7702 designator pointing at
+// target: 0xEF 0x01 0x00 || 20-byte address.
+func delegationDesignator(target common.Address) []byte {
+	code := make([]byte, 0, 23)
+	code = append(code, 0xEF, 0x01, 0x00)
+	return append(code, target[:]...)
+}
+
+// TestEncodeBytecodeCompactEip7702 pins the Eip7702 variant for delegation
+// designators. Writing them as LegacyAnalyzed is silently wrong: reth's
+// from_compact rebuilds that variant via new_analyzed, which skips the 0xEF01
+// prefix check, so calling the delegated EOA executes 0xEF and aborts with
+// OpcodeNotFound (consuming the whole gas limit) instead of dispatching to the
+// delegate. The state root can't catch it — the trie commits keccak(code).
+func TestEncodeBytecodeCompactEip7702(t *testing.T) {
+	target := common.HexToAddress("0xa9cb82ea3c688e8c8153e60c1e340840459f66a6")
+	code := delegationDesignator(target)
+
+	encoded := encodeBytecodeCompact(code)
+
+	// [u32 BE 23][23 raw bytes][u8 0x04] — no original_len, no jump table.
+	if len(encoded) != 4+eip7702DesignatorLen+1 {
+		t.Fatalf("encoded length: got %d want %d", len(encoded), 4+eip7702DesignatorLen+1)
+	}
+	if rawLen := binary.BigEndian.Uint32(encoded[0:4]); rawLen != eip7702DesignatorLen {
+		t.Errorf("raw length header: got %d want %d", rawLen, eip7702DesignatorLen)
+	}
+	if got := encoded[4 : 4+eip7702DesignatorLen]; !bytes.Equal(got, code) {
+		t.Errorf("payload: got %x want %x", got, code)
+	}
+	if variant := encoded[4+eip7702DesignatorLen]; variant != bytecodeEip7702 {
+		t.Errorf("variant: got %d want %d (EIP7702_BYTECODE_ID)", variant, bytecodeEip7702)
+	}
+}
+
+// TestEncodeBytecodeCompactNonDesignators keeps the legacy encoding for
+// everything revm's Bytecode::new_eip7702_raw would reject. Tagging those as
+// Eip7702 would be worse than the bug it fixes: reth's from_compact calls
+// new_raw, whose new_raw_checked would return an Eip7702DecodeError and panic
+// the node at DB-read time.
+func TestEncodeBytecodeCompactNonDesignators(t *testing.T) {
+	addr := common.HexToAddress("0xa9cb82ea3c688e8c8153e60c1e340840459f66a6")
+	designator := delegationDesignator(addr)
+
+	cases := []struct {
+		name string
+		code []byte
+	}{
+		{"one_byte_short", designator[:len(designator)-1]},
+		{"one_byte_long", append(append([]byte{}, designator...), 0x00)},
+		{"unsupported_version", append([]byte{0xEF, 0x01, 0x01}, addr[:]...)},
+		{"eof_magic", append([]byte{0xEF, 0x00, 0x00}, addr[:]...)},
+		{"bare_ef_opcode", []byte{0xEF}},
+		{"ordinary_contract", []byte{0x60, 0x40, 0x5B, 0x00}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			encoded := encodeBytecodeCompact(tc.code)
+			analyzedLen := int(binary.BigEndian.Uint32(encoded[0:4]))
+			if variant := encoded[4+analyzedLen]; variant != bytecodeAnalyzed {
+				t.Errorf("variant: got %d want %d (LEGACY_ANALYZED_BYTECODE_ID)",
+					variant, bytecodeAnalyzed)
+			}
+		})
+	}
+}
+
+// TestBytecodeWriterEip7702Roundtrip walks a designator through the real
+// writer: the value stored under keccak(designator) must be the Eip7702
+// encoding, and the code hash must stay keccak(raw code) so the account leaf
+// and the committed state root keep agreeing.
+func TestBytecodeWriterEip7702Roundtrip(t *testing.T) {
+	tmp := t.TempDir()
+	envs, err := OpenEnvs(tmp, true)
+	if err != nil {
+		t.Fatalf("OpenEnvs: %v", err)
+	}
+	defer envs.Close()
+
+	code := delegationDesignator(common.HexToAddress("0xc700a71c3ee17f9106ff87e3a27dc52ce9d551eb"))
+
+	var hash common.Hash
+	if err := envs.Mdbx.Update(func(txn *mdbx.Txn) error {
+		w := NewBytecodeWriter(txn, envs.MdbxDBIs["Bytecodes"], 100)
+		var wrote bool
+		var err error
+		hash, wrote, err = w.Write(code)
+		if err != nil {
+			return err
+		}
+		if !wrote {
+			t.Error("first Write should report a DB write")
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	if want := crypto.Keccak256Hash(code); hash != want {
+		t.Errorf("code hash: got %s want %s", hash.Hex(), want.Hex())
+	}
+
+	if err := envs.Mdbx.View(func(txn *mdbx.Txn) error {
+		val, err := txn.Get(envs.MdbxDBIs["Bytecodes"], hash[:])
+		if err != nil {
+			return fmt.Errorf("designator not in table: %w", err)
+		}
+		if want := encodeEip7702Compact(code); !bytes.Equal(val, want) {
+			t.Errorf("stored value: got %x want %x", val, want)
+		}
+		return nil
+	}); err != nil {
+		t.Errorf("verify: %v", err)
+	}
 }
 
 // TestBytecodeWriterDBSeekDedup verifies the LRU-miss → DB-seek dedup path:
