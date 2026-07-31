@@ -15,10 +15,26 @@ package reth
 //	                          position, 1 = JUMPDEST; LSB-first within each byte
 //	                          (bitvec<u8, Lsb0> layout)
 //
+// Wire format (reth Compact, Eip7702 variant) — delegation designators only:
+//
+//	[u32 BE: 23]
+//	[raw_bytes]             — 0xEF 0x01 0x00 || 20-byte delegate address
+//	[u8: 0x04]              — EIP7702_BYTECODE_ID; no original_len, no jump table
+//
 // Reth uses LegacyAnalyzed for all regular contracts. The LEGACY_RAW (0x00)
 // variant appears in from_compact for backward compat but is never written by
 // new_raw (which always runs analyze_legacy and writes LegacyAnalyzed).
 // We match that behaviour exactly.
+//
+// A designator MUST NOT be written as LegacyAnalyzed. reth's from_compact
+// rebuilds that variant through new_analyzed, which never inspects the 0xEF01
+// prefix, so the account ends up holding the 23 designator bytes as ordinary
+// executable code: calling it dies on the undefined 0xEF opcode
+// (OpcodeNotFound, all gas consumed) instead of dispatching to the delegate.
+// Only EIP7702_BYTECODE_ID routes from_compact through new_raw, which
+// classifies by prefix. The bug is invisible to the state root — the trie
+// commits keccak(code), not the variant tag — and geth is unaffected because
+// it stores raw code and parses the prefix at call time.
 
 import (
 	"encoding/binary"
@@ -35,6 +51,21 @@ import (
 // bytecodeAnalyzed is the discriminant for the LegacyAnalyzed variant.
 // Matches compact_ids::LEGACY_ANALYZED_BYTECODE_ID = 2 in reth-primitives-traits.
 const bytecodeAnalyzed uint8 = 2
+
+// bytecodeEip7702 is the discriminant for the Eip7702 variant.
+// Matches compact_ids::EIP7702_BYTECODE_ID = 4 in reth-primitives-traits.
+const bytecodeEip7702 uint8 = 4
+
+// eip7702DesignatorLen is revm's EIP7702_BYTECODE_LEN: 2 (magic) + 1 (version)
+// + 20 (address). revm accepts a designator only at exactly this length and
+// version; anything else that merely starts with 0xEF01 is an
+// Eip7702DecodeError there, so it stays legacy code here (matching geth, whose
+// ParseDelegation is equally strict).
+const eip7702DesignatorLen = 23
+
+// eip7702DesignatorPrefix is the 3-byte EIP-7702 header — revm's
+// EIP7702_MAGIC_BYTES (0xEF01) followed by EIP7702_VERSION (0).
+var eip7702DesignatorPrefix = [3]byte{0xEF, 0x01, 0x00}
 
 // opcode constants used by the bytecode analysis pass.
 const (
@@ -112,15 +143,21 @@ func (w *BytecodeWriter) Write(code []byte) (common.Hash, bool, error) {
 //
 // Mirrors revm_bytecode::Bytecode::to_compact exactly:
 //
-//  1. Analyze the bytecode (find JUMPDESTs, compute padding) — same logic as
-//     revm_bytecode::legacy::analyze_legacy().
-//  2. Write:
+//  1. EIP-7702 delegation designators take the Eip7702 variant (see
+//     encodeEip7702Compact) — reth's to_compact branches on is_legacy(), and
+//     only that variant survives the from_compact round-trip as a delegation.
+//  2. Everything else: analyze the bytecode (find JUMPDESTs, compute padding)
+//     — same logic as revm_bytecode::legacy::analyze_legacy() — then write:
 //     [u32 BE analyzed_len][analyzed_bytes][u8=2][u64 BE original_len][jump_table]
 //
 // jump_table is ceil(analyzed_len/8) bytes; bit i (LSB-first within each byte)
 // is set iff the opcode at position i is JUMPDEST. This is bitvec<u8, Lsb0>
 // layout.
 func encodeBytecodeCompact(code []byte) []byte {
+	if isEip7702Designator(code) {
+		return encodeEip7702Compact(code)
+	}
+
 	originalLen := len(code)
 
 	// --- analysis pass: mirror analyze_legacy ---
@@ -218,4 +255,31 @@ func encodeBytecodeCompact(code []byte) []byte {
 // These opcodes have 1-byte immediates not tracked by the PUSH analysis pass.
 func isDupnSwapnExchange(op uint8) bool {
 	return op == opDUPN || op == opSWAPN || op == opEXCHANGE
+}
+
+// isEip7702Designator reports whether code is a well-formed EIP-7702
+// delegation designator, using revm's acceptance rule from
+// Bytecode::new_eip7702_raw: exactly 23 bytes, 0xEF01 magic, version byte 0.
+// Anything looser (wrong length, unsupported version) is an
+// Eip7702DecodeError in revm, so it must keep the legacy encoding.
+func isEip7702Designator(code []byte) bool {
+	return len(code) == eip7702DesignatorLen &&
+		code[0] == eip7702DesignatorPrefix[0] &&
+		code[1] == eip7702DesignatorPrefix[1] &&
+		code[2] == eip7702DesignatorPrefix[2]
+}
+
+// encodeEip7702Compact encodes a delegation designator the way reth's
+// to_compact does for the Eip7702 variant: the raw bytes verbatim (revm keeps
+// designators unpadded, original_len == 23) followed by the discriminant.
+// from_compact hands these bytes to new_raw, which re-derives the delegation
+// from the 0xEF01 prefix — no original_len or jump table is stored.
+//
+//	[u32 BE: 23][23 raw bytes][u8: 0x04]
+func encodeEip7702Compact(code []byte) []byte {
+	buf := make([]byte, 4+len(code)+1)
+	binary.BigEndian.PutUint32(buf, uint32(len(code)))
+	copy(buf[4:], code)
+	buf[4+len(code)] = bytecodeEip7702
+	return buf
 }
