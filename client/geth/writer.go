@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/cockroachdb/pebble"
+	"github.com/cockroachdb/pebble/bloom"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto"
@@ -91,6 +92,35 @@ func NewWriter(dbPath string) (*Writer, error) {
 	return w, nil
 }
 
+// gethLevelOptions mirrors the per-level table-format options that
+// go-ethereum's ethdb/pebble.New configures (pinned go.mod version;
+// see TestPebbleLevelOptionsMatchGeth, which locks this against geth's
+// actual code). These decide the on-disk sstable format — bloom
+// filters, target file sizes — that persists after state-actor exits
+// and geth takes over, so they must be geth's, not pebble's defaults:
+//
+//   - 10-bit bloom filters on L0–L5, deliberately NONE on the last
+//     level (geth: "Pebble doesn't use the Bloom filter at level6 for
+//     read efficiency" — a filter over ~90% of the data costs more
+//     block-cache than it saves).
+//   - TargetFileSize ladder 2 MiB → 128 MiB doubling per level.
+//
+// Runtime knobs (memtables, compaction triggers) are NOT mirrored —
+// those only shape behaviour while a process has the DB open, and our
+// bulk-import needs differ from geth's serving needs; see
+// prodPebbleOptions.
+func gethLevelOptions() []pebble.LevelOptions {
+	levels := make([]pebble.LevelOptions, 7)
+	for i := 0; i < 6; i++ {
+		levels[i] = pebble.LevelOptions{
+			TargetFileSize: (2 * 1024 * 1024) << i,
+			FilterPolicy:   bloom.FilterPolicy(10),
+		}
+	}
+	levels[6] = pebble.LevelOptions{TargetFileSize: 128 * 1024 * 1024}
+	return levels
+}
+
 // prodPebbleOptions returns pebble.Options tuned for state-actor's
 // one-shot bulk-import workload on the production geth DB. The DB is
 // write-only during generation (geth reads it only later, after the
@@ -100,6 +130,9 @@ func NewWriter(dbPath string) (*Writer, error) {
 // default L0 thresholds trigger ~6x throughput collapse mid-import
 // once L0 reaches 24 SSTs (writes stall waiting for compactors).
 //
+//   - Levels = gethLevelOptions() → the persistent sstable format
+//     (bloom filters, file-size ladder) matches what geth itself
+//     would write; everything below this line is transient tuning.
 //   - L0CompactionThreshold = MaxInt32 → no auto-compaction kicks in.
 //   - L0StopWritesThreshold = MaxInt32 → no L0 stall on writes.
 //   - MemTableSize 256 MiB → fewer (and larger) L0 flushes.
@@ -109,6 +142,7 @@ func NewWriter(dbPath string) (*Writer, error) {
 //     genesis block) — those are tiny, no point disabling.
 func prodPebbleOptions() *pebble.Options {
 	return &pebble.Options{
+		Levels:                      gethLevelOptions(),
 		MemTableSize:                256 * 1024 * 1024,
 		MemTableStopWritesThreshold: 2,
 		L0CompactionThreshold:       math.MaxInt32,
