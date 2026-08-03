@@ -87,10 +87,12 @@ const ethrexDBWriteBufferBytes = 4 * 1024 * 1024 * 1024
 const ethrexMaxOpenFiles = 32768
 
 // ethrexAuxOffHeapBytes is an ESTIMATE (not a bound) of the off-heap RAM this
-// writer commits beyond the two budgets above: the batchSink WriteBatches
-// (six in Phase 2; up to 8 workers x 2 in Phase 0, each flushing at 64 MiB),
-// the Pebble streamsort store's two 256 MiB memtable arenas, and RocksDB's
-// compaction/iterator scratch.
+// writer commits beyond the two budgets above: the four shared batchSinks
+// (account trie/flat + code/meta, ~2×64 MiB retained C buffer each), the
+// per-worker storage sink pairs (Phase 0 and Stage B, 16 MiB threshold →
+// ~2×32 MiB retained each; ≤1 GiB at the 16-worker default — see
+// workerFlushThresholdBytes), the Pebble streamsort store's two 256 MiB
+// memtable arenas, and RocksDB's compaction/iterator scratch.
 const ethrexAuxOffHeapBytes = 2 * 1024 * 1024 * 1024
 
 // ethrexAllocatorSlackBytes covers allocator memory no component reports:

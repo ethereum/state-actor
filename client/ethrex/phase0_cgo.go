@@ -97,8 +97,8 @@ func runPhase0Storage(
 			// Each worker owns its own write batches targeting the two storage CFs.
 			// Per-worker batches avoid contention and keep each worker's writes
 			// isolated to its assigned addrHash-prefixed keyspace.
-			workerTrieSink := newBatchSink(db, cfIdxStorageTrieNodes)
-			workerFkvSink := newBatchSink(db, cfIdxStorageFlatKeyValue)
+			workerTrieSink := newBatchSinkWithThreshold(db, cfIdxStorageTrieNodes, workerFlushThresholdBytes)
+			workerFkvSink := newBatchSinkWithThreshold(db, cfIdxStorageFlatKeyValue, workerFlushThresholdBytes)
 			defer func() {
 				// Close both sinks, but report only the first failure: cancelDrain
 				// keeps the first cause, so capture it explicitly rather than letting

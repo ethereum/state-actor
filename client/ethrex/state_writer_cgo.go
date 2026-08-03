@@ -73,11 +73,12 @@ func phase2Workers() int {
 //     Stage C (writer): apply results in strict seq order — always addrHash-sorted.
 //
 // RAM bound: internal/ethrex.Builder is streaming — O(keyLen), independent of
-// leaf count (see its doc comment). The Go-heap terms that DO scale with the
-// run are seenCodeHash below (one entry per distinct code hash) and the
-// in-flight pipeline (~5x numWorkers accountResults, each holding one
-// account's buffered storage rows). Everything else lives off-heap in RocksDB
-// and Pebble; see doc.go's "Memory" section for the whole budget.
+// leaf count (see its doc comment). Storage rows stream from Stage-B workers
+// straight into per-worker sinks (no per-account buffering), so the Go-heap
+// terms that scale with the run are seenCodeHash (one entry per distinct
+// REAL contract code) and the scalar in-flight pipeline (~5×numWorkers tiny
+// results). Everything else lives off-heap in RocksDB and Pebble; see
+// doc.go's "Memory" section for the whole budget.
 //
 // Flat-KV / snap-sync layout: leaf full-path rows are routed ONLY to the
 // flat-KV CFs (never duplicated into the trie-node CFs), modelling a snap-synced
@@ -186,16 +187,17 @@ func writeState(
 	plan := cfg.AutoFill
 	if plan != nil {
 		cfg.Progress.Stage("ethrex: phase 1/2 — generating accounts")
-		for i := 0; i < plan.NumEOAs; i++ {
-			if ctx.Err() != nil {
-				return common.Hash{}, nil, ctx.Err()
-			}
+		err := runPhase1Pipeline(ctx, cfg, sorter, plan.NumEOAs, "EOAs", func() phase1Draw {
 			acc := plan.DrawEOA(rng)
-			blob := encodeEntity(acc.StateAccount.Nonce, acc.StateAccount.Balance, acc.Code, nil)
-			if err := sorter.Put(acc.AddrHash[:], blob); err != nil {
-				return common.Hash{}, nil, err
+			return phase1Draw{
+				addrHash: acc.AddrHash,
+				nonce:    acc.StateAccount.Nonce,
+				balance:  acc.StateAccount.Balance,
+				code:     acc.Code,
 			}
-			cfg.Progress.Tick(int64(i+1), int64(plan.NumEOAs), "EOAs")
+		})
+		if err != nil {
+			return common.Hash{}, nil, err
 		}
 	}
 
@@ -235,19 +237,21 @@ func writeState(
 
 	if plan != nil {
 		cfg.Progress.Stage("ethrex: phase 1/2 — generating contracts")
-		for i := 0; i < plan.NumContracts; i++ {
-			if ctx.Err() != nil {
-				return common.Hash{}, nil, ctx.Err()
-			}
+		// contract.Storage passes through directly (entitySlot aliases
+		// entitygen.StorageSlot) — the previous per-contract map rebuild did
+		// ~750 M pointless inserts per 150 GB run on the serial draw loop.
+		err := runPhase1Pipeline(ctx, cfg, sorter, plan.NumContracts, "contracts", func() phase1Draw {
 			contract := plan.DrawContract(rng)
-			// contract.Storage passes through directly (entitySlot aliases
-			// entitygen.StorageSlot) — the previous per-contract map rebuild
-			// did ~750 M pointless inserts per 150 GB run on this serial loop.
-			blob := encodeEntity(contract.StateAccount.Nonce, contract.StateAccount.Balance, contract.Code, contract.Storage)
-			if err := sorter.Put(contract.AddrHash[:], blob); err != nil {
-				return common.Hash{}, nil, err
+			return phase1Draw{
+				addrHash: contract.AddrHash,
+				nonce:    contract.StateAccount.Nonce,
+				balance:  contract.StateAccount.Balance,
+				code:     contract.Code,
+				slots:    contract.Storage,
 			}
-			cfg.Progress.Tick(int64(i+1), int64(plan.NumContracts), "contracts")
+		})
+		if err != nil {
+			return common.Hash{}, nil, err
 		}
 	}
 
@@ -502,6 +506,134 @@ func writeState(
 
 	stats.TotalBytes = stats.AccountBytes + stats.StorageBytes + stats.CodeBytes
 	return stateRoot, stats, nil
+}
+
+// phase1Draw carries one drawn entity from the RNG goroutine to the encode
+// workers. Every referenced slice is freshly allocated by the draw, so
+// hand-off is ownership transfer, not borrowing.
+type phase1Draw struct {
+	addrHash common.Hash
+	nonce    uint64
+	balance  *uint256.Int
+	code     []byte
+	slots    []entitySlot
+}
+
+// phase1Blob is one encoded spill entry headed for the single Put goroutine.
+type phase1Blob struct {
+	addrHash common.Hash
+	blob     []byte
+}
+
+// phase1EncodeWorkers sizes the encode pool. Encoding is cheap per entity;
+// the serial ends (RNG draw, sorter.Put) bound the pipeline, so a small pool
+// suffices.
+const phase1EncodeWorkers = 8
+
+// runPhase1Pipeline drives count draws through encode workers into the
+// sorter. The DRAW stays on the calling goroutine — the RNG sequence is the
+// cross-client invariance contract (erigon's writer documents the same
+// split: "the RNG draw stays single-threaded on the main goroutine for
+// cross-client invariance; only the CPU-bound encode is parallelised").
+// sorter.Put runs on exactly one goroutine (streamsort is single-writer);
+// Put ORDER is irrelevant — keys are unique addrHashes and streamsort sorts.
+func runPhase1Pipeline(
+	ctx context.Context,
+	cfg generator.Config,
+	sorter *streamsort.Store,
+	count int,
+	tickLabel string,
+	draw func() phase1Draw,
+) error {
+	workers := phase1EncodeWorkers
+	if n := runtime.NumCPU(); n < workers {
+		workers = n
+	}
+	if workers < 1 {
+		workers = 1
+	}
+
+	p1Ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	var firstErr error
+	var errMu sync.Mutex
+	setErr := func(e error) {
+		errMu.Lock()
+		if firstErr == nil {
+			firstErr = e
+			cancel()
+		}
+		errMu.Unlock()
+	}
+
+	drawCh := make(chan phase1Draw, 4*workers)
+	blobCh := make(chan phase1Blob, 4*workers)
+
+	var encWg sync.WaitGroup
+	for w := 0; w < workers; w++ {
+		encWg.Add(1)
+		go func() {
+			defer encWg.Done()
+			for d := range drawCh {
+				if p1Ctx.Err() != nil {
+					continue // drain to unblock the draw goroutine
+				}
+				b := phase1Blob{
+					addrHash: d.addrHash,
+					blob:     encodeEntity(d.nonce, d.balance, d.code, d.slots),
+				}
+				select {
+				case blobCh <- b:
+				case <-p1Ctx.Done():
+				}
+			}
+		}()
+	}
+	go func() {
+		encWg.Wait()
+		close(blobCh)
+	}()
+
+	var putWg sync.WaitGroup
+	putWg.Add(1)
+	go func() {
+		defer putWg.Done()
+		var done int64
+		for b := range blobCh {
+			if p1Ctx.Err() != nil {
+				continue // drain
+			}
+			if err := sorter.Put(b.addrHash[:], b.blob); err != nil {
+				setErr(err)
+				continue
+			}
+			done++
+			cfg.Progress.Tick(done, int64(count), tickLabel)
+		}
+	}()
+
+	// The draw loop: sequential, on this goroutine, in index order.
+	for i := 0; i < count; i++ {
+		if p1Ctx.Err() != nil {
+			break
+		}
+		d := draw()
+		select {
+		case drawCh <- d:
+		case <-p1Ctx.Done():
+		}
+	}
+	close(drawCh)
+	putWg.Wait()
+
+	errMu.Lock()
+	err := firstErr
+	errMu.Unlock()
+	if err != nil {
+		return err
+	}
+	return ctx.Err()
 }
 
 // computeAccountResult is the per-account computation run by Stage B workers.
