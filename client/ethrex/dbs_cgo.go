@@ -23,13 +23,15 @@ import (
 const bulkBackgroundJobs = 8
 
 // defaultStateCFLevelBaseMiB is max_bytes_for_level_base for the four state
-// CFs, in MiB: 2 GiB, matching besu and nethermind. At this value RocksDB
-// still runs SOME size-scored L0 compaction during import (one pass per
-// ~2 GiB of L0), which keeps Close()'s final CompactRange cheap; the
-// defer-everything alternative (set the env below to something huge, e.g.
-// 1048576 = 1 TiB) reaches the ~2.3× write-amplification floor but moves
-// the entire flattening cost into Close. The 40 GB bench ladder decides
-// which ships as the default; both numbers are recorded in the PR.
+// CFs, in MiB: 2 GiB, matching besu and nethermind.
+//
+// Ladder-measured (40 GB target, 96-core host, seed 42, identical roots):
+// RocksDB's 256 MB default wrote 314 GiB physical in 20.8 min; 2 GiB wrote
+// 298 GiB in 15.8 min; the defer-everything variant (1 TiB) wrote the least
+// (272 GiB) but took 19.5 min — its deferred flattening lands in Close as a
+// serial ~400-input merge per state CF. 2 GiB wins on wall by keeping cheap
+// incremental L0 passes overlapped with import while Close stays ~35 s/CF.
+// STATE_ACTOR_ETHREX_LEVELBASE_MIB overrides for experiments.
 const defaultStateCFLevelBaseMiB = 2048
 
 // ethrexStateCFLevelBaseBytes resolves the state-CF level-base, honoring

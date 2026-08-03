@@ -60,10 +60,13 @@ producing a datadir no real node ever has.
 
 - **Sort spill:** ≈0.5× target under the datadir volume (moved off `/tmp`
   deliberately), freed before `Close()`.
-- **Write amplification:** with `max_bytes_for_level_base` set (2 GiB default,
-  `STATE_ACTOR_ETHREX_LEVELBASE_MIB` to override) physical writes are ≈2-3×
-  the final size. Before that fix, RocksDB's 256 MB default silently ran L0
-  compactions all import long: 5-7× measured.
+- **Write amplification:** ladder-measured at the 40 GB target (73 GiB
+  realized; whole-device sector deltas, so spill and filesystem overhead
+  included): RocksDB's 256 MB `max_bytes_for_level_base` default wrote
+  314 GiB physical; the 2 GiB default ships because it was fastest by wall
+  (298 GiB, −24% time); the defer-everything variant wrote least (272 GiB)
+  but pays it back in a serial Close mega-compaction. Override with
+  `STATE_ACTOR_ETHREX_LEVELBASE_MIB`.
 
 Rule of thumb for provisioning an ethrex run: **free disk ≈ 2.4× the target**
 (1.82× final + ~0.5× spill co-resident at the Phase-2 peak), plus headroom for

@@ -530,6 +530,13 @@ type phase1Blob struct {
 // suffices.
 const phase1EncodeWorkers = 8
 
+// phase1BatchSize is the hand-off granularity between the pipeline stages.
+// Per-ENTITY channel ops measured as a regression on the EOA phase (1:31 →
+// 3:10 at 40 GB): at ~525k draws/s the ~1-2 µs of contended send+recv per
+// entity doubles the loop. Batching amortises it ~256× (one slice per op);
+// the ladder's re-run confirmed the EOA phase back at draw-bound speed.
+const phase1BatchSize = 256
+
 // runPhase1Pipeline drives count draws through encode workers into the
 // sorter. The DRAW stays on the calling goroutine — the RNG sequence is the
 // cross-client invariance contract (erigon's writer documents the same
@@ -567,24 +574,27 @@ func runPhase1Pipeline(
 		errMu.Unlock()
 	}
 
-	drawCh := make(chan phase1Draw, 4*workers)
-	blobCh := make(chan phase1Blob, 4*workers)
+	drawCh := make(chan []phase1Draw, 2*workers)
+	blobCh := make(chan []phase1Blob, 2*workers)
 
 	var encWg sync.WaitGroup
 	for w := 0; w < workers; w++ {
 		encWg.Add(1)
 		go func() {
 			defer encWg.Done()
-			for d := range drawCh {
+			for batch := range drawCh {
 				if p1Ctx.Err() != nil {
 					continue // drain to unblock the draw goroutine
 				}
-				b := phase1Blob{
-					addrHash: d.addrHash,
-					blob:     encodeEntity(d.nonce, d.balance, d.code, d.slots),
+				out := make([]phase1Blob, len(batch))
+				for i, d := range batch {
+					out[i] = phase1Blob{
+						addrHash: d.addrHash,
+						blob:     encodeEntity(d.nonce, d.balance, d.code, d.slots),
+					}
 				}
 				select {
-				case blobCh <- b:
+				case blobCh <- out:
 				case <-p1Ctx.Done():
 				}
 			}
@@ -600,27 +610,39 @@ func runPhase1Pipeline(
 	go func() {
 		defer putWg.Done()
 		var done int64
-		for b := range blobCh {
+		for batch := range blobCh {
 			if p1Ctx.Err() != nil {
 				continue // drain
 			}
-			if err := sorter.Put(b.addrHash[:], b.blob); err != nil {
-				setErr(err)
-				continue
+			for _, b := range batch {
+				if err := sorter.Put(b.addrHash[:], b.blob); err != nil {
+					setErr(err)
+					break
+				}
+				done++
+				cfg.Progress.Tick(done, int64(count), tickLabel)
 			}
-			done++
-			cfg.Progress.Tick(done, int64(count), tickLabel)
 		}
 	}()
 
 	// The draw loop: sequential, on this goroutine, in index order.
+	batch := make([]phase1Draw, 0, phase1BatchSize)
 	for i := 0; i < count; i++ {
 		if p1Ctx.Err() != nil {
 			break
 		}
-		d := draw()
+		batch = append(batch, draw())
+		if len(batch) == phase1BatchSize {
+			select {
+			case drawCh <- batch:
+			case <-p1Ctx.Done():
+			}
+			batch = make([]phase1Draw, 0, phase1BatchSize)
+		}
+	}
+	if len(batch) > 0 && p1Ctx.Err() == nil {
 		select {
-		case drawCh <- d:
+		case drawCh <- batch:
 		case <-p1Ctx.Done():
 		}
 	}
