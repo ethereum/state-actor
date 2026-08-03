@@ -125,7 +125,17 @@ func writeState(
 	}
 
 	// Phase 1: queue all entities into a streamsort keyed by addrHash.
-	sorter, err := streamsort.New("")
+	//
+	// Spill under the datadir, not os.TempDir(): the spill is ~0.4× the
+	// target size (~130 GB for a 350 GB run), and "" would put it wherever
+	// /tmp points — tmpfs (i.e. RAM) on some hosts, container storage under
+	// docker/podman — invisible either way. The datadir volume is the one
+	// disk a state-actor run is guaranteed to have sized for the job. Same
+	// choice as this writer's own Phase 0 (streamingtrie.StorageRoot gets
+	// cfg.DBPath), reth, and erigon — erigon's comment documents the tmpfs
+	// hazard explicitly. Store.Close removes the spill dir before the DB
+	// handle closes, so the shipped datadir stays clean.
+	sorter, err := streamsort.New(cfg.DBPath)
 	if err != nil {
 		return common.Hash{}, nil, fmt.Errorf("ethrex: streamsort.New: %w", err)
 	}
