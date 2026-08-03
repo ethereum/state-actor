@@ -10,7 +10,6 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/crypto"
-	"github.com/holiman/uint256"
 	"github.com/linxGnu/grocksdb"
 
 	ethrexinternal "github.com/ethereum/state-actor/internal/ethrex"
@@ -208,10 +207,11 @@ func isLeafFullPathHelper(path []byte) bool {
 }
 
 // storageSlotKV is a (slotHash, value) pair used when sorting slots for the
-// storage trie build.
+// storage trie build. value stays the raw 32 bytes end-to-end — the encoders
+// trim it directly (EncodeStorageValueBytes32); no integer types involved.
 type storageSlotKV struct {
 	slotHash common.Hash
-	value    *uint256.Int
+	value    common.Hash
 }
 
 // collectNonZeroSlots builds a sorted []storageSlotKV from ent.slots, skipping
@@ -227,11 +227,9 @@ func collectNonZeroSlots(ent entity) []storageSlotKV {
 		if s.Value == zero {
 			continue
 		}
-		v := new(uint256.Int)
-		v.SetBytes32(s.Value[:])
 		kvs = append(kvs, storageSlotKV{
 			slotHash: crypto.Keccak256Hash(s.Key[:]),
-			value:    v,
+			value:    s.Value,
 		})
 	}
 	if len(kvs) == 0 {
@@ -266,7 +264,7 @@ func buildStorageTrieBuffered(
 	// per-slot BytesToNibbles allocation.
 	var nibScratch [64]byte
 	for _, e := range kvs {
-		enc := ethrexinternal.EncodeStorageValue(e.value)
+		enc := ethrexinternal.EncodeStorageValueBytes32(e.value)
 		if addErr := sb.AddLeaf(ethrexinternal.AppendNibbles(nibScratch[:0], e.slotHash[:]), enc); addErr != nil {
 			return nil, emptyTrieHash, 0, 0, fmt.Errorf("ethrex: storage leaf: %w", addErr)
 		}
@@ -307,7 +305,7 @@ func buildStorageTrieInline(
 
 	var nibScratch [64]byte
 	for _, e := range kvs {
-		enc := ethrexinternal.EncodeStorageValue(e.value)
+		enc := ethrexinternal.EncodeStorageValueBytes32(e.value)
 		if addErr := sb.AddLeaf(ethrexinternal.AppendNibbles(nibScratch[:0], e.slotHash[:]), enc); addErr != nil {
 			return emptyTrieHash, 0, 0, fmt.Errorf("ethrex: storage leaf: %w", addErr)
 		}

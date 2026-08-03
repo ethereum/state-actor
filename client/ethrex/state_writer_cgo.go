@@ -619,7 +619,7 @@ type entity struct {
 func encodeEntity(nonce uint64, balance *uint256.Int, code []byte, slots []entitySlot) []byte {
 	if len(code) == 0 && len(slots) == 0 {
 		// EOA path.
-		balBytes := balance.ToBig().Bytes()
+		balBytes := balance.Bytes()
 		out := make([]byte, 1+8+1+len(balBytes))
 		out[0] = byte(entityEOA)
 		binary.BigEndian.PutUint64(out[1:9], nonce)
@@ -627,7 +627,7 @@ func encodeEntity(nonce uint64, balance *uint256.Int, code []byte, slots []entit
 		copy(out[10:], balBytes)
 		return out
 	}
-	balBytes := balance.ToBig().Bytes()
+	balBytes := balance.Bytes()
 	size := 1 + 8 + 1 + len(balBytes) + 4 + len(code) + 4 + len(slots)*64
 	out := make([]byte, 0, size)
 	out = append(out, byte(entityContract))

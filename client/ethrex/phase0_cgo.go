@@ -10,7 +10,6 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/crypto"
-	"github.com/holiman/uint256"
 
 	"github.com/ethereum/state-actor/generator"
 	ethrexinternal "github.com/ethereum/state-actor/internal/ethrex"
@@ -146,9 +145,10 @@ func runPhase0Storage(
 				var localBytes uint64
 				statSink := func(_, _, value common.Hash) error {
 					slotW.Slot()
-					enc := ethrexinternal.EncodeStorageValue(new(uint256.Int).SetBytes32(value[:]))
+					// Length arithmetic only — the previous full encode (with a
+					// uint256 conversion) existed solely to measure len(enc).
 					localSlots++
-					localBytes += uint64(len(enc))
+					localBytes += uint64(ethrexinternal.StorageValueRLPLength(value))
 					return nil
 				}
 
