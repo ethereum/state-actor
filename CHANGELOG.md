@@ -35,43 +35,36 @@
   their difference being the cgo memory no `GOMEMLIMIT` can govern — plus
   host-wide `MemAvailable`/`Dirty`/`Writeback`, which distinguish "this process
   exhausted memory" from "unreclaimable page cache did". Alongside it the
-  ethrex writer logs RocksDB's own accounting (`cur-size-all-mem-tables`,
-  `estimate-table-readers-mem`, block-cache usage, L0 file count), so the
-  budget constants can be checked against ground truth instead of trusted.
-  A SIGKILL cannot log anything, so the last line before a kill is the only
-  record — this exists because two 350 GB runs died leaving nothing but an
-  exit code to reason from.
+  ethrex writer logs RocksDB's own accounting (memtables, table readers,
+  block-cache usage, L0 file count), and `Close()` logs per-CF compaction
+  duration and memory — the phases a SIGKILL would otherwise leave unrecorded.
 
 ### Fixed
-- **`MALLOC_ARENA_MAX=2` in `Dockerfile.ethrex`, and the ethrex memory budget
-  recalibrated against a kernel OOM report.** The kill was confirmed genuine —
-  `state-actor` held **51.3 GiB of anonymous RSS** — but not for the reason
-  first assumed. The kernel showed only 15 MB of page cache and 16 GiB in
-  transparent huge pages, while RocksDB's own properties accounted for under
-  10 GiB (`estimate-table-readers-mem` held 388 KB). The unaccounted remainder
-  was glibc arena fragmentation, which grows with allocation churn and so with
-  bytes written. Capping arenas, dropping the write-only block cache 4 GiB →
-  512 MiB, and reserving for fragmentation explicitly cut peak RSS **9.4 → 7.3
-  GiB** and off-heap **8.1 → 5.4 GiB** on an identical 40 GB fill, with a
-  byte-identical state root.
-
-- **`--client=ethrex` no longer OOM-kills on large `--target-size` runs.** A
-  350 GB fill was SIGKILLed ~38% into Phase 2 on a 62 GiB host because nothing
-  bounded three compounding memory terms. Now: RocksDB's index and bloom-filter
-  blocks are routed through the existing 4 GiB shared block cache
-  (`cache_index_and_filter_blocks`) instead of RocksDB's default of pre-loading
-  them into per-SST table readers, where they sat outside every budget and grew
-  with each SST written; `db_write_buffer_size` caps total memtable memory,
-  which the per-CF write buffers (mirrored from ethrex, and not summed by
-  RocksDB) would otherwise allow to reach 12 GiB across the four big state CFs;
-  and the new `internal/memlimit` package derives a `GOMEMLIMIT` from the host's
-  real ceiling (cgroup v2, cgroup v1, then `/proc/meminfo`) minus the writer's
-  declared off-heap reserve, so `GOGC=100` can no longer double a bytecode-heavy
-  live heap unchecked. An explicit `GOMEMLIMIT` still wins, and a limit too
-  small to help is declined and logged rather than applied — one below the live
-  heap trades an OOM kill for an unbounded GC stall. **These are process-runtime
-  knobs only: the produced datadir is byte-identical, which
-  `TestEthrexGoldenStateRoot` and `TestGenesisDumpGolden` pin.**
+- **`--client=ethrex` no longer OOM-kills on large `--target-size` runs
+  (closes #116).** A 350 GB fill died at 51.3 GiB anon RSS on a 62 GiB host
+  (kernel-confirmed OOM; 16 GiB of it transparent huge pages). Fixed on two
+  fronts. **Allocator**: the runtime image now runs RocksDB on jemalloc via
+  `LD_PRELOAD` — RocksDB-on-glibc is the documented pathological pairing
+  behind unbounded allocator retention, and jemalloc is what ethrex itself
+  ships as its default global allocator (`MALLOC_ARENA_MAX=2` stays as the
+  fallback for a failed preload). **Structure**, aligning the writer with the
+  besu/nethermind/geth/erigon disciplines: Phase-2 workers capped at 8 (was
+  uncapped `NumCPU()`); state-CF memtables 256 MiB × 4 (was 512 MiB × 6 with
+  min-merge) under a 4 GiB `db_write_buffer_size` backstop; index and
+  bloom-filter blocks routed through the shared block cache (512 MiB — as a
+  4 GiB bystander they sat in per-SST table readers outside every budget)
+  with `max_open_files` bounded; `Close()`-time CompactRange serialized
+  (concurrent manual compactions of never-compacted L0 stacked readahead at
+  the run's peak); Phase-1 sort spill moved from `/tmp` to the datadir
+  volume. The new `internal/memlimit` derives a `GOMEMLIMIT` from the host's
+  real ceiling (cgroup v2 → cgroup v1 → `/proc/meminfo`) minus the writer's
+  declared off-heap reserve; an explicit `GOMEMLIMIT` wins, and a limit too
+  small to help is declined and logged — one below the live heap trades an
+  OOM kill for an unbounded GC stall. These are process-runtime knobs only:
+  the produced database is **logically identical** — same KV content, same
+  state root, pinned by `TestEthrexGoldenStateRoot` and
+  `TestGenesisDumpGolden` (physical SST packing legitimately varies with
+  flush cadence).
 
 - **`erc20` template now honors `approximate_size_bytes`.** Previously
   the universal entity-level sizing knob was silently ignored on the

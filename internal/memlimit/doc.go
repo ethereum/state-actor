@@ -11,8 +11,9 @@
 //
 // Set reads the host's real ceiling (cgroup v2, then cgroup v1, then
 // /proc/meminfo), subtracts the caller's declared off-heap reserve, and hands
-// the Go heap half of what is left. The other half absorbs page cache and the
-// transient overshoot a soft limit permits.
+// the Go heap a heapDivisor share of the remainder (a third today — see the
+// heapDivisor comment for why not half). The rest absorbs the soft limit's
+// transient overshoot and, above all, the reserve being an underestimate.
 //
 // A limit below the live heap is worse than no limit: the collector then runs
 // continuously (Go caps it at 50% of CPU) and the process crawls instead of

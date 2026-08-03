@@ -2,6 +2,7 @@ package memlimit
 
 import (
 	"math"
+	"runtime/debug"
 	"strings"
 	"testing"
 )
@@ -222,6 +223,12 @@ func TestResultString(t *testing.T) {
 // It deliberately does not assert Applied — the test binary inherits whatever
 // GOMEMLIMIT the runner has set, and declining in that case is correct.
 func TestSetIsIdempotent(t *testing.T) {
+	// Set may install a real process-global limit (when the runner has no
+	// GOMEMLIMIT); restore whatever was in effect so the rest of this test
+	// binary does not run under a limit this test chose.
+	prev := debug.SetMemoryLimit(-1)
+	t.Cleanup(func() { debug.SetMemoryLimit(prev) })
+
 	first := Set(1 * gib)
 	second := Set(100 * gib)
 

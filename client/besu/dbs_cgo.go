@@ -110,8 +110,14 @@ func openBesuDB(datadir string) (*besuDB, error) {
 		t.SetBlockSize(32 << 10) // 32 KB
 		t.SetFormatVersion(5)
 		t.SetFilterPolicy(bf)
-		// SetPartitionFilters not exposed by grocksdb — accept default.
-		// SetCacheIndexAndFilterBlocks not exposed by grocksdb — accept default.
+		// SetPartitionFilters and SetCacheIndexAndFilterBlocks ARE exposed by
+		// grocksdb v1.10.x (earlier comments here claimed otherwise). Both
+		// stay at RocksDB defaults deliberately: the bulk path is write-only
+		// and Besu re-tunes table options at first open. NOTE the default
+		// means index/filter blocks live in per-SST table readers, outside
+		// any cache bound, growing with SST count — the term the ethrex
+		// writer now routes through its shared cache; porting that here is a
+		// tracked follow-up.
 		return t
 	}
 

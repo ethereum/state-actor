@@ -13,6 +13,14 @@ import (
 // Memory-ceiling sources, in the order detect consults them. The smallest
 // real value wins: a container under cgroup v2 sees both its own memory.max
 // and the host's MemTotal, and only the former binds it.
+//
+// Known limitation: the cgroup paths are root-relative. Under a private
+// cgroup namespace (docker/podman — every deployment this writer targets)
+// that IS the calling container's own limit. A nested cgroup withOUT a
+// namespace (e.g. `systemd-run -p MemoryMax=`) keeps its limit at a subtree
+// path that would need a /proc/self/cgroup walk to find; detection then
+// falls back to MemTotal, which errs toward a higher (less protective)
+// ceiling. Deliberately not handled until a real run path needs it.
 const (
 	cgroupV2MaxPath = "/sys/fs/cgroup/memory.max"
 	cgroupV1MaxPath = "/sys/fs/cgroup/memory/memory.limit_in_bytes"
@@ -130,7 +138,7 @@ func apply(reserve uint64) Result {
 // when no useful limit can be derived — see minUsefulLimit.
 //
 // The subtraction cannot overflow int64: (total-reserve) is at most MaxUint64,
-// and halving that yields exactly MaxInt64.
+// and dividing by heapDivisor (>= 2) keeps the result at or under MaxInt64.
 func Budget(total, reserve uint64) int64 {
 	if total == 0 || reserve >= total {
 		return 0

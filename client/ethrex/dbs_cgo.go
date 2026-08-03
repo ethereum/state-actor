@@ -221,6 +221,12 @@ func openEthrexDB(dbPath string) (*ethrexDB, error) {
 		// memory-placement option only: it changes nothing about the bytes
 		// written, and nothing is read during bulk import, so eviction costs
 		// nothing here. See ethrexBlockCacheBytes for why it is load-bearing.
+		//
+		// Do NOT "complete the pairing" with
+		// SetPinL0FilterAndIndexBlocksInCache: with L0 uncompacted for the
+		// whole import (~2800 files at 700 GB), pinning would push several
+		// GiB past the cache's capacity — pinned usage may legally exceed an
+		// LRU's size, defeating the bound this cache exists to provide.
 		bbto.SetCacheIndexAndFilterBlocks(true)
 
 		switch i {
