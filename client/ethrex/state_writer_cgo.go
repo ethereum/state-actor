@@ -71,17 +71,30 @@ func writeState(
 	emptyCodeHash := common.HexToHash(ethrexinternal.EmptyCodeHashHex)
 	emptyTrieHash := common.HexToHash(ethrexinternal.EmptyTrieHashHex)
 
-	// seenCodeHash deduplicates account_codes + account_code_metadata writes.
-	// Owned exclusively by Stage C.
+	// seenCodeHash deduplicates account_codes + account_code_metadata writes
+	// for REAL contract code only (≈ plan.NumContracts entries). Owned
+	// exclusively by Stage C.
+	//
+	// EIP-7702 delegation designators are deliberately NOT deduplicated:
+	// 30% of autofill EOAs carry one with a unique random target
+	// (internal/autofill/eoa_flavor.go), so tracking them grew this map to
+	// ~57 M entries ≈ 2.4-4.9 GiB — the dominant Go-heap term of a large
+	// run. A duplicate put of an identical (hash → code) pair is idempotent
+	// (same key, same value; RocksDB last-write-wins and compaction
+	// collapses it), so dedup buys nothing there but the map itself.
 	seenCodeHash := make(map[common.Hash]struct{})
 
 	// writeCode writes code for a given codeHash if not already seen.
 	// Always writes even for empty code (ethrex stores the empty-code entry).
 	writeCode := func(codeHash common.Hash, code []byte) error {
-		if _, seen := seenCodeHash[codeHash]; seen {
-			return nil
+		isDelegation := len(code) == 23 &&
+			code[0] == 0xEF && code[1] == 0x01 && code[2] == 0x00
+		if !isDelegation {
+			if _, seen := seenCodeHash[codeHash]; seen {
+				return nil
+			}
+			seenCodeHash[codeHash] = struct{}{}
 		}
-		seenCodeHash[codeHash] = struct{}{}
 		encoded := ethrexinternal.EncodeCode(code)
 		if err := codeSink.put(codeHash[:], encoded); err != nil {
 			return fmt.Errorf("ethrex: put account_codes: %w", err)
