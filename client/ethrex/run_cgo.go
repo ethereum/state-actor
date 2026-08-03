@@ -48,6 +48,14 @@ func runImpl(ctx context.Context, cfg generator.Config, opts Options) (*generato
 	// because it means this host gets no protection.
 	log.Printf("ethrex: %s", memlimit.Set(ethrexOffHeapReserveBytes))
 
+	// Disk expectation up front: --target-size budgets the trie+code CFs
+	// only (the cross-client sizecal contract); ethrex's flat-KV layer is
+	// additional and the realized datadir lands at ≈1.8× the target
+	// (measured 40 GB→73 GiB, 150 GB→273 GiB; docs/CALIBRATION.md).
+	if cfg.TargetSize > 0 {
+		log.Printf("ethrex: expect ≈1.8× --target-size on disk (flat-KV layer is additional; see docs/CALIBRATION.md)")
+	}
+
 	g := cfg.Genesis
 	if g == nil {
 		// Fork hardcoded to ethrex's MaxForkForClient ("osaka"). Only reached

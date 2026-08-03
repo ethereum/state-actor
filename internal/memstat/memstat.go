@@ -34,7 +34,10 @@ const (
 // Metric names read from runtime/metrics. goTotalMetric counts every byte the
 // Go runtime has mapped from the OS — heap, stacks, and runtime structures —
 // which is the quantity GOMEMLIMIT actually bounds. goObjectsMetric is the
-// live-object subset, the floor no GC can push below.
+// live objects PLUS dead-not-yet-swept ones (per the runtime/metrics
+// definition), accumulated at size-class granularity — a sawtooth between
+// ≈live and ≈the GC goal (2×live at GOGC=100), NOT a live-set floor.
+// Reading it as live cost a debugging cycle once; divide by ~1-2×.
 const (
 	goTotalMetric   = "/memory/classes/total:bytes"
 	goObjectsMetric = "/memory/classes/heap/objects:bytes"
@@ -47,7 +50,9 @@ type Sample struct {
 	RSS uint64
 	// GoTotal is every byte the Go runtime has mapped from the OS.
 	GoTotal uint64
-	// GoObjects is the bytes held by live heap objects.
+	// GoObjects is /memory/classes/heap/objects: live objects plus dead
+	// objects not yet swept — see the goObjectsMetric comment; not a live
+	// floor.
 	GoObjects uint64
 	// HostAvailable is MemAvailable: memory the kernel believes it can hand
 	// out without swapping, host-wide.
