@@ -70,21 +70,20 @@ const ethrexMaxOpenFiles = 32768
 // compaction/iterator scratch.
 const ethrexAuxOffHeapBytes = 2 * 1024 * 1024 * 1024
 
-// ethrexFragmentationReserveBytes covers allocator memory that no component
-// reports and no cap governs: glibc arena free lists and the transparent huge
-// pages backing them.
+// ethrexAllocatorSlackBytes covers allocator memory no component reports:
+// jemalloc's retained dirty pages and metadata over the C heap (RocksDB,
+// Pebble, the WriteBatches).
 //
-// This term exists because omitting it got a run killed. A 350 GB fill died
-// with 51.3 GiB of anonymous RSS while RocksDB's own properties accounted for
-// under 10 GiB and the kernel showed only 15 MB of page cache — so roughly
-// half the process was allocator overhead invisible to every budget here. The
-// kernel's own numbers put 16 GiB of that in transparent huge pages.
-//
-// MALLOC_ARENA_MAX=2 in Dockerfile.ethrex attacks the cause and should shrink
-// this considerably; the reserve stays conservative until the memory samples
-// from a full-scale run say otherwise. Reserving too much only makes the Go
-// heap tighter, which costs GC cycles. Reserving too little costs the run.
-const ethrexFragmentationReserveBytes = 12 * 1024 * 1024 * 1024
+// Measured, then sized — not guessed. On the 40 GB same-seed A/B that gated
+// this series (96-core host, 73 GiB realized), the jemalloc leg's off-heap
+// plateaued at ~4.4 GiB from ~35% of Phase 2 onward, against ~3 GiB of
+// directly attributed usage — ~1.5–2 GiB of allocator overhead, FLAT once
+// steady state was reached. The glibc+arena-cap baseline kept climbing to
+// 6.2 GiB on the identical workload. This constant replaces the pre-jemalloc
+// 12 GiB "fragmentation reserve", which was a guess standing in for exactly
+// the retention jemalloc removes; memlimit's post-reserve margin absorbs
+// this slack being an underestimate at larger scale.
+const ethrexAllocatorSlackBytes = 1536 * 1024 * 1024 // 1.5 GiB
 
 // ethrexOffHeapReserveBytes is the total RAM this writer commits OUTSIDE the
 // Go heap. runImpl subtracts it from the host's memory ceiling before deriving
@@ -93,7 +92,7 @@ const ethrexFragmentationReserveBytes = 12 * 1024 * 1024 * 1024
 const ethrexOffHeapReserveBytes = ethrexBlockCacheBytes +
 	ethrexDBWriteBufferBytes +
 	ethrexAuxOffHeapBytes +
-	ethrexFragmentationReserveBytes
+	ethrexAllocatorSlackBytes
 
 // ethrexCompressibleCF reports whether a CF uses LZ4 in the real ethrex client.
 // Mirrors `compressible_tables` in ethrex rocksdb.rs: only block-metadata CFs

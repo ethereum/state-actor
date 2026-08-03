@@ -59,6 +59,8 @@
 //     state CFs' 256 MiB × 4 sum to exactly this cap. (The previous mirrored
 //     512 MiB × 6 shape permitted 12 GiB resident, unsummed by RocksDB.)
 //   - ethrexAuxOffHeapBytes — WriteBatches, Pebble arenas, compaction scratch.
+//   - ethrexAllocatorSlackBytes — jemalloc overhead over the C heap, sized
+//     from the 40 GB A/B's measured off-heap plateau (see its comment).
 //
 // runImpl subtracts that reserve from the host's memory ceiling (cgroup, then
 // /proc/meminfo) and gives the remainder to internal/memlimit, which caps the

@@ -60,7 +60,11 @@
   real ceiling (cgroup v2 → cgroup v1 → `/proc/meminfo`) minus the writer's
   declared off-heap reserve; an explicit `GOMEMLIMIT` wins, and a limit too
   small to help is declined and logged — one below the live heap trades an
-  OOM kill for an unbounded GC stall. These are process-runtime knobs only:
+  OOM kill for an unbounded GC stall. The reserve is measured, not guessed:
+  a 40 GB same-seed A/B put the jemalloc off-heap plateau at ~4.4 GiB
+  (flat; the glibc baseline climbed to 6.2 GiB on identical work), so the
+  reserve is 8 GiB — budgeted caps plus a 1.5 GiB allocator slack — and the
+  heap takes half the post-reserve remainder. These are process-runtime knobs only:
   the produced database is **logically identical** — same KV content, same
   state root, pinned by `TestEthrexGoldenStateRoot` and
   `TestGenesisDumpGolden` (physical SST packing legitimately varies with

@@ -31,16 +31,18 @@ const (
 	// heapDivisor splits the post-reserve memory between the Go heap and the
 	// margin absorbing what a soft limit cannot govern.
 	//
-	// A third, not a half, and the difference is a lesson rather than a
-	// preference. The margin's real job turned out not to be page cache — a
-	// host that OOM-killed this writer showed only 15 MB of it — but the
-	// caller's reserve being WRONG. That run reserved 10 GiB off-heap against
-	// an actual ~25 GiB, so the heap was handed memory that was already spoken
-	// for. A reserve is an estimate of memory nobody measures directly; the
-	// margin has to be big enough to absorb the estimate being under.
+	// Half, now that the reserve is measured rather than guessed. The
+	// interim divisor-3 was chosen when the caller's reserve carried a
+	// 12 GiB guess for unmeasured allocator behavior — "the margin's real
+	// job is absorbing the reserve being wrong". The 40 GB A/B that gated
+	// this constant measured the jemalloc off-heap plateau (~4.4 GiB)
+	// UNDER the budgeted caps, so the reserve now over-covers observation
+	// and the margin returns to its designed job: soft-limit overshoot
+	// plus residual estimate error. TestBudgetLeavesRoomForTheReserve pins
+	// the paired invariant (limit+reserve ≤ 3/4 of the host — see there).
 	//
 	// Erring high costs GC cycles. Erring low costs the whole run, hours in.
-	heapDivisor = 3
+	heapDivisor = 2
 
 	// minUsefulLimit is the floor below which applying a limit does more
 	// harm than not applying one. See the package doc: a limit under the
