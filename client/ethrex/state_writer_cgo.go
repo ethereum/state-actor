@@ -8,9 +8,12 @@ import (
 	"context"
 	"encoding/binary"
 	"fmt"
+	"log"
 	mrand "math/rand"
+	"os"
 	"runtime"
 	"slices"
+	"strconv"
 	"sync"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -23,15 +26,38 @@ import (
 	"github.com/ethereum/state-actor/internal/streamsort"
 )
 
-// maxPhase2Workers caps the Stage-B pool, mirroring maxPhase0Workers and the
-// cap every peer writer uses (besu, nethermind, geth; erigon adopted it "to
-// match the proven cap from reth, besu, and nethermind"). The bound is
-// memory, not CPU: in-flight work is ≈5×N accounts (workCh 2N + workers N +
-// resultCh 2N), each holding up to parallelStorageSlotThreshold buffered
-// storage rows ≈ 64 MiB of LIVE Go heap — memory a GOMEMLIMIT cannot shed,
-// only stall the collector against. Uncapped runtime.NumCPU() made that
-// ceiling scale with whatever host the image happened to land on.
-const maxPhase2Workers = 8
+// defaultMaxPhase2Workers caps the Stage-B pool at min(NumCPU, 16).
+//
+// The old justification for 8 — each in-flight account held up to ~64 MiB of
+// buffered storage rows — died with the buffering: workers now stream rows
+// straight into their own batchSink pair, so a result is scalars and the
+// per-worker memory term is the sink batches (2 × ~2×workerFlushThresholdBytes
+// ≈ 64 MiB C heap per worker, ≤1 GiB at 16). 16 rather than NumCPU because
+// Stage C (account trie + code writes, strictly sequential) and RocksDB's
+// 8 background jobs bound the useful parallelism; measurement showed 96
+// workers only ~17% faster than 8 under the OLD buffered design — the ladder
+// re-measures under this one. Overridable for experiments, erigon-style.
+const defaultMaxPhase2Workers = 16
+
+// phase2Workers resolves the Stage-B pool size, honoring the
+// STATE_ACTOR_ETHREX_WORKERS env override (same pattern as erigon's
+// STATE_ACTOR_ERIGON_WORKERS: "to exploit many-core hosts").
+func phase2Workers() int {
+	if v := os.Getenv("STATE_ACTOR_ETHREX_WORKERS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			return n
+		}
+		log.Printf("ethrex: ignoring invalid STATE_ACTOR_ETHREX_WORKERS=%q", v)
+	}
+	n := runtime.NumCPU()
+	if n > defaultMaxPhase2Workers {
+		n = defaultMaxPhase2Workers
+	}
+	if n < 1 {
+		n = 1
+	}
+	return n
+}
 
 // writeState builds the full ethrex state from cfg and writes it to db.
 // Returns the state root hash and stats.
@@ -63,9 +89,7 @@ func writeState(
 	cfg generator.Config,
 	db *ethrexDB,
 	accountSink *batchSink,
-	storageSink *batchSink,
 	accountFkvSink *batchSink,
-	storageFkvSink *batchSink,
 	codeSink *batchSink,
 	codeMetaSink *batchSink,
 ) (common.Hash, *generator.Stats, error) {
@@ -229,28 +253,30 @@ func writeState(
 
 	// Phase 2: 3-stage ordered parallel pipeline.
 	//
-	// Ordering guarantee: all four CF write streams (account_trie_nodes,
-	// account_flatkeyvalue, storage_trie_nodes, storage_flatkeyvalue) stay
-	// addrHash-ascending because Stage C applies every account in seq (= sorter
-	// output) order. Workers compute storage tries in memory without writing
-	// RocksDB; only Stage C writes — in strict seq order via the reorder heap.
+	// Ordering: the ACCOUNT CFs (account_trie_nodes, account_flatkeyvalue)
+	// stay addrHash-ascending — the account-trie Builder requires it, and only
+	// Stage C feeds it, in strict seq (= sorter output) order via the reorder
+	// heap. The STORAGE CFs are written by Stage-B workers through per-worker
+	// sinks in arbitrary cross-account order — exactly how Phase 0 has always
+	// written these same two CFs (per-account keyspaces are disjoint;
+	// RocksDB serialises concurrent Write internally — besu's writer
+	// documents the same). The memtable path is order-agnostic.
 	//
 	// Stage A (single reader goroutine):
 	//   sorter.Iterate yields (addrHash, entity) in addrHash-ascending order.
 	//   Each item is stamped with a monotonically increasing seq and sent to
-	//   the work channel. Accounts with >parallelStorageSlotThreshold slots are
-	//   flagged bigAccount so Stage C handles their storage inline.
+	//   the work channel.
 	//
-	// Stage B (numWorkers goroutines):
-	//   Each worker computes the storage trie entirely in memory (no RocksDB
-	//   access), producing an accountResult with buffered rows and storageRoot.
-	//   Workers do not share mutable state.
+	// Stage B (phase2Workers goroutines):
+	//   Each worker owns a (storage_trie_nodes, storage_flatkeyvalue) batchSink
+	//   pair and STREAMS the storage trie build directly into it — no
+	//   per-account buffering, so account size does not drive memory and the
+	//   old bigAccount special case is gone. Emits a scalar-only result.
 	//
-	// Stage C (single writer goroutine):
+	// Stage C (the calling goroutine):
 	//   A min-heap reorder buffer drains results in strict seq order.
-	//   Per account: (1) replay buffered storage rows into storageSink/storageFkvSink
-	//   (or build inline for big accounts); (2) dedup and write code; (3) add
-	//   account leaf to accountBuilder; (4) accumulate stats.
+	//   Per account: (1) dedup and write code; (2) add the account leaf to
+	//   accountBuilder; (3) accumulate stats.
 
 	// entitiesQueued is the exact count Put into the sorter above (synthetic
 	// EOAs/contracts + deduped genesis allocs) — the Phase-2 progress total.
@@ -263,13 +289,7 @@ func writeState(
 
 	accountBuilder := ethrexinternal.NewBuilder(accountTrieNodeSink)
 
-	numWorkers := runtime.NumCPU()
-	if numWorkers > maxPhase2Workers {
-		numWorkers = maxPhase2Workers
-	}
-	if numWorkers < 1 {
-		numWorkers = 1
-	}
+	numWorkers := phase2Workers()
 
 	// Bounded channels: cap in-flight work at 2*numWorkers so buffered storage
 	// row memory is bounded and Stage A cannot race far ahead of Stage C.
@@ -322,11 +342,6 @@ func writeState(
 				item.preAllocRoot = preRoot
 			}
 
-			// Big accounts are flagged so Stage C processes them inline.
-			if !item.hasPreAllocRoot && len(ent.slots) > parallelStorageSlotThreshold {
-				item.bigAccount = true
-			}
-
 			select {
 			case workCh <- item:
 				return nil
@@ -339,18 +354,29 @@ func writeState(
 		}
 	}()
 
-	// Stage B: worker pool — pure in-memory storage trie computation.
+	// Stage B: worker pool — streams each account's storage trie build into a
+	// per-worker sink pair (Phase 0's pattern for these same CFs).
 	var workerWg sync.WaitGroup
 	for w := 0; w < numWorkers; w++ {
 		workerWg.Add(1)
 		go func() {
 			defer workerWg.Done()
+			wTrieSink := newBatchSinkWithThreshold(db, cfIdxStorageTrieNodes, workerFlushThresholdBytes)
+			wFkvSink := newBatchSinkWithThreshold(db, cfIdxStorageFlatKeyValue, workerFlushThresholdBytes)
+			defer func() {
+				if err := wTrieSink.Close(); err != nil {
+					setErr(fmt.Errorf("ethrex: worker storage sink close: %w", err))
+				}
+				if err := wFkvSink.Close(); err != nil {
+					setErr(fmt.Errorf("ethrex: worker storage fkv sink close: %w", err))
+				}
+			}()
 			for item := range workCh {
 				if pipelineCtx.Err() != nil {
 					// Pipeline cancelled; drain workCh to unblock Stage A.
 					continue
 				}
-				res := computeAccountResult(item, emptyCodeHash, emptyTrieHash)
+				res := computeAccountResult(item, emptyCodeHash, emptyTrieHash, wTrieSink, wFkvSink)
 				select {
 				case resultCh <- res:
 				case <-pipelineCtx.Done():
@@ -368,49 +394,25 @@ func writeState(
 
 	// Stage C: single writer goroutine — strictly in-seq application.
 	// Runs on the calling goroutine after launching Stage A and B goroutines.
-	// The heap is bounded by the in-flight window in the steady state, but
-	// under seq skew — one slow sub-threshold account while later results
-	// keep arriving — it can transiently exceed it (moving a result off
-	// resultCh frees the slot for more work). Skew is bounded in practice by
-	// parallelStorageSlotThreshold routing big accounts to Stage C inline;
-	// noted deliberately rather than fixed.
+	// The heap is bounded by the in-flight window in the steady state and can
+	// transiently exceed it under seq skew (moving a result off resultCh frees
+	// the slot for more work) — but results are now scalars, so even large
+	// skew costs kilobytes, not buffered row sets.
 	reorder := newResultHeap()
 	var nextSeq uint64
 	var writerErr error
+
+	// Reused nibble scratch for the account leaf (Stage C is single-threaded;
+	// AddLeaf copies its key — NodeSink borrow contract).
+	var acctNibScratch [64]byte
 
 	applyResult := func(res *accountResult) error {
 		if res.buildErr != nil {
 			return res.buildErr
 		}
 
-		storageRoot := res.storageRoot
-
-		if res.bigAccount {
-			// Build storage inline (directly into RocksDB) at this seq position.
-			var slotCount, slotBytes uint64
-			var inlineErr error
-			storageRoot, slotCount, slotBytes, inlineErr = buildStorageTrieInline(
-				res.addrHash, res.bigEnt, emptyTrieHash, storageSink, storageFkvSink,
-			)
-			if inlineErr != nil {
-				return inlineErr
-			}
-			res.stats.StorageSlotsCreated = slotCount
-			res.stats.StorageBytes = slotBytes
-		} else {
-			// Replay buffered storage rows into RocksDB in their captured order.
-			for _, row := range res.storageRows {
-				if isLeafFullPathHelper(row.path) {
-					if err := storageFkvSink.put(row.path, row.value); err != nil {
-						return err
-					}
-				} else {
-					if err := storageSink.put(row.path, row.value); err != nil {
-						return err
-					}
-				}
-			}
-		}
+		// Storage rows were already streamed to RocksDB by the Stage-B worker;
+		// only the strictly-ordered account-side work happens here.
 
 		// Write code (dedup via seenCodeHash; Stage C owns this map).
 		if len(res.code) > 0 {
@@ -419,17 +421,10 @@ func writeState(
 			}
 		}
 
-		// Recompute accountRLP for big accounts now that storageRoot is known.
-		accountRLP := res.accountRLP
-		if res.bigAccount {
-			accountRLP = ethrexinternal.EncodeAccountState(
-				res.bigEnt.nonce, res.bigEnt.balance, storageRoot, res.codeHash,
-			)
-			res.stats.AccountBytes = uint64(len(accountRLP))
-			res.stats.IsContract = len(res.code) != 0 || storageRoot != emptyTrieHash
-		}
-
-		if err := accountBuilder.AddLeaf(ethrexinternal.BytesToNibbles(res.addrHash[:]), accountRLP); err != nil {
+		if err := accountBuilder.AddLeaf(
+			ethrexinternal.AppendNibbles(acctNibScratch[:0], res.addrHash[:]),
+			res.accountRLP,
+		); err != nil {
 			return fmt.Errorf("ethrex: account leaf: %w", err)
 		}
 
@@ -487,13 +482,7 @@ func writeState(
 	if err := accountSink.flushSync(); err != nil {
 		return common.Hash{}, nil, err
 	}
-	if err := storageSink.flushSync(); err != nil {
-		return common.Hash{}, nil, err
-	}
 	if err := accountFkvSink.flushSync(); err != nil {
-		return common.Hash{}, nil, err
-	}
-	if err := storageFkvSink.flushSync(); err != nil {
 		return common.Hash{}, nil, err
 	}
 	// Code sinks too: their defer Close() in run_cgo.go drops the flush error, so
@@ -515,36 +504,32 @@ func writeState(
 	return stateRoot, stats, nil
 }
 
-// computeAccountResult is the pure per-account computation run by Stage B workers.
-// It does not touch RocksDB or any shared state.
+// computeAccountResult is the per-account computation run by Stage B workers.
+// Storage rows stream directly into the worker's own sink pair (wTrieSink /
+// wFkvSink) during the build — the result carries only scalars.
 //
-// For bigAccount items: skips storage building, populates bigEnt so Stage C can
-// build inline. Still computes codeHash (pure, no I/O).
-// For hasPreAllocRoot items: uses the pre-computed root directly.
-func computeAccountResult(item *accountWorkItem, emptyCodeHash, emptyTrieHash common.Hash) *accountResult {
+// For hasPreAllocRoot items: uses the pre-computed root directly (Phase 0
+// already wrote that entity's storage rows).
+func computeAccountResult(
+	item *accountWorkItem,
+	emptyCodeHash, emptyTrieHash common.Hash,
+	wTrieSink, wFkvSink *batchSink,
+) *accountResult {
 	res := &accountResult{
-		seq:        item.seq,
-		addrHash:   item.addrHash,
-		bigAccount: item.bigAccount,
-	}
-
-	if item.bigAccount {
-		// Storage is built inline by Stage C. Pass the entity through.
-		res.bigEnt = item.ent
+		seq:      item.seq,
+		addrHash: item.addrHash,
 	}
 
 	storageRoot := emptyTrieHash
 
 	if item.hasPreAllocRoot {
 		storageRoot = item.preAllocRoot
-		// No slots to process; storageRows stays nil.
-	} else if !item.bigAccount && len(item.ent.slots) > 0 {
-		rows, root, slotCount, slotBytes, err := buildStorageTrieBuffered(item.addrHash, item.ent, emptyTrieHash)
+	} else if len(item.ent.slots) > 0 {
+		root, slotCount, slotBytes, err := buildStorageTrieInline(item.addrHash, item.ent, emptyTrieHash, wTrieSink, wFkvSink)
 		if err != nil {
 			res.buildErr = err
 			return res
 		}
-		res.storageRows = rows
 		storageRoot = root
 		res.stats.StorageSlotsCreated = slotCount
 		res.stats.StorageBytes = slotBytes
@@ -561,13 +546,12 @@ func computeAccountResult(item *accountWorkItem, emptyCodeHash, emptyTrieHash co
 	res.codeHash = codeHash
 	res.code = item.ent.code
 
-	if !item.bigAccount {
-		// Pre-compute accountRLP for normal accounts (storageRoot is final here).
-		accountRLP := ethrexinternal.EncodeAccountState(item.ent.nonce, item.ent.balance, storageRoot, codeHash)
-		res.accountRLP = accountRLP
-		res.stats.AccountBytes = uint64(len(accountRLP))
-		res.stats.IsContract = len(item.ent.code) != 0 || storageRoot != emptyTrieHash
-	}
+	// storageRoot is final here for every account, so accountRLP always
+	// pre-computes in the worker.
+	accountRLP := ethrexinternal.EncodeAccountState(item.ent.nonce, item.ent.balance, storageRoot, codeHash)
+	res.accountRLP = accountRLP
+	res.stats.AccountBytes = uint64(len(accountRLP))
+	res.stats.IsContract = len(item.ent.code) != 0 || storageRoot != emptyTrieHash
 
 	return res
 }

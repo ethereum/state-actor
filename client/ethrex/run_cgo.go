@@ -92,15 +92,11 @@ func runImpl(ctx context.Context, cfg generator.Config, opts Options) (*generato
 
 	accountSink := newBatchSink(db, cfIdxAccountTrieNodes)
 	defer accountSink.Close()
-	storageSink := newBatchSink(db, cfIdxStorageTrieNodes)
-	defer storageSink.Close()
 
 	// Flat-KV sinks: every leaf full-path row also lands in the flat-KV CFs so
 	// the produced DB models a synced node (see writeState + ethrex store.rs).
 	accountFkvSink := newBatchSink(db, cfIdxAccountFlatKeyValue)
 	defer accountFkvSink.Close()
-	storageFkvSink := newBatchSink(db, cfIdxStorageFlatKeyValue)
-	defer storageFkvSink.Close()
 
 	// Bytecode sinks: route account_codes + account_code_metadata through the
 	// same batched, WAL-disabled path as the trie/flat-KV writes instead of
@@ -112,7 +108,9 @@ func runImpl(ctx context.Context, cfg generator.Config, opts Options) (*generato
 	codeMetaSink := newBatchSink(db, cfIdxAccountCodeMetadata)
 	defer codeMetaSink.Close()
 
-	stateRoot, stats, err := writeState(ctx, cfg, db, accountSink, storageSink, accountFkvSink, storageFkvSink, codeSink, codeMetaSink)
+	// Storage CFs get no shared sinks: Phase 0 and Stage B write them through
+	// per-worker batchSinks (writeState's pipeline doc has the ordering story).
+	stateRoot, stats, err := writeState(ctx, cfg, db, accountSink, accountFkvSink, codeSink, codeMetaSink)
 	if err != nil {
 		return nil, fmt.Errorf("ethrex: writeState: %w", err)
 	}
