@@ -304,11 +304,13 @@ docker run --rm \
 
 **On-disk layout:**
 
-- `/data/` — single RocksDB instance with 20 column families (see `internal/ethrex/constants.go` for the full list)
-- `/data/metadata.json` — `{"schema_version": 2}`, required by ethrex `Store::new`
+- `/data/` — single RocksDB instance with 21 column families (see `internal/ethrex/constants.go` for the full list)
+- `/data/metadata.json` — `{"schema_version": 3}`, required by ethrex `Store::new`
 - `/data/ethrex-genesis.json` — full genesis JSON; pass via `--network` when booting
 
 **Boot path.** ethrex's `add_initial_state` short-circuits when `canonical_block_hashes[0]` already resolves to a matching genesis header hash — state-actor writes that row, so ethrex skips state-trie recomputation at boot. Required boot flags (validated by the e2e suite, Phase 4): `--network <ethrex-genesis.json>`, `--datadir <dir>`, `--skip-genesis-validation` (trust the written stateRoot rather than recompute from the empty-alloc sidecar; needs lambdaclass/ethrex#6783, in releases ≥ v16.0.0), and `--syncmode full`. The `--syncmode full` flag is mandatory for engine-driven block production: in the default snap mode ethrex's fork-choice handler returns `SYNCING` with a null `payloadId` for every `engine_forkchoiceUpdated`, so the mock CL can never obtain a payload to build. The pattern follows the besu/nethermind Engine API approach: boot the node, then drive blocks via `engine_forkchoiceUpdated` (ethrex also mandates an authrpc JWT, signed by the driver).
+
+**Memory at boot.** ethrex allocates a shared RocksDB block cache defaulting to 12 GiB and holds index + bloom-filter blocks inside it, so a boot in a container capped below that will be OOM-killed before it serves a request. Cap it with `--rocksdb.block-cache-size <bytes>`. This is a boot-side knob only; it has no bearing on the bytes state-actor writes.
 
 **Verify.**
 

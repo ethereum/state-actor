@@ -8,21 +8,28 @@ storage schema changes.
 ## Pinned release
 
 ```
-lambdaclass/ethrex @ v16.0.0
+lambdaclass/ethrex @ v23.0.0
 ```
+
+This is the same pin as the e2e boot image (`client/ethrex/e2e_test.go`) and as
+the column-family list in `internal/ethrex/constants.go`. All three move
+together.
 
 The state-bearing CFs (`account_trie_nodes`, `storage_trie_nodes`,
 `account_codes`, `account_code_metadata`) are byte-identical from v13.0.0
-(commit 318ec2888) through v16.0.0 — verified by regenerating at v16 and diffing
-against the v15-generated dump (only `chain_data[0x80]` changed, to add
-`osakaTime`). v16 bumped `STORE_SCHEMA_VERSION` to 3, but the v2→v3 migration
-only rewrites `RECEIPTS`/`TRANSACTION_LOCATIONS` (both empty at genesis), so the
-golden CFs are unaffected. v16 also matches the e2e boot pin (e2e_test.go).
+(commit 318ec2888) through v23.0.0, each step verified by regenerating and
+diffing against the previous dump. Across that range only two things moved:
+`chain_data[0x80]` gained fork fields as they landed (`osakaTime` at v16,
+`hegotaTime` at v23), and v23 added the `bad_blocks` column family (empty at
+genesis). `STORE_SCHEMA_VERSION` reached 3 at v16 and has not moved since.
 
-Any ethrex commit that bumps `STORE_SCHEMA_VERSION` or changes the key layout
-of `account_trie_nodes`, `storage_trie_nodes`, `account_codes`, or
-`account_code_metadata` requires regenerating the dump and re-reviewing the
-Go codec in `internal/ethrex/`.
+Any ethrex release that bumps `STORE_SCHEMA_VERSION`, adds or removes a column
+family, or changes the key layout of `account_trie_nodes`,
+`storage_trie_nodes`, `account_codes`, or `account_code_metadata` requires
+regenerating the dump and re-reviewing the Go codec in `internal/ethrex/`.
+A CF added upstream must also be added to `Tables`; ethrex's
+`drop_obsolete_cfs` deletes any CF it finds that its own `TABLES` does not
+list, so `Tables` must never run ahead of this pin.
 
 ## Steps
 
@@ -31,7 +38,7 @@ Go codec in `internal/ethrex/`.
    ```sh
    git clone https://github.com/lambdaclass/ethrex
    cd ethrex
-   git checkout v16.0.0
+   git checkout v23.0.0
    ```
 
 2. Copy the dump harness into ethrex's examples directory:
