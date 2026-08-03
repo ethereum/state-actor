@@ -115,8 +115,11 @@ LABEL org.opencontainers.image.title="State Actor (ethrex)" \
 # Compression libs (rocksdb runtime links against these). RocksDB's own
 # .so comes from the builder stage. libgflags2.2 is a static transitive
 # dep of librocksdb.so — without it runtime symbol resolution fails.
+# libjemalloc2 is the allocator RocksDB runs on here — see the LD_PRELOAD
+# note below.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
+    libjemalloc2 \
     libsnappy1v5 \
     liblz4-1 \
     libzstd1 \
@@ -131,21 +134,31 @@ RUN ldconfig
 
 COPY --from=builder /out/state-actor /usr/local/bin/state-actor
 
-# glibc allocates up to 8 arenas per core (128 on a 16-core builder) and never
-# returns a freed chunk from one arena to another. RocksDB's flush threads
-# churn large buffers from many threads at once, so the per-arena free lists
-# retain memory that never comes back to the OS — fragmentation that grows with
-# allocation churn, and therefore with bytes written.
+# Run the C side (RocksDB via grocksdb) on jemalloc, not glibc malloc.
 #
-# This was measured, not assumed. A 350 GB fill was OOM-killed with 51.3 GiB of
-# anonymous RSS, of which RocksDB's own properties accounted for well under
-# 10 GiB (estimate-table-readers-mem held 388 KB; memtables and block cache sat
-# inside their caps). The unaccounted remainder tracked bytes written, which is
-# the signature of arena fragmentation rather than of any RocksDB budget.
+# RocksDB on glibc is a documented pathological pairing: glibc keeps up to 8
+# malloc arenas per core (128 on a 16-core host) and never returns a freed
+# chunk from one arena to another, so RocksDB's flush threads — churning
+# large buffers from many threads at once — leave per-arena free lists that
+# ratchet upward for the life of the process, amplified by transparent huge
+# pages backing the arenas. Measured, not assumed: a 350 GB fill was
+# OOM-killed at 51.3 GiB anon RSS (16 GiB of it THP) while RocksDB's own
+# properties accounted for well under 10 GiB.
 #
-# Capping arenas trades a little allocator contention for bounded RSS — the
-# right trade for a batch writer whose failure mode is the OOM killer. It must
-# be set in the environment: glibc reads it once, before main.
+# jemalloc is also what this RocksDB configuration was tuned against
+# upstream: ethrex ships jemalloc as its default global allocator
+# (tikv-jemallocator), as does reth — the options this writer mirrors from
+# ethrex have never run on glibc there.
+#
+# The bare SONAME lets ld.so resolve the multiarch path on amd64 and arm64
+# alike. Go's runtime allocator is unaffected (it mmaps directly); only cgo
+# allocations route through jemalloc.
+ENV LD_PRELOAD=libjemalloc.so.2
+
+# Fallback bound if the preload ever fails (ld.so prints a warning to stderr
+# and continues on glibc malloc): cap glibc at 2 arenas so per-arena
+# free-list retention stays bounded. Inert under jemalloc, which ignores
+# glibc-specific knobs. Must be an env var: glibc reads it once, before main.
 ENV MALLOC_ARENA_MAX=2
 
 ENTRYPOINT ["/usr/local/bin/state-actor"]
