@@ -3,12 +3,14 @@
 package ethrex
 
 import (
+	"bytes"
 	"container/heap"
 	"context"
 	"encoding/binary"
 	"fmt"
 	mrand "math/rand"
 	"runtime"
+	"slices"
 	"sync"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -16,6 +18,7 @@ import (
 	"github.com/holiman/uint256"
 
 	"github.com/ethereum/state-actor/generator"
+	"github.com/ethereum/state-actor/internal/entitygen"
 	ethrexinternal "github.com/ethereum/state-actor/internal/ethrex"
 	"github.com/ethereum/state-actor/internal/streamsort"
 )
@@ -187,8 +190,20 @@ func writeState(
 			balance = uint256.NewInt(0)
 		}
 		code := cfg.GenesisCode[addr]
-		storage := cfg.GenesisStorage[addr]
-		blob := encodeEntity(acc.Nonce, balance, code, storage)
+		var slots []entitySlot
+		if storage := cfg.GenesisStorage[addr]; len(storage) > 0 {
+			slots = make([]entitySlot, 0, len(storage))
+			for k, v := range storage {
+				slots = append(slots, entitySlot{Key: k, Value: v})
+			}
+			// Sort by raw key for deterministic blob bytes (map iteration
+			// is random). Downstream order is irrelevant — Stage B re-sorts
+			// by keccak — this is spill reproducibility only.
+			slices.SortFunc(slots, func(a, b entitySlot) int {
+				return bytes.Compare(a.Key[:], b.Key[:])
+			})
+		}
+		blob := encodeEntity(acc.Nonce, balance, code, slots)
 		if err := sorter.Put(addrHash[:], blob); err != nil {
 			return common.Hash{}, nil, err
 		}
@@ -201,11 +216,10 @@ func writeState(
 				return common.Hash{}, nil, ctx.Err()
 			}
 			contract := plan.DrawContract(rng)
-			slotMap := make(map[common.Hash]common.Hash, len(contract.Storage))
-			for _, s := range contract.Storage {
-				slotMap[s.Key] = s.Value
-			}
-			blob := encodeEntity(contract.StateAccount.Nonce, contract.StateAccount.Balance, contract.Code, slotMap)
+			// contract.Storage passes through directly (entitySlot aliases
+			// entitygen.StorageSlot) — the previous per-contract map rebuild
+			// did ~750 M pointless inserts per 150 GB run on this serial loop.
+			blob := encodeEntity(contract.StateAccount.Nonce, contract.StateAccount.Balance, contract.Code, contract.Storage)
 			if err := sorter.Put(contract.AddrHash[:], blob); err != nil {
 				return common.Hash{}, nil, err
 			}
@@ -569,14 +583,26 @@ const (
 	entityContract entityKind = 2
 )
 
+// entitySlot is one raw (key, value) storage pair. Aliased to
+// entitygen.StorageSlot so autofill contract storage passes through with no
+// conversion. Deliberately pointer-free (geth's entityBlobSlot precedent,
+// client/geth/entity_blob.go): a []entitySlot backing array is one GC-opaque
+// block, where the previous map[common.Hash]*uint256.Int made every one of
+// ~750 M slots an independently traced heap object and every entity a
+// build-map → random-order-encode → rebuild-map round trip.
+type entitySlot = entitygen.StorageSlot
+
 type entity struct {
 	kind    entityKind
 	nonce   uint64
 	balance *uint256.Int
 	code    []byte
-	// slots maps raw storage key (common.Hash) → value (uint256).
-	// Populated from GenesisStorage[addr] and AutoFill contract storage.
-	slots map[common.Hash]*uint256.Int
+	// slots holds raw (key, value) pairs in blob order. Zero values are
+	// filtered by collectNonZeroSlots; order is irrelevant downstream
+	// (Stage B re-sorts by keccak(slotKey)). Keys are unique by
+	// construction: spec storage comes from a map, autofill keys are
+	// 32-byte RNG draws.
+	slots []entitySlot
 }
 
 // encodeEntity serialises an entity to the streamsort blob.
@@ -590,7 +616,7 @@ type entity struct {
 //	[0x02] [nonce u64 BE] [balance_len u8] [balance bytes]
 //	[code_len u32 BE] [code bytes]
 //	[slot_count u32 BE] [slot_count × (32B key, 32B value)]
-func encodeEntity(nonce uint64, balance *uint256.Int, code []byte, slots map[common.Hash]common.Hash) []byte {
+func encodeEntity(nonce uint64, balance *uint256.Int, code []byte, slots []entitySlot) []byte {
 	if len(code) == 0 && len(slots) == 0 {
 		// EOA path.
 		balBytes := balance.ToBig().Bytes()
@@ -617,9 +643,9 @@ func encodeEntity(nonce uint64, balance *uint256.Int, code []byte, slots map[com
 	var slotCountBuf [4]byte
 	binary.BigEndian.PutUint32(slotCountBuf[:], uint32(len(slots)))
 	out = append(out, slotCountBuf[:]...)
-	for k, v := range slots {
-		out = append(out, k[:]...)
-		out = append(out, v[:]...)
+	for _, s := range slots {
+		out = append(out, s.Key[:]...)
+		out = append(out, s.Value[:]...)
 	}
 	return out
 }
@@ -681,19 +707,15 @@ func decodeEntity(blob []byte) (entity, error) {
 		}
 		slotCount := int(binary.BigEndian.Uint32(blob[pos : pos+4]))
 		pos += 4
-		e.slots = make(map[common.Hash]*uint256.Int, slotCount)
+		e.slots = make([]entitySlot, slotCount)
 		for i := 0; i < slotCount; i++ {
 			if err := need(pos, 64); err != nil {
 				return entity{}, err
 			}
-			var k, v common.Hash
-			copy(k[:], blob[pos:pos+32])
+			copy(e.slots[i].Key[:], blob[pos:pos+32])
 			pos += 32
-			copy(v[:], blob[pos:pos+32])
+			copy(e.slots[i].Value[:], blob[pos:pos+32])
 			pos += 32
-			u := new(uint256.Int)
-			u.SetBytes32(v[:])
-			e.slots[k] = u
 		}
 	}
 	return e, nil

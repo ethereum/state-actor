@@ -222,13 +222,16 @@ func collectNonZeroSlots(ent entity) []storageSlotKV {
 		return nil
 	}
 	kvs := make([]storageSlotKV, 0, len(ent.slots))
-	for slotKey, slotVal := range ent.slots {
-		if slotVal.IsZero() {
+	var zero common.Hash
+	for _, s := range ent.slots {
+		if s.Value == zero {
 			continue
 		}
+		v := new(uint256.Int)
+		v.SetBytes32(s.Value[:])
 		kvs = append(kvs, storageSlotKV{
-			slotHash: crypto.Keccak256Hash(slotKey[:]),
-			value:    slotVal.Clone(),
+			slotHash: crypto.Keccak256Hash(s.Key[:]),
+			value:    v,
 		})
 	}
 	if len(kvs) == 0 {
