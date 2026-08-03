@@ -20,6 +20,16 @@ import (
 	"github.com/ethereum/state-actor/internal/streamsort"
 )
 
+// maxPhase2Workers caps the Stage-B pool, mirroring maxPhase0Workers and the
+// cap every peer writer uses (besu, nethermind, geth; erigon adopted it "to
+// match the proven cap from reth, besu, and nethermind"). The bound is
+// memory, not CPU: in-flight work is ≈5×N accounts (workCh 2N + workers N +
+// resultCh 2N), each holding up to parallelStorageSlotThreshold buffered
+// storage rows ≈ 64 MiB of LIVE Go heap — memory a GOMEMLIMIT cannot shed,
+// only stall the collector against. Uncapped runtime.NumCPU() made that
+// ceiling scale with whatever host the image happened to land on.
+const maxPhase2Workers = 8
+
 // writeState builds the full ethrex state from cfg and writes it to db.
 // Returns the state root hash and stats.
 //
@@ -217,6 +227,9 @@ func writeState(
 	accountBuilder := ethrexinternal.NewBuilder(accountTrieNodeSink)
 
 	numWorkers := runtime.NumCPU()
+	if numWorkers > maxPhase2Workers {
+		numWorkers = maxPhase2Workers
+	}
 	if numWorkers < 1 {
 		numWorkers = 1
 	}
@@ -318,6 +331,12 @@ func writeState(
 
 	// Stage C: single writer goroutine — strictly in-seq application.
 	// Runs on the calling goroutine after launching Stage A and B goroutines.
+	// The heap is bounded by the in-flight window in the steady state, but
+	// under seq skew — one slow sub-threshold account while later results
+	// keep arriving — it can transiently exceed it (moving a result off
+	// resultCh frees the slot for more work). Skew is bounded in practice by
+	// parallelStorageSlotThreshold routing big accounts to Stage C inline;
+	// noted deliberately rather than fixed.
 	reorder := newResultHeap()
 	var nextSeq uint64
 	var writerErr error
