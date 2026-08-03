@@ -8,6 +8,8 @@ import (
 	"math"
 	"os"
 	"runtime"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/linxGnu/grocksdb"
@@ -474,13 +476,32 @@ func (d *ethrexDB) memoryReport() string {
 		cachePinned, _ = d.db.GetIntPropertyCF("rocksdb.block-cache-pinned-usage", d.cfs[cfIdxAccountTrieNodes])
 	}
 
+	// num-files-at-level<N> is a STRING property — reading it through the
+	// int API silently fails and reported a constant 0 for entire runs
+	// (while table-reader memory proved SSTs were accumulating). Parse the
+	// string form instead.
+	sumL0 := func() uint64 {
+		var total uint64
+		for _, idx := range stateCFsForMemoryReport {
+			if idx >= len(d.cfs) || d.cfs[idx] == nil {
+				continue
+			}
+			v := d.db.GetPropertyCF("rocksdb.num-files-at-level0", d.cfs[idx])
+			if n, err := strconv.ParseUint(strings.TrimSpace(v), 10, 64); err == nil {
+				total += n
+			}
+		}
+
+		return total
+	}
+
 	return fmt.Sprintf(
 		"rocksdb memtables=%s table-readers=%s cache=%s cache-pinned=%s L0-files=%d",
 		memstat.FormatBytes(sum("rocksdb.cur-size-all-mem-tables")),
 		memstat.FormatBytes(sum("rocksdb.estimate-table-readers-mem")),
 		memstat.FormatBytes(cacheUsage),
 		memstat.FormatBytes(cachePinned),
-		sum("rocksdb.num-files-at-level0"),
+		sumL0(),
 	)
 }
 
