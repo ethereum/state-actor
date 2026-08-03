@@ -22,6 +22,29 @@ import (
 // during bulk import.
 const bulkBackgroundJobs = 8
 
+// defaultStateCFLevelBaseMiB is max_bytes_for_level_base for the four state
+// CFs, in MiB: 2 GiB, matching besu and nethermind. At this value RocksDB
+// still runs SOME size-scored L0 compaction during import (one pass per
+// ~2 GiB of L0), which keeps Close()'s final CompactRange cheap; the
+// defer-everything alternative (set the env below to something huge, e.g.
+// 1048576 = 1 TiB) reaches the ~2.3× write-amplification floor but moves
+// the entire flattening cost into Close. The 40 GB bench ladder decides
+// which ships as the default; both numbers are recorded in the PR.
+const defaultStateCFLevelBaseMiB = 2048
+
+// ethrexStateCFLevelBaseBytes resolves the state-CF level-base, honoring
+// the STATE_ACTOR_ETHREX_LEVELBASE_MIB env override (benchmarking knob,
+// same pattern as erigon's STATE_ACTOR_ERIGON_WORKERS).
+func ethrexStateCFLevelBaseBytes() uint64 {
+	if v := os.Getenv("STATE_ACTOR_ETHREX_LEVELBASE_MIB"); v != "" {
+		if mib, err := strconv.ParseUint(v, 10, 64); err == nil && mib > 0 {
+			return mib << 20
+		}
+		log.Printf("ethrex: ignoring invalid STATE_ACTOR_ETHREX_LEVELBASE_MIB=%q", v)
+	}
+	return defaultStateCFLevelBaseMiB << 20
+}
+
 // ethrexBlockCacheBytes is the shared LRU block cache across all CFs.
 //
 // ethrex's own crates/storage/backend/rocksdb.rs uses 4 GiB. This writer uses
@@ -261,6 +284,18 @@ func openEthrexDB(dbPath string) (*ethrexDB, error) {
 			opts.SetWriteBufferSize(256 << 20)
 			opts.SetMaxWriteBufferNumber(4)
 			opts.SetTargetFileSizeBase(256 << 20)
+			// Without this, RocksDB's DEFAULT max_bytes_for_level_base
+			// (256 MB) silently defeats the MaxInt32 L0 triggers above:
+			// ComputeCompactionScore takes max(count-score, L0-size /
+			// max_bytes_for_level_base), so L0 compacted CONTINUOUSLY
+			// through the whole import — measured at 5-7× write
+			// amplification (~1.4-2 TB physically written for a 273 GB
+			// DB) before this was set. besu and nethermind both set
+			// 2 GiB (client/besu/dbs_cgo.go, client/nethermind/
+			// dbs_cgo.go); ethrex was the outlier. The value is
+			// env-tunable for benchmarking the defer-everything-to-Close
+			// variant — see ethrexStateCFLevelBaseBytes.
+			opts.SetMaxBytesForLevelBase(ethrexStateCFLevelBaseBytes())
 			bbto.SetBlockSize(16 << 10)
 			bbto.SetFilterPolicy(grocksdb.NewBloomFilterFull(10))
 		case cfIdxAccountCodes:
