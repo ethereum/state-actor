@@ -4,10 +4,11 @@ package ethrex
 
 import (
 	"fmt"
+	"log"
 	"math"
 	"os"
 	"runtime"
-	"sync"
+	"time"
 
 	"github.com/linxGnu/grocksdb"
 
@@ -338,13 +339,23 @@ func openEthrexDB(dbPath string) (*ethrexDB, error) {
 func (d *ethrexDB) Close() {
 	if d.db != nil {
 		emptyRange := grocksdb.Range{Start: nil, Limit: nil}
-		// exclusive=false lets these per-CF manual compactions overlap instead
-		// of serializing on RocksDB's exclusive-manual-compaction lock; the
-		// shared CompactRangeOptions is read-only during compaction so it is
-		// safe to use from all goroutines.
-		cro := grocksdb.NewCompactRangeOptions()
-		cro.SetExclusiveManualCompaction(false)
-		var wg sync.WaitGroup
+		// Serial, mirroring the besu and nethermind writers. The 12-goroutine
+		// fan-out this replaces bought little — max_background_jobs
+		// (bulkBackgroundJobs) already floored real parallelism at 8 — and
+		// cost memory at the worst moment: with L0 never compacted during
+		// the import, the L0→base merge takes EVERY L0 file of a CF as
+		// input at ~2 MiB compaction readahead each (~2800 files across the
+		// state CFs at 700 GB), so compacting the four state CFs
+		// concurrently stacked ~4× that readahead on top of end-of-run
+		// state. Serial caps the term at the largest single CF. State CFs
+		// go first: they dominate, and an interrupt part-way leaves the
+		// cheap CFs uncompacted rather than the expensive ones.
+		//
+		// The per-CF log lines are the only record of this phase: the 30s
+		// sampler is stopped BEFORE Close (it reads DB properties, and
+		// grocksdb does not guard against a closed handle), so without them
+		// Close-time compaction memory would be invisible — the same
+		// blindness that let #116's import-phase terms go unmeasured.
 		for _, idx := range []int{
 			cfIdxAccountTrieNodes,
 			cfIdxStorageTrieNodes,
@@ -360,15 +371,14 @@ func (d *ethrexDB) Close() {
 			cfIdxCanonicalBlockHashes,
 		} {
 			if idx < len(d.cfs) && d.cfs[idx] != nil {
-				wg.Add(1)
-				go func(cf *grocksdb.ColumnFamilyHandle) {
-					defer wg.Done()
-					d.db.CompactRangeCFOpt(cf, emptyRange, cro)
-				}(d.cfs[idx])
+				start := time.Now()
+				d.db.CompactRangeCF(d.cfs[idx], emptyRange)
+				log.Printf("  ethrex: compacted %s in %s · mem %s · %s",
+					ethrexinternal.Tables[idx],
+					time.Since(start).Round(time.Second),
+					memstat.Read(), d.memoryReport())
 			}
 		}
-		wg.Wait()
-		cro.Destroy()
 	}
 
 	for _, h := range d.cfs {
