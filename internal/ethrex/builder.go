@@ -22,6 +22,12 @@ var ErrKeysOutOfOrder = errors.New("Builder: keys must be inserted in strictly a
 // pathNibbles before writing to the DB. The Builder itself is keyspace-agnostic.
 //
 // A non-nil error from NodeSink is propagated back from AddLeaf or Root.
+//
+// Borrow contract: both slices are only valid for the duration of the call —
+// the Builder reuses its internal buffers across leaves (geth StackTrie's
+// callback contract). Sinks that retain data must copy; every production sink
+// already does (batchSink copies into the C write batch on put,
+// bufferingStorageSink clones, PrefixedSink builds a fresh key).
 type NodeSink func(pathNibbles []byte, value []byte) error
 
 // Builder is a streaming Merkle-Patricia trie builder that emits ethrex trie
@@ -120,8 +126,14 @@ func (b *Builder) AddLeaf(keyNibbles []byte, value []byte) error {
 		return err
 	}
 	b.leafCount++
-	b.prevKey = append(b.prevKey[:0:0], keyNibbles...)
-	b.prevVal = append(b.prevVal[:0:0], value...)
+	// Reuse the backing arrays across leaves ([:0], NOT the previous [:0:0]
+	// which zeroed capacity and forced a fresh allocation per leaf — 2×~750 M
+	// allocations per large run). Safe because nothing retains prevKey/prevVal
+	// memory past insert(): emitLeafRows clones every emitted key, EncodeLeaf
+	// copies the value into fresh RLP, and sinks operate under the NodeSink
+	// borrow contract (see its doc).
+	b.prevKey = append(b.prevKey[:0], keyNibbles...)
+	b.prevVal = append(b.prevVal[:0], value...)
 	return nil
 }
 

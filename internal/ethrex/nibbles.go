@@ -11,12 +11,17 @@ const (
 // BytesToNibbles unpacks each byte into two nibbles (high nibble first, low nibble second).
 // No leaf flag is appended. Example: [0x2f] -> [0x02, 0x0f].
 func BytesToNibbles(b []byte) []byte {
-	out := make([]byte, len(b)*2)
-	for i, by := range b {
-		out[i*2] = by >> 4
-		out[i*2+1] = by & 0x0f
+	return AppendNibbles(make([]byte, 0, len(b)*2), b)
+}
+
+// AppendNibbles is BytesToNibbles in append form: allocation-free when dst has
+// capacity. Callers may reuse dst across Builder.AddLeaf calls — AddLeaf copies
+// the key and does not retain the argument.
+func AppendNibbles(dst, b []byte) []byte {
+	for _, by := range b {
+		dst = append(dst, by>>4, by&0x0f)
 	}
-	return out
+	return dst
 }
 
 // CompactEncode applies the hex-prefix (compact) encoding to a nibble slice.
@@ -30,6 +35,12 @@ func BytesToNibbles(b []byte) []byte {
 //
 // After the flag byte, remaining nibble pairs are packed two-per-byte.
 func CompactEncode(nibbles []byte, isLeaf bool) []byte {
+	return appendCompact(make([]byte, 0, 1+len(nibbles)/2), nibbles, isLeaf)
+}
+
+// appendCompact is CompactEncode in append form (single source of truth for
+// the flag-byte rules above). Byte-identical output.
+func appendCompact(dst, nibbles []byte, isLeaf bool) []byte {
 	odd := len(nibbles)%2 != 0
 
 	var flagByte byte
@@ -43,13 +54,12 @@ func CompactEncode(nibbles []byte, isLeaf bool) []byte {
 		flagByte |= 0x20
 	}
 
+	dst = append(dst, flagByte)
 	rest := nibbles[start:]
-	out := make([]byte, 1+len(rest)/2)
-	out[0] = flagByte
-	for i := 0; i < len(rest)/2; i++ {
-		out[1+i] = (rest[i*2] << 4) | rest[i*2+1]
+	for i := 0; i+1 < len(rest); i += 2 {
+		dst = append(dst, (rest[i]<<4)|rest[i+1])
 	}
-	return out
+	return dst
 }
 
 // commonPrefixLen returns the number of leading nibbles that a and b share.

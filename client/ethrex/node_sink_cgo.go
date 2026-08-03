@@ -6,7 +6,7 @@ import (
 	"bytes"
 	"container/heap"
 	"fmt"
-	"sort"
+	"slices"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/crypto"
@@ -237,8 +237,8 @@ func collectNonZeroSlots(ent entity) []storageSlotKV {
 	if len(kvs) == 0 {
 		return nil
 	}
-	sort.Slice(kvs, func(i, j int) bool {
-		return bytes.Compare(kvs[i].slotHash[:], kvs[j].slotHash[:]) < 0
+	slices.SortFunc(kvs, func(a, b storageSlotKV) int {
+		return bytes.Compare(a.slotHash[:], b.slotHash[:])
 	})
 	return kvs
 }
@@ -261,9 +261,13 @@ func buildStorageTrieBuffered(
 	prefixedSink := ethrexinternal.PrefixedSink(addrHash, captureSink)
 	sb := ethrexinternal.NewBuilder(prefixedSink)
 
+	// Reused nibble buffer: AddLeaf copies its key and never retains the
+	// argument (NodeSink borrow contract), so one 64-byte scratch replaces a
+	// per-slot BytesToNibbles allocation.
+	var nibScratch [64]byte
 	for _, e := range kvs {
 		enc := ethrexinternal.EncodeStorageValue(e.value)
-		if addErr := sb.AddLeaf(ethrexinternal.BytesToNibbles(e.slotHash[:]), enc); addErr != nil {
+		if addErr := sb.AddLeaf(ethrexinternal.AppendNibbles(nibScratch[:0], e.slotHash[:]), enc); addErr != nil {
 			return nil, emptyTrieHash, 0, 0, fmt.Errorf("ethrex: storage leaf: %w", addErr)
 		}
 		storageSlotsCreated++
@@ -301,9 +305,10 @@ func buildStorageTrieInline(
 	prefixedSink := ethrexinternal.PrefixedSink(addrHash, inlineSink)
 	sb := ethrexinternal.NewBuilder(prefixedSink)
 
+	var nibScratch [64]byte
 	for _, e := range kvs {
 		enc := ethrexinternal.EncodeStorageValue(e.value)
-		if addErr := sb.AddLeaf(ethrexinternal.BytesToNibbles(e.slotHash[:]), enc); addErr != nil {
+		if addErr := sb.AddLeaf(ethrexinternal.AppendNibbles(nibScratch[:0], e.slotHash[:]), enc); addErr != nil {
 			return emptyTrieHash, 0, 0, fmt.Errorf("ethrex: storage leaf: %w", addErr)
 		}
 		storageSlotsCreated++

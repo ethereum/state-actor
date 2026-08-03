@@ -1,9 +1,48 @@
 package ethrex
 
+import (
+	"sync"
+
+	"github.com/ethereum/go-ethereum/crypto"
+)
+
 // node_rlp.go — RLP encoders for ethrex trie node types.
 //
 // All three encoders mirror ethrex crates/common/trie/rlp.rs lines 26-85.
 // The encoding is used both for DB storage and for computing NodeRef hashes.
+
+// nodeEncoder holds the per-encode scratch state: compact/payload build
+// buffers and a reused keccak hasher for child refs. Outputs of the three
+// Encode* functions are always FRESHLY allocated (rlpEncodeListRaw copies the
+// payload), so callers may retain them; only the intermediates are pooled.
+// Pooled because encoders run concurrently (Phase-0 workers + Stage-B workers
+// each drive their own Builder).
+type nodeEncoder struct {
+	compact []byte
+	payload []byte
+	out32   [32]byte
+	h       crypto.KeccakState
+}
+
+var encoderPool = sync.Pool{New: func() any {
+	return &nodeEncoder{h: crypto.NewKeccakState()}
+}}
+
+// appendChildRefOf appends the child-reference encoding of child to dst:
+// byte-identical to appendChildRef(dst, NodeRef(child)) but hashing into the
+// encoder's scratch instead of allocating a KeccakState + 32-byte digest per
+// child (geth's hasher.hashDataTo precedent).
+func (e *nodeEncoder) appendChildRefOf(dst, child []byte) []byte {
+	if len(child) < 32 {
+		// Inline: the raw bytes are already valid RLP; splice directly.
+		return append(dst, child...)
+	}
+	e.h.Reset()
+	e.h.Write(child)
+	e.h.Read(e.out32[:])
+	dst = append(dst, 0xa0)
+	return append(dst, e.out32[:]...)
+}
 
 // EncodeLeaf encodes a leaf node as a 2-item RLP list:
 //
@@ -11,11 +50,15 @@ package ethrex
 //
 // Mirrors ethrex LeafNode RLPEncode (rlp.rs:78-85).
 func EncodeLeaf(remainingPath []byte, value []byte) []byte {
-	compact := CompactEncode(remainingPath, true)
-	encPath := rlpEncodeBytes(compact)
-	encVal := rlpEncodeBytes(value)
-	payload := append(encPath, encVal...)
-	return rlpEncodeListRaw(payload)
+	e := encoderPool.Get().(*nodeEncoder)
+	e.compact = appendCompact(e.compact[:0], remainingPath, true)
+	p := e.payload[:0]
+	p = appendRLPBytes(p, e.compact)
+	p = appendRLPBytes(p, value)
+	out := rlpEncodeListRaw(p)
+	e.payload = p
+	encoderPool.Put(e)
+	return out
 }
 
 // EncodeExtension encodes an extension node as a 2-item RLP list:
@@ -26,15 +69,15 @@ func EncodeLeaf(remainingPath []byte, value []byte) []byte {
 // is embedded via the NodeRef rule (inline if < 32 bytes, hash-ref if >= 32).
 // Mirrors ethrex ExtensionNode RLPEncode (rlp.rs:70-76).
 func EncodeExtension(prefixPath []byte, childEncoded []byte) []byte {
-	compact := CompactEncode(prefixPath, false)
-	encPath := rlpEncodeBytes(compact)
-
-	ref := NodeRef(childEncoded)
-	var childRLP []byte
-	childRLP = appendChildRef(childRLP, ref)
-
-	payload := append(encPath, childRLP...)
-	return rlpEncodeListRaw(payload)
+	e := encoderPool.Get().(*nodeEncoder)
+	e.compact = appendCompact(e.compact[:0], prefixPath, false)
+	p := e.payload[:0]
+	p = appendRLPBytes(p, e.compact)
+	p = e.appendChildRefOf(p, childEncoded)
+	out := rlpEncodeListRaw(p)
+	e.payload = p
+	encoderPool.Put(e)
+	return out
 }
 
 // EncodeBranch encodes a branch node as a 17-item RLP list.
@@ -47,24 +90,52 @@ func EncodeExtension(prefixPath []byte, childEncoded []byte) []byte {
 // children[i] is the raw RLP of child i (may be nil if the slot is empty).
 // Mirrors ethrex BranchNode RLPEncode (rlp.rs:26-68).
 func EncodeBranch(children [16][]byte, value []byte) []byte {
-	var payload []byte
+	e := encoderPool.Get().(*nodeEncoder)
+	// Preallocate for the worst case (16 hashed refs + value) once; the pooled
+	// buffer retains its capacity, so steady state is zero-alloc here where the
+	// previous `var payload []byte` paid ~10 append-grow reallocs per branch.
+	p := e.payload[:0]
+	if cap(p) < 17*33+8 {
+		p = make([]byte, 0, 17*33+8)
+	}
 	for i := 0; i < 16; i++ {
 		child := children[i]
 		if len(child) == 0 {
-			payload = append(payload, 0x80)
+			p = append(p, 0x80)
 		} else {
-			ref := NodeRef(child)
-			payload = appendChildRef(payload, ref)
+			p = e.appendChildRefOf(p, child)
 		}
 	}
 	// Branch value (item 16).
-	payload = append(payload, rlpEncodeBytes(value)...)
-	return rlpEncodeListRaw(payload)
+	p = appendRLPBytes(p, value)
+	out := rlpEncodeListRaw(p)
+	e.payload = p
+	encoderPool.Put(e)
+	return out
 }
 
 // ---------------------------------------------------------------------------
 // Minimal RLP helpers (no external RLP library dependency in production code)
 // ---------------------------------------------------------------------------
+
+// appendRLPBytes is rlpEncodeBytes in append form; byte-identical output.
+func appendRLPBytes(dst, b []byte) []byte {
+	n := len(b)
+	switch {
+	case n == 1 && b[0] < 0x80:
+		return append(dst, b[0])
+	case n == 0:
+		return append(dst, 0x80)
+	case n <= 55:
+		dst = append(dst, 0x80+byte(n))
+		return append(dst, b...)
+	default:
+		lenBytes := minBEBytes(n)
+		dst = append(dst, 0xb7+byte(len(lenBytes)))
+		dst = append(dst, lenBytes...)
+		return append(dst, b...)
+	}
+}
 
 // rlpEncodeBytes encodes a byte slice as an RLP byte string.
 func rlpEncodeBytes(b []byte) []byte {
