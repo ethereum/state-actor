@@ -39,19 +39,20 @@ const ethrexBlockCacheBytes = 512 * 1024 * 1024
 
 // ethrexDBWriteBufferBytes caps TOTAL memtable memory across all CFs.
 //
-// The per-CF write buffers below mirror ethrex, but they are per-CF ceilings
-// that RocksDB does not sum: the four big state CFs alone would permit
-// 512 MiB x 6 = 12 GiB resident. db_write_buffer_size bounds the sum, flushing
-// the largest memtable when the budget is exceeded. Keeping the per-CF shape
-// intact matters — it governs flushed SST sizes, and Close()'s CompactRange
-// rewrites with the same per-CF options either way.
+// The four state CFs are sized at 256 MiB × 4 (see the state-CF case), which
+// sums to exactly this cap — in the steady state the per-CF sizes are the
+// operative flush trigger and this is the backstop for the long tail of
+// smaller CFs pushing the total over. RocksDB does not sum per-CF ceilings on
+// its own; without this cap the previous 512 MiB × 6 shape permitted 12 GiB
+// resident. Flush cadence is process-runtime only — Close()'s CompactRange
+// rewrites the result at target_file_size_base either way.
 const ethrexDBWriteBufferBytes = 4 * 1024 * 1024 * 1024
 
 // ethrexMaxOpenFiles is a backstop on RocksDB's table cache, deliberately set
 // where it cannot bind. With L0 compaction triggers pinned to MaxInt32 (below)
-// SSTs accumulate for the whole import — a 700 GB DB at ~512 MiB per flushed
-// file is ~1400 of them, and the db_write_buffer_size cap can only shrink
-// files, not enlarge them. Sizing this an order of magnitude above that keeps
+// SSTs accumulate for the whole import — a 700 GB DB at ~256 MiB per flushed
+// file is ~2800 of them, and the db_write_buffer_size cap can only shrink
+// files, not enlarge them. Sizing this more than 10× above that keeps
 // residual per-table-reader overhead bounded (a handle plus footer metadata,
 // once cache_index_and_filter_blocks moves the expensive part into the cache)
 // without risking reopen churn during Close()'s CompactRange, which needs
@@ -145,14 +146,17 @@ type ethrexDB struct {
 // leave genesis block keys and trie rows inconsistent, making ethrex silently
 // boot off partial state.
 //
-// Per-CF options (compression, block size, bloom filters, write buffers, blob
-// files, shared 4 GiB block cache) mirror the real ethrex client's
-// crates/storage/backend/rocksdb.rs exactly, so a state-actor-produced DB is
-// byte-representative for benchmarking. The only deliberate deviation is the
-// L0 compaction triggers: ethrex uses 4/20/36, state-actor maxes them to avoid
-// compaction stalls during bulk import — Close() runs CompactRange afterward,
-// which rewrites every SST with these same compression/block/bloom options, so
-// the final on-disk shape matches ethrex regardless.
+// Per-CF options that shape the final bytes (compression, block size, bloom
+// filters, blob files, target_file_size_base) mirror the real ethrex client's
+// crates/storage/backend/rocksdb.rs, so a state-actor-produced DB is
+// byte-representative for benchmarking. Deliberate deviations are all
+// process-runtime knobs that cannot change the compacted output: L0
+// compaction triggers (ethrex 4/20/36, maxed here to avoid stalls during
+// bulk import), state-CF memtables (256 MiB × 4 vs ethrex's 512 MiB × 6 —
+// see the state-CF case), and the block cache (512 MiB vs ethrex's 4 GiB —
+// see ethrexBlockCacheBytes). Close() runs CompactRange afterward, rewriting
+// every SST with the same compression/block/bloom options, so the final
+// on-disk shape matches ethrex regardless.
 func openEthrexDB(dbPath string) (*ethrexDB, error) {
 	// Fresh-dir precondition: a missing or EMPTY directory is fine (callers and
 	// tests routinely `mkdir -p` the datadir first, and t.TempDir() pre-creates
@@ -232,11 +236,23 @@ func openEthrexDB(dbPath string) (*ethrexDB, error) {
 			bbto.SetFilterPolicy(grocksdb.NewBloomFilterFull(10))
 		case cfIdxAccountTrieNodes, cfIdxStorageTrieNodes,
 			cfIdxAccountFlatKeyValue, cfIdxStorageFlatKeyValue:
-			opts.SetWriteBufferSize(512 << 20)
-			opts.SetMaxWriteBufferNumber(6)
-			opts.SetMinWriteBufferNumberToMerge(2)
+			// 256 MiB × 4, matching the besu and nethermind writers — the two
+			// grocksdb bulk paths proven at multi-hundred-GB scale. ethrex's
+			// runtime figure is 512 MiB × 6 with min-merge 2, but memtable
+			// shape is a process-runtime knob: it cannot change a byte of the
+			// compacted output (Close() rewrites at target_file_size_base),
+			// and mirroring it summed to a 12 GiB ceiling across these four
+			// CFs. The per-CF sum now equals ethrexDBWriteBufferBytes, making
+			// the global cap a true backstop instead of the operative flush
+			// trigger. No SetMinWriteBufferNumberToMerge: no peer writer sets
+			// it, and waiting on a second immutable memtable only raised
+			// resident bytes and flush granularity. No memtable prefix bloom:
+			// RocksDB allocates one only under a prefix extractor or
+			// whole-key filtering (memtable.cc), neither configured here —
+			// the previous SetMemTablePrefixBloomSizeRatio(0.2) was inert.
+			opts.SetWriteBufferSize(256 << 20)
+			opts.SetMaxWriteBufferNumber(4)
 			opts.SetTargetFileSizeBase(256 << 20)
-			opts.SetMemTablePrefixBloomSizeRatio(0.2)
 			bbto.SetBlockSize(16 << 10)
 			bbto.SetFilterPolicy(grocksdb.NewBloomFilterFull(10))
 		case cfIdxAccountCodes:
