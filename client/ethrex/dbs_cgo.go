@@ -49,9 +49,11 @@ func ethrexStateCFLevelBaseBytes() uint64 {
 
 // ethrexBlockCacheBytes is the shared LRU block cache across all CFs.
 //
-// ethrex's own crates/storage/backend/rocksdb.rs uses 4 GiB. This writer uses
-// far less BY DESIGN: a block cache only accelerates reads, and generation is
-// write-only until Close()'s CompactRange. Cache size is a process-runtime
+// ethrex (crates/storage/backend/rocksdb.rs) defaults to 12 GiB
+// (DEFAULT_ROCKSDB_BLOCK_CACHE_SIZE_BYTES, overridable with
+// --rocksdb.block-cache-size). This writer uses far less BY DESIGN: a
+// block cache only accelerates reads, and generation is write-only
+// until Close()'s CompactRange. Cache size is a process-runtime
 // knob — it does not change a single byte of the produced DB — so mirroring
 // ethrex here would buy representativeness that does not exist while costing
 // RAM that demonstrably does.
@@ -157,9 +159,10 @@ const (
 	cfIdxMiscValues           = 17
 	cfIdxExecutionWitnesses   = 18
 	cfIdxBlockAccessLists     = 19
+	cfIdxBadBlocks            = 20
 )
 
-// ethrexDB holds the open grocksdb handle and the 20 CF handles.
+// ethrexDB holds the open grocksdb handle and the 21 CF handles.
 type ethrexDB struct {
 	db     *grocksdb.DB
 	cfs    []*grocksdb.ColumnFamilyHandle
@@ -182,8 +185,9 @@ type ethrexDB struct {
 // process-runtime knobs that cannot change the compacted output: L0
 // compaction triggers (ethrex 4/20/36, maxed here to avoid stalls during
 // bulk import), state-CF memtables (256 MiB × 4 vs ethrex's 512 MiB × 6 —
-// see the state-CF case), and the block cache (512 MiB vs ethrex's 4 GiB —
-// see ethrexBlockCacheBytes). Close() runs CompactRange afterward, rewriting
+// see the state-CF case), and the block cache (512 MiB vs ethrex's
+// 12 GiB default — see ethrexBlockCacheBytes). Close() runs
+// CompactRange afterward, rewriting
 // every SST with the same compression/block/bloom options, so the final
 // on-disk shape matches ethrex regardless.
 func openEthrexDB(dbPath string) (*ethrexDB, error) {
@@ -210,17 +214,17 @@ func openEthrexDB(dbPath string) (*ethrexDB, error) {
 		return nil, fmt.Errorf("ethrex: mkdir: %w", err)
 	}
 
-	// The 20 named ethrex CFs, plus RocksDB's implicit "default" CF appended
-	// LAST (index 20). RocksDB always creates "default" on a fresh DB, and an
+	// The 21 named ethrex CFs, plus RocksDB's implicit "default" CF appended
+	// LAST (index 21). RocksDB always creates "default" on a fresh DB, and an
 	// open call must account for every existing CF or it errors with "you have
 	// to open all column families". Appending it keeps the cfIdx* constants
-	// (0..19) aligned with Tables; cfs[20] (default) is created but never
+	// (0..20) aligned with Tables; cfs[21] (default) is created but never
 	// written. Mirrors besu's explicit CFDefault inclusion.
 	cfNames := make([]string, 0, len(ethrexinternal.Tables)+1)
 	cfNames = append(cfNames, ethrexinternal.Tables...)
 	cfNames = append(cfNames, "default")
 
-	// Shared 4 GiB LRU block cache across all CFs (ethrex rocksdb.rs).
+	// Shared LRU block cache across all CFs (see ethrexBlockCacheBytes).
 	cache := grocksdb.NewLRUCache(ethrexBlockCacheBytes)
 
 	cfOpts := make([]*grocksdb.Options, len(cfNames))
@@ -318,6 +322,10 @@ func openEthrexDB(dbPath string) (*ethrexDB, error) {
 			opts.SetTargetFileSizeBase(256 << 20)
 			bbto.SetBlockSize(32 << 10)
 		default:
+			// Also covers transaction_locations, whose ethrex arm carries the
+			// same values plus a merge operator — omitted here: state-actor
+			// writes no rows there, and a CF created without one reopens
+			// cleanly with one registered.
 			opts.SetWriteBufferSize(64 << 20)
 			opts.SetMaxWriteBufferNumber(3)
 			opts.SetTargetFileSizeBase(128 << 20)

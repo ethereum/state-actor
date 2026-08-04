@@ -17,6 +17,15 @@
   no longer written.
 
 ### Changed
+- **ethrex tracking bumped v16.0.0 → v23.0.0.** Adds the `bad_blocks`
+  column family (21 CFs; upstream added it in v22.0.0, ethrex#6948 —
+  previously ethrex created it itself on first boot) and writes
+  `schema_version: 3` to `metadata.json` (ethrex's value since v16 —
+  writing 2 sent every first boot through the migration branch, which
+  also rewrites `metadata.json`, mutating the generated datadir). Boot
+  image and golden fixture repinned to 23.0.0; every state-bearing CF
+  is byte-identical to the v16 dump, so the state root and the Go
+  trie/code codecs are unaffected.
 - **Nethermind writer runs Nethermind's own RocksDB configuration.** All
   8 databases (and every column family) now parse the verbatim DbConfig
   option strings through RocksDB's own parser instead of hand-tuned

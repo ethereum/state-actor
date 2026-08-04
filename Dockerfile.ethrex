@@ -4,7 +4,7 @@
 #
 # RocksDB strategy: build from source. Pinned to RocksDB 10.10.1 to match
 # `grocksdb v1.10.8`'s C-binding expectations (its build.sh pins this exact
-# version). ethrex uses a single RocksDB instance with 20 column families;
+# version). ethrex uses a single RocksDB instance with 21 column families;
 # the same grocksdb pairing used for besu and nethermind applies here.
 #
 # Why 10.10.1 specifically: grocksdb v1.10.8's C bindings reference
@@ -22,8 +22,8 @@
 #       grocksdb v1.10.7 → RocksDB 10.9.1
 #       grocksdb v1.10.8 → RocksDB 10.10.1  ← we use this
 #
-#   * On-disk layout: single RocksDB at <dbPath> with 20 column families.
-#     Sidecar files: metadata.json (schema_version=2) and ethrex-genesis.json
+#   * On-disk layout: single RocksDB at <dbPath> with 21 column families.
+#     Sidecar files: metadata.json (schema_version=3) and ethrex-genesis.json
 #     (full genesis JSON for `ethrex --network <path>`).
 #
 # Run:
