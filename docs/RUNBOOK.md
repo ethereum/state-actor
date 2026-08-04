@@ -310,7 +310,7 @@ docker run --rm \
 
 **Boot path.** ethrex's `add_initial_state` short-circuits when `canonical_block_hashes[0]` already resolves to a matching genesis header hash — state-actor writes that row, so ethrex skips state-trie recomputation at boot. Required boot flags (validated by the e2e suite, Phase 4): `--network <ethrex-genesis.json>`, `--datadir <dir>`, `--skip-genesis-validation` (trust the written stateRoot rather than recompute from the empty-alloc sidecar; needs lambdaclass/ethrex#6783, in releases ≥ v16.0.0), and `--syncmode full`. The `--syncmode full` flag is mandatory for engine-driven block production: in the default snap mode ethrex's fork-choice handler returns `SYNCING` with a null `payloadId` for every `engine_forkchoiceUpdated`, so the mock CL can never obtain a payload to build. The pattern follows the besu/nethermind Engine API approach: boot the node, then drive blocks via `engine_forkchoiceUpdated` (ethrex also mandates an authrpc JWT, signed by the driver).
 
-**Memory at boot.** ethrex allocates a shared RocksDB block cache defaulting to 12 GiB and holds index + bloom-filter blocks inside it, so a boot in a container capped below that will be OOM-killed before it serves a request. Cap it with `--rocksdb.block-cache-size <bytes>`. This is a boot-side knob only; it has no bearing on the bytes state-actor writes.
+**Memory at boot.** ethrex's shared RocksDB block cache defaults to 12 GiB and holds index + bloom-filter blocks. The cache fills lazily, but on a large DB a memory-capped container can be OOM-killed as it fills — cap it with `--rocksdb.block-cache-size <bytes>` on memory-constrained hosts. Boot-side knob only; no bearing on the bytes state-actor writes.
 
 **Verify.**
 

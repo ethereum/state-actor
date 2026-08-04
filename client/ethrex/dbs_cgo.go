@@ -51,9 +51,9 @@ func ethrexStateCFLevelBaseBytes() uint64 {
 //
 // ethrex (crates/storage/backend/rocksdb.rs) defaults to 12 GiB
 // (DEFAULT_ROCKSDB_BLOCK_CACHE_SIZE_BYTES, overridable with
-// --rocksdb.block-cache-size). This writer uses far less BY DESIGN: a block
-// cache only accelerates reads, and generation is
-// write-only until Close()'s CompactRange. Cache size is a process-runtime
+// --rocksdb.block-cache-size). This writer uses far less BY DESIGN: a
+// block cache only accelerates reads, and generation is write-only
+// until Close()'s CompactRange. Cache size is a process-runtime
 // knob — it does not change a single byte of the produced DB — so mirroring
 // ethrex here would buy representativeness that does not exist while costing
 // RAM that demonstrably does.
@@ -185,9 +185,9 @@ type ethrexDB struct {
 // process-runtime knobs that cannot change the compacted output: L0
 // compaction triggers (ethrex 4/20/36, maxed here to avoid stalls during
 // bulk import), state-CF memtables (256 MiB × 4 vs ethrex's 512 MiB × 6 —
-// see the state-CF case), and the block cache (512 MiB vs ethrex's 12 GiB
-// default —
-// see ethrexBlockCacheBytes). Close() runs CompactRange afterward, rewriting
+// see the state-CF case), and the block cache (512 MiB vs ethrex's
+// 12 GiB default — see ethrexBlockCacheBytes). Close() runs
+// CompactRange afterward, rewriting
 // every SST with the same compression/block/bloom options, so the final
 // on-disk shape matches ethrex regardless.
 func openEthrexDB(dbPath string) (*ethrexDB, error) {
@@ -322,13 +322,10 @@ func openEthrexDB(dbPath string) (*ethrexDB, error) {
 			opts.SetTargetFileSizeBase(256 << 20)
 			bbto.SetBlockSize(32 << 10)
 		default:
-			// Also covers transaction_locations, whose dedicated arm in ethrex
-			// carries these same values. ethrex additionally registers the
-			// "tx_locations_merge" associative merge operator on that CF. It is
-			// omitted here: a merge operator only affects merge writes and their
-			// resolution, state-actor writes no transaction locations, and
-			// RocksDB does not compare merge-operator names across opens — a CF
-			// created without one reopens cleanly with one registered.
+			// Also covers transaction_locations, whose ethrex arm carries the
+			// same values plus a merge operator — omitted here: state-actor
+			// writes no rows there, and a CF created without one reopens
+			// cleanly with one registered.
 			opts.SetWriteBufferSize(64 << 20)
 			opts.SetMaxWriteBufferNumber(3)
 			opts.SetTargetFileSizeBase(128 << 20)

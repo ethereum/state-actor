@@ -1,6 +1,6 @@
 // Package ethrex implements the trie codec primitives used by ethrex
-// (pinned release v15.0.0, lambdaclass/ethrex). The golden fixture is
-// byte-identical from v13.0.0 through v15.0.0.
+// (pinned release v23.0.0, lambdaclass/ethrex). The golden fixture's
+// state-bearing CFs are byte-identical from v13.0.0 through v23.0.0.
 //
 // # Two-rows-per-leaf model
 //

@@ -19,9 +19,10 @@ The state-bearing CFs (`account_trie_nodes`, `storage_trie_nodes`,
 `account_codes`, `account_code_metadata`) are byte-identical from v13.0.0
 (commit 318ec2888) through v23.0.0, each step verified by regenerating and
 diffing against the previous dump. Across that range only two things moved:
-`chain_data[0x80]` gained fork fields as they landed (`osakaTime` at v16,
-`hegotaTime` at v23), and v23 added the `bad_blocks` column family (empty at
-genesis). `STORE_SCHEMA_VERSION` reached 3 at v16 and has not moved since.
+`chain_data[0x80]` gained fork fields (`hegotaTime`, introduced upstream in
+v21.0.0 via ethrex#6326), and the `bad_blocks` column family arrived in
+v22.0.0 (ethrex#6948, empty at genesis). `STORE_SCHEMA_VERSION` reached 3 at
+v16 and has not moved since.
 
 Any ethrex release that bumps `STORE_SCHEMA_VERSION`, adds or removes a column
 family, or changes the key layout of `account_trie_nodes`,

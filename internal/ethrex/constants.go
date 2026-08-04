@@ -26,14 +26,10 @@ const (
 	CFBadBlocks            = "bad_blocks"
 )
 
-// Tables is the ordered list of all 21 ethrex column families.
-// Order matches ethrex's TABLES array for deterministic CF creation.
-//
-// state-actor writes rows into a subset of these; the rest are created empty so
-// the on-disk CF set matches what ethrex itself would produce. ethrex drops any
-// column family it finds that is absent from its own TABLES (drop_obsolete_cfs),
-// so this list must not carry entries from an ethrex version newer than the
-// boot pin in client/ethrex/e2e_test.go.
+// Tables is the ordered list of all 21 ethrex column families, matching
+// ethrex's TABLES array. It must not run ahead of the boot pin in
+// client/ethrex/e2e_test.go: ethrex silently drops any CF absent from
+// its own TABLES (drop_obsolete_cfs, warn-only).
 var Tables = []string{
 	CFChainData,
 	CFAccountCodes,
@@ -77,10 +73,9 @@ const EmptyCodeHashHex = "0xc5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfa
 // i.e. the root of an empty MPT — used as the default storageRoot.
 const EmptyTrieHashHex = "0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421"
 
-// StoreSchemaVersion is the value written to metadata.json. It must equal
-// ethrex's STORE_SCHEMA_VERSION (crates/storage/lib.rs): a lower value sends
-// every boot through Store::new_with_config's migration branch, which runs the
-// pending migrations over the whole DB before serving a single request.
+// StoreSchemaVersion must equal ethrex's STORE_SCHEMA_VERSION
+// (crates/storage/lib.rs): lower triggers boot-time migration (which
+// rewrites metadata.json); higher is a hard MigrationFailed boot error.
 const StoreSchemaVersion = 3
 
 // misc_values keys/values controlling ethrex's flat-key-value (FKV) generator.

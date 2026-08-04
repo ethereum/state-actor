@@ -30,11 +30,10 @@ import (
 // against, digest-pinned for reproducibility. Override with
 // ETHREX_IMAGE=ghcr.io/lambdaclass/ethrex:<tag> to test a specific release.
 //
-// Official release v23.0.0 (ghcr tag 23.0.0, published 2026-07-27). The boot
-// phase requires --skip-genesis-validation (lambdaclass/ethrex#6783), present
-// since v16.0.0. This pin is also the source of the column-family list in
-// internal/ethrex/constants.go and of testdata/genesis_dump.json; move all
-// three together.
+// Official release v23.0.0 (ghcr tag 23.0.0, published 2026-07-27). Boot
+// requires --skip-genesis-validation (lambdaclass/ethrex#6783, ≥v16.0.0).
+// This pin is also the source of internal/ethrex's Tables and of
+// testdata/genesis_dump.json; move all three together.
 const pinnedEthrexImage = "ghcr.io/lambdaclass/ethrex:23.0.0@sha256:1cbf2c4b498efcc71dc776a130cf5eed3f15d100896a18f05b6fa426ff0e7fc5"
 
 func ethrexImageRef() string {

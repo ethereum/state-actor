@@ -36,8 +36,6 @@ const MetadataFileName = "metadata.json"
 // This file is REQUIRED by ethrex's Store::new: when the datadir is non-empty
 // but has no metadata.json, ethrex returns NotFoundDBVersion and refuses to
 // boot. state-actor must write it because it pre-fills the dir with SST files.
-// The version must match ethrex's own STORE_SCHEMA_VERSION, or the first boot
-// migrates the whole DB before serving anything.
 func WriteStoreMetadata(dbPath string) error {
 	type meta struct {
 		SchemaVersion int `json:"schema_version"`

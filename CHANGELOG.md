@@ -17,28 +17,15 @@
   no longer written.
 
 ### Changed
-- **ethrex tracking bumped v16.0.0 → v23.0.0.** The DB the ethrex writer
-  produces had drifted from what ethrex expects on three counts, all now
-  realigned against v23.0.0:
-  - **21 column families, not 20.** v23 added `bad_blocks`. The CF was missing
-    from `internal/ethrex.Tables`, so ethrex created it itself on first boot;
-    the generated DB was not the CF set ethrex produces.
-  - **`metadata.json` now says `schema_version: 3`.** ethrex has been at
-    `STORE_SCHEMA_VERSION = 3` since v16. Writing 2 sent every first boot
-    through `Store::new_with_config`'s migration branch, which runs the pending
-    migrations over the whole DB before serving a request — harmless only for as
-    long as those migrations stay no-ops at genesis.
-  - **Boot image and golden fixture repinned to 23.0.0**, and
-    `testdata/genesis_dump.json` regenerated against it. Every state-bearing CF
-    is byte-identical to the v16 dump; only `chain_data[0x80]` (gains
-    `hegotaTime: null`) and the new empty `bad_blocks` CF differ, so the state
-    root and the Go trie/code codecs are unaffected.
-
-  Verified unchanged from v16 through v23 and left alone: the `chain_data` index
-  keys, the `misc_values["last_written"] = 0xff` flat-KV sentinel, the 66-nibble
-  storage prefix, the 65/131-byte flat-KV leaf key lengths, full `AccountState`
-  RLP as the leaf value, `account_codes` = `RLP(code) || RLP(jump_targets)`,
-  big-endian u64 `account_code_metadata`, and the trie node RLP encodings.
+- **ethrex tracking bumped v16.0.0 → v23.0.0.** Adds the `bad_blocks`
+  column family (21 CFs; upstream added it in v22.0.0, ethrex#6948 —
+  previously ethrex created it itself on first boot) and writes
+  `schema_version: 3` to `metadata.json` (ethrex's value since v16 —
+  writing 2 sent every first boot through the migration branch, which
+  also rewrites `metadata.json`, mutating the generated datadir). Boot
+  image and golden fixture repinned to 23.0.0; every state-bearing CF
+  is byte-identical to the v16 dump, so the state root and the Go
+  trie/code codecs are unaffected.
 - **Geth writer mirrors geth's per-level Pebble options** (10-bit bloom
   filters on L0–L5, none on L6, 2→128 MiB file-size ladder), locked to
   the pinned go-ethereum by a new OPTIONS-file parity test. Effect is
