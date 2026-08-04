@@ -24,7 +24,7 @@ var errNotImplemented = errors.New(
 // It delegates to the build-tag-gated runImpl:
 //
 //   - Built with `-tags cgo_ethrex` (Docker only): runImpl in run_cgo.go opens
-//     one grocksdb instance with 20 column families, drives entitygen →
+//     one grocksdb instance with 21 column families, drives entitygen →
 //     ethrex.Builder → grocksdb writes, assembles the genesis block.
 //   - Built without the tag (local default): runImpl in run_stub.go returns
 //     errNotImplemented.

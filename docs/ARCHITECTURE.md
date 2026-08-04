@@ -98,7 +98,7 @@ State Actor generates Ethereum state in three phases:
 │  │  reth: MDBX state tables + RocksDB history + nippy-jar static_files│ │
 │  │  besu: single RocksDB w/ 17 Bonsai column families + chainspec.json│ │
 │  │  nethermind: 7 RocksDB + flat column DB + parity chainspec sidecar │ │
-│  │  ethrex: single RocksDB w/ 20 CFs + metadata.json + genesis sidecar│ │
+│  │  ethrex: single RocksDB w/ 21 CFs + metadata.json + genesis sidecar│ │
 │  │  erigon: Erigon v3 flat .kv snapshots + minimal MDBX               │ │
 │  └─────────────────────────────────────────────────────────────────────┘ │
 └──────────────────────────────────────────────────────────────────────────┘
@@ -227,7 +227,7 @@ configurable worker pool / batch size at the generator level.
   under `<db>/flat` (the flat backend Nethermind >= 1.39.0 serves); periodic
   `dirSize` sample (every 100 contracts) drives the target-size stop.
 - **ethrex** (`client/ethrex/run_cgo.go`): cgo + grocksdb. Single
-  RocksDB with 20 column families. Account and storage trie nodes
+  RocksDB with 21 column families. Account and storage trie nodes
   are encoded via `internal/ethrex`'s path-keyed trie codec (two rows
   per leaf: one full-path row, one nibble-path row). Writes
   `metadata.json` + `ethrex-genesis.json` sidecars. Behind the
@@ -238,10 +238,13 @@ configurable worker pool / batch size at the generator level.
   / code / commitment) streams into Erigon v3 flat snapshot `.kv` files
   (plus `.bt` / `.kvi` / `.kvei` accessors) via `internal/erigon`; the
   MDBX stays minimal (genesis header with a patched `stateRoot` + chain
-  config). The "fat genesis" construction (`MaxTxNum[0]=StepSize-1` + a
-  commitment anchor, see `client/erigon/genesis_patch.go` +
-  `snapshot_cgo.go`) keeps the commitment continuable past block 2.
-  Behind the `cgo_erigon` build tag.
+  config). The "fat genesis" construction (`MaxTxNum[0]=StepSize-1`,
+  genesis `BodyForStorage.TxCount=StepSize` + `Sequence[EthTx]=StepSize`
+  so erigon's body-derived TxNums rebuild on FCU(head=genesis)
+  reproduces it, + a commitment anchor — see
+  `client/erigon/genesis_patch.go` + `snapshot_cgo.go`) keeps the
+  commitment continuable past block 2. Behind the `cgo_erigon` build
+  tag.
 
 Each adapter implements the `generator.Writer` interface
 (`WriteAccount`, `WriteStorage`, `WriteCode`, `SetStateRoot`, …); the
@@ -355,10 +358,10 @@ Today's client adapters:
   `internal/neth/flat`) that Nethermind ≥ 1.39.0 serves as its flat backend,
   and a parity-format chainspec sidecar. Behind the `cgo_neth` build tag.
 - `client/ethrex/` — cgo + grocksdb writer producing a single RocksDB
-  with 20 column families (full list in `internal/ethrex/constants.go`)
+  with 21 column families (full list in `internal/ethrex/constants.go`)
   using ethrex's own path-keyed trie codec (`internal/ethrex/`). Two
   rows written per leaf (full-path + nibble-path). Sidecars:
-  `metadata.json` (schema_version=2) and `ethrex-genesis.json` (full
+  `metadata.json` (schema_version=3) and `ethrex-genesis.json` (full
   genesis JSON for `ethrex --network <path>`). Behind the `cgo_ethrex`
   build tag.
 - `client/erigon/` — cgo + mdbx-go writer producing Erigon v3 flat
@@ -366,10 +369,11 @@ Today's client adapters:
   their `.bt` / `.kvi` / `.kvei` accessors (built via `internal/erigon/`),
   alongside a minimal MDBX (genesis header with a patched `stateRoot` +
   chain config) laid down by the pinned `erigon init` CLI. The "fat
-  genesis" construction (`MaxTxNum[0]=StepSize-1` + a commitment anchor,
-  see `client/erigon/genesis_patch.go` + `snapshot_cgo.go`) keeps the
-  commitment continuable across genesis → first-live-block. Behind the
-  `cgo_erigon` build tag.
+  genesis" construction (`MaxTxNum[0]=StepSize-1`, genesis
+  `BodyForStorage.TxCount=StepSize` + `Sequence[EthTx]=StepSize`, + a
+  commitment anchor, see `client/erigon/genesis_patch.go` +
+  `snapshot_cgo.go`) keeps the commitment continuable across genesis →
+  first-live-block. Behind the `cgo_erigon` build tag.
 
 The Nethermind adapter takes a different route from the others: instead of
 writing a chainspec for the client to consume, it writes the seven RocksDB
@@ -394,7 +398,7 @@ state-actor/
 │   ├── reth/                        # cgo + libmdbx writer (cgo_reth build tag)
 │   ├── besu/                        # cgo + librocksdb writer (cgo_besu build tag)
 │   ├── nethermind/                  # cgo + grocksdb writer (cgo_neth build tag)
-│   ├── ethrex/                      # cgo + grocksdb writer, 20 CFs (cgo_ethrex build tag)
+│   ├── ethrex/                      # cgo + grocksdb writer, 21 CFs (cgo_ethrex build tag)
 │   └── erigon/                      # cgo + mdbx-go writer, Erigon v3 flat .kv (cgo_erigon build tag)
 ├── generator/                       # Core generation pipeline + Writer interface
 ├── genesis/                         # Client-neutral chainspec types + builder

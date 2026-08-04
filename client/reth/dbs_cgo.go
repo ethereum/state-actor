@@ -29,6 +29,11 @@ const (
 	mdbxSizeMax      = int(8 * 1024 * 1024 * 1024 * 1024) // 8 TiB
 	mdbxGrowthStep   = int(4 * 1024 * 1024 * 1024)        // 4 GiB
 	mdbxShrinkThresh = int(0)
+
+	// mdbxMaxReaders matches reth's DatabaseArguments default
+	// (max_readers = 32_000); the value sizes the reader table in
+	// mdbx.lck at env creation.
+	mdbxMaxReaders = uint64(32_000)
 )
 
 // mdbxDefaultPageSize matches reth's default_page_size() in
@@ -51,6 +56,23 @@ var rocksdbCFNames = []string{
 	"StoragesHistory",
 	"TransactionHashNumbers",
 }
+
+// Reth RocksDB tuning — mirrors reth's v2 history DB configuration
+// (commit 9cba8a1550): shared 128 MiB block cache with 16 KiB blocks,
+// shared 4 GiB write-buffer manager with a 128 MiB write buffer per CF,
+// LZ4 compression with Zstd at the bottommost level (compression
+// disabled for TransactionHashNumbers), dynamic-level compaction,
+// 6 background jobs, 512 open files, 1 MiB bytes-per-sync, and WAL
+// TTL / size limit both 0.
+const (
+	rocksBlockCacheBytes   = 128 << 20 // 128 MiB shared block cache
+	rocksBlockSizeBytes    = 16 << 10  // 16 KiB blocks
+	rocksWriteBufferTotal  = 4 << 30   // 4 GiB shared write-buffer manager
+	rocksWriteBufferPerCF  = 128 << 20 // 128 MiB write buffer per CF
+	rocksMaxBackgroundJobs = 6
+	rocksMaxOpenFiles      = 512
+	rocksBytesPerSync      = 1 << 20 // 1 MiB
+)
 
 // Envs holds the open MDBX env + named DBIs and the RocksDB env + CFs.
 // Caller must call Close() when done.
@@ -128,12 +150,20 @@ func OpenEnvs(dataDir string, freshDir bool) (*Envs, error) {
 		return nil, fmt.Errorf("mdbx.SetOption(OptMaxDB): %w", err)
 	}
 
-	// WriteMap + SafeNoSync mirror reth's own MDBX env (mdbx/mod.rs)
-	// for bulk-write throughput; durability is owed at Envs.Close via the
-	// explicit Sync. NoMemInit skips zero-fill on freshly-allocated pages
-	// (we overwrite them). LifoReclaim improves cache locality for
-	// sequential writes.
-	const envFlags = mdbx.WriteMap | mdbx.SafeNoSync | mdbx.NoMemInit | mdbx.LifoReclaim
+	if err := env.SetOption(mdbx.OptMaxReaders, mdbxMaxReaders); err != nil {
+		env.Close()
+		return nil, fmt.Errorf("mdbx.SetOption(OptMaxReaders): %w", err)
+	}
+
+	// WriteMap + NoReadahead mirror reth's own MDBX env (mdbx/mod.rs:
+	// writemap enabled, readahead disabled). SafeNoSync deviates from
+	// reth's durable sync mode on purpose: it is a write-path-only flag
+	// (not persisted in mdbx.dat) that buys bulk-write throughput, and
+	// durability is owed at Envs.Close via the explicit Sync — the
+	// artifact reth opens is byte-for-byte durable. NoMemInit skips
+	// zero-fill on freshly-allocated pages (we overwrite them).
+	// LifoReclaim improves cache locality for sequential writes.
+	const envFlags = mdbx.WriteMap | mdbx.NoReadahead | mdbx.SafeNoSync | mdbx.NoMemInit | mdbx.LifoReclaim
 	if err := env.Open(dbDir, envFlags, 0o644); err != nil {
 		env.Close()
 		return nil, fmt.Errorf("mdbx.Open(%s): %w", dbDir, err)
@@ -161,15 +191,46 @@ func OpenEnvs(dataDir string, freshDir bool) (*Envs, error) {
 	}
 
 	// --- RocksDB env with column families ---
+	// All C-allocated option objects below are released via defer after
+	// OpenDbColumnFamilies returns: the DB copies the options at open,
+	// and the shared block cache / write-buffer manager are shared_ptr-
+	// backed on the C++ side, so dropping our wrapper reference is safe
+	// while the DB holds its own.
+	blockCache := grocksdb.NewLRUCache(rocksBlockCacheBytes)
+	defer blockCache.Destroy()
+	writeBufferManager := grocksdb.NewWriteBufferManager(rocksWriteBufferTotal, false)
+	defer writeBufferManager.Destroy()
+
+	bbto := grocksdb.NewDefaultBlockBasedTableOptions()
+	defer bbto.Destroy()
+	bbto.SetBlockSize(rocksBlockSizeBytes)
+	bbto.SetBlockCache(blockCache)
+
 	rocksOpts := grocksdb.NewDefaultOptions()
-	defer rocksOpts.Destroy() // C-allocated; release after OpenDbColumnFamilies returns
+	defer rocksOpts.Destroy()
 	rocksOpts.SetCreateIfMissing(true)
 	rocksOpts.SetCreateIfMissingColumnFamilies(true)
+	rocksOpts.SetMaxBackgroundJobs(rocksMaxBackgroundJobs)
+	rocksOpts.SetMaxOpenFiles(rocksMaxOpenFiles)
+	rocksOpts.SetBytesPerSync(rocksBytesPerSync)
+	rocksOpts.SetWriteBufferManager(writeBufferManager)
+	rocksOpts.SetWALTtlSeconds(0)
+	rocksOpts.SetWalSizeLimitMb(0)
 
 	cfOpts := make([]*grocksdb.Options, len(rocksdbCFNames))
-	for i := range cfOpts {
-		cfOpts[i] = grocksdb.NewDefaultOptions()
-		defer cfOpts[i].Destroy()
+	for i, name := range rocksdbCFNames {
+		o := grocksdb.NewDefaultOptions()
+		defer o.Destroy()
+		o.SetBlockBasedTableFactory(bbto)
+		o.SetWriteBufferSize(rocksWriteBufferPerCF)
+		o.SetLevelCompactionDynamicLevelBytes(true)
+		if name == "TransactionHashNumbers" {
+			o.SetCompression(grocksdb.NoCompression)
+		} else {
+			o.SetCompression(grocksdb.LZ4Compression)
+			o.SetBottommostCompression(grocksdb.ZSTDCompression)
+		}
+		cfOpts[i] = o
 	}
 
 	rdb, cfs, err := grocksdb.OpenDbColumnFamilies(rocksOpts, rocksdbDir, rocksdbCFNames, cfOpts)

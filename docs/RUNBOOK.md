@@ -304,11 +304,13 @@ docker run --rm \
 
 **On-disk layout:**
 
-- `/data/` — single RocksDB instance with 20 column families (see `internal/ethrex/constants.go` for the full list)
-- `/data/metadata.json` — `{"schema_version": 2}`, required by ethrex `Store::new`
+- `/data/` — single RocksDB instance with 21 column families (see `internal/ethrex/constants.go` for the full list)
+- `/data/metadata.json` — `{"schema_version": 3}`, required by ethrex `Store::new`
 - `/data/ethrex-genesis.json` — full genesis JSON; pass via `--network` when booting
 
 **Boot path.** ethrex's `add_initial_state` short-circuits when `canonical_block_hashes[0]` already resolves to a matching genesis header hash — state-actor writes that row, so ethrex skips state-trie recomputation at boot. Required boot flags (validated by the e2e suite, Phase 4): `--network <ethrex-genesis.json>`, `--datadir <dir>`, `--skip-genesis-validation` (trust the written stateRoot rather than recompute from the empty-alloc sidecar; needs lambdaclass/ethrex#6783, in releases ≥ v16.0.0), and `--syncmode full`. The `--syncmode full` flag is mandatory for engine-driven block production: in the default snap mode ethrex's fork-choice handler returns `SYNCING` with a null `payloadId` for every `engine_forkchoiceUpdated`, so the mock CL can never obtain a payload to build. The pattern follows the besu/nethermind Engine API approach: boot the node, then drive blocks via `engine_forkchoiceUpdated` (ethrex also mandates an authrpc JWT, signed by the driver).
+
+**Memory at boot.** ethrex's shared RocksDB block cache defaults to 12 GiB and holds index + bloom-filter blocks. The cache fills lazily, but on a large DB a memory-capped container can be OOM-killed as it fills — cap it with `--rocksdb.block-cache-size <bytes>` on memory-constrained hosts. Boot-side knob only; no bearing on the bytes state-actor writes.
 
 **Verify.**
 
@@ -341,7 +343,7 @@ docker run --rm \
 - `/data/chaindata/` — a minimal MDBX (genesis header with a patched `stateRoot` + chain config); it stays minimal, the bloat does not live here
 - state-actor runs stock upstream erigon as a CLI (`erigon init`, then the daemon) — no upstream patch
 
-**Boot path.** Commitment continuability across genesis → first-live-block uses the "fat genesis" construction (`MaxTxNum[0]=StepSize-1` + a commitment anchor, see `client/erigon/genesis_patch.go` + `snapshot_cgo.go`) so the chain advances past block 2. erigon mandates an authrpc JWT (it has no `--authrpc.jwt-disabled` flag). Required boot flags (validated by the e2e suite): `--externalcl` (drive blocks via the engine API — v3.4.2's `--chain dev` is broken), `--snap.stop` + `--snap.state.stop` (don't gate boot on the snapshot stages), and `--authrpc.jwtsecret <file>`. The pattern follows the besu/nethermind Engine API approach: boot the node, then drive blocks via `engine_forkchoiceUpdated` (the driver signs the authrpc JWT).
+**Boot path.** Commitment continuability across genesis → first-live-block uses the "fat genesis" construction (`MaxTxNum[0]=StepSize-1`, mirrored in the genesis body's `TxCount` and `Sequence[EthTx]` so erigon ≥2e41aa8308's body-derived rebuild on `FCU(head=genesis)` reproduces it, plus a commitment anchor — see `client/erigon/genesis_patch.go` + `snapshot_cgo.go`) so the chain advances past block 2. erigon mandates an authrpc JWT (it has no `--authrpc.jwt-disabled` flag). Required boot flags (validated by the e2e suite): `--externalcl` (drive blocks via the engine API — v3.4.2's `--chain dev` is broken), `--snap.stop` + `--snap.state.stop` (don't gate boot on the snapshot stages), and `--authrpc.jwtsecret <file>`. The pattern follows the besu/nethermind Engine API approach: boot the node, then drive blocks via `engine_forkchoiceUpdated` (the driver signs the authrpc JWT).
 
 **Verify.**
 

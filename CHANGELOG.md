@@ -33,6 +33,30 @@
   no longer written.
 
 ### Changed
+- **ethrex tracking bumped v16.0.0 → v23.0.0.** Adds the `bad_blocks`
+  column family (21 CFs; upstream added it in v22.0.0, ethrex#6948 —
+  previously ethrex created it itself on first boot) and writes
+  `schema_version: 3` to `metadata.json` (ethrex's value since v16 —
+  writing 2 sent every first boot through the migration branch, which
+  also rewrites `metadata.json`, mutating the generated datadir). Boot
+  image and golden fixture repinned to 23.0.0; every state-bearing CF
+  is byte-identical to the v16 dump, so the state root and the Go
+  trie/code codecs are unaffected.
+- **Nethermind writer runs Nethermind's own RocksDB configuration.** All
+  8 databases (and every column family) now parse the verbatim DbConfig
+  option strings through RocksDB's own parser instead of hand-tuned
+  grocksdb defaults — bloom/ribbon filter policies, index types, block
+  sizes, compression now match what Nethermind itself writes. Transient
+  bulk-import tuning is layered on top and leaves no trace in the SSTs.
+  A new `TestNethOptionsPersisted` locks the composed options via each
+  DB's OPTIONS-* file.
+- **Geth writer mirrors geth's per-level Pebble options** (10-bit bloom
+  filters on L0–L5, none on L6, 2→128 MiB file-size ladder), locked to
+  the pinned go-ethereum by a new OPTIONS-file parity test. Effect is
+  config parity + upstream-drift detection: the shipped datadir's bulk
+  data still lands filter-less in L6 via the Close-time compaction,
+  matching a real synced geth node. The final compaction's error is no
+  longer swallowed on the success path.
 - **Pinned Nethermind image bumped 1.37.0 → 1.39.0.** The flat-DB backend and
   its startup `State backend: flat/patricia` detection log only exist in
   Nethermind ≥ 1.39.0. A new `neth.PinnedNethermindVersion` constant plus a
@@ -56,6 +80,15 @@
   duration and memory — the phases a SIGKILL would otherwise leave unrecorded.
 
 ### Fixed
+- **Erigon datadirs survive `FCU(head=genesis)` on erigon ≥ 2e41aa8308
+  (PR erigontech/erigon#22344; on `main` only, no release tag as of
+  v3.5.4).** That change rebuilds `MaxTxNum[0]` from the genesis body's
+  `TxCount` during the bootstrap FCU, clobbering the fat-genesis
+  `StepSize-1` and failing every FCU with `seems broken TxNums index not
+  filled`. `patchGenesisHeaderStateRoot` now fattens the genesis
+  `BodyForStorage.TxCount` to `StepSize` and bumps `Sequence[EthTx]` to
+  match, so any body-derived rebuild reproduces the fat value. Inert on
+  pre-22344 daemons. Erigon datadirs must be regenerated.
 - **`--client=ethrex` no longer OOM-kills on large `--target-size` runs
   (closes #116).** A 350 GB fill died at 51.3 GiB anon RSS on a 62 GiB host
   (kernel-confirmed OOM; 16 GiB of it transparent huge pages). Fixed on two

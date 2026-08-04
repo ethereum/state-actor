@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/cockroachdb/pebble"
+	"github.com/cockroachdb/pebble/bloom"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto"
@@ -71,7 +72,8 @@ const defaultFlushBytes = 64 * 1024 * 1024
 // behaviour from a fixed ~64 MiB byte-budget flush instead.
 //
 // The DB is opened with bulk-import-friendly defaults: large MemTable,
-// L0-compaction trigger raised, MaxConcurrentCompactions=4. WAL is kept
+// L0-compaction trigger raised, MaxConcurrentCompactions capped at 8.
+// WAL is kept
 // enabled for the production DB so a crash doesn't lose the post-import
 // metadata writes (Phase 1's scratch DB, opened separately in
 // state_writer.go, disables WAL — that's what the speed delta buys).
@@ -91,6 +93,45 @@ func NewWriter(dbPath string) (*Writer, error) {
 	return w, nil
 }
 
+// gethLevelOptions mirrors the per-level table-format options that
+// go-ethereum's ethdb/pebble.New configures (pinned go.mod version;
+// see TestPebbleLevelOptionsMatchGeth, which locks this against geth's
+// actual code):
+//
+//   - 10-bit bloom filters on L0–L5, deliberately NONE on the last
+//     level (geth: "Pebble doesn't use the Bloom filter at level6 for
+//     read efficiency").
+//   - TargetFileSize ladder 2 MiB → 128 MiB doubling per level (same
+//     ladder pebble's defaults extrapolate; the filters are the real
+//     delta).
+//
+// Honest scope note: the shipped datadir does NOT end up with bloom
+// filters. Close()'s full-keyspace compaction sends all bulk data
+// straight to L6 (pebble picks baseLevel=6 when L1–L6 are empty), and
+// L6 has no filter — exactly like a real long-synced geth node, whose
+// bulk state also sits filter-less in L6. The filters here cover only
+// the transient L0 tables that exist during generation, and geth's own
+// runtime writes get filters from geth's own options regardless. The
+// value of this mirror is parity + the drift-guard test, not filters
+// in the final artifact — do NOT "fix" this by adding an L6 filter;
+// that would make bench reads faster than a real node's.
+//
+// Runtime knobs (memtables, compaction triggers) are NOT mirrored —
+// those only shape behaviour while a process has the DB open, and our
+// bulk-import needs differ from geth's serving needs; see
+// prodPebbleOptions.
+func gethLevelOptions() []pebble.LevelOptions {
+	levels := make([]pebble.LevelOptions, 7)
+	for i := 0; i < 6; i++ {
+		levels[i] = pebble.LevelOptions{
+			TargetFileSize: (2 * 1024 * 1024) << i,
+			FilterPolicy:   bloom.FilterPolicy(10),
+		}
+	}
+	levels[6] = pebble.LevelOptions{TargetFileSize: 128 * 1024 * 1024}
+	return levels
+}
+
 // prodPebbleOptions returns pebble.Options tuned for state-actor's
 // one-shot bulk-import workload on the production geth DB. The DB is
 // write-only during generation (geth reads it only later, after the
@@ -100,15 +141,20 @@ func NewWriter(dbPath string) (*Writer, error) {
 // default L0 thresholds trigger ~6x throughput collapse mid-import
 // once L0 reaches 24 SSTs (writes stall waiting for compactors).
 //
+//   - Levels = gethLevelOptions() → level config matches what geth
+//     itself uses (see its honest-scope note); everything below this
+//     line is transient tuning.
 //   - L0CompactionThreshold = MaxInt32 → no auto-compaction kicks in.
 //   - L0StopWritesThreshold = MaxInt32 → no L0 stall on writes.
 //   - MemTableSize 256 MiB → fewer (and larger) L0 flushes.
-//   - MaxConcurrentCompactions = NumCPU → the final compact() at Close
-//     parallelises across all cores (it's the only compaction we run).
+//   - MaxConcurrentCompactions capped at 8 → parallelises the final
+//     compact() at Close (the only compaction we run) without the
+//     per-compactor RAM blowup NumCPU caused on the 96-core bench box.
 //   - WAL stays on for the post-import metadata writes (PathDB markers,
 //     genesis block) — those are tiny, no point disabling.
 func prodPebbleOptions() *pebble.Options {
 	return &pebble.Options{
+		Levels:                      gethLevelOptions(),
 		MemTableSize:                256 * 1024 * 1024,
 		MemTableStopWritesThreshold: 2,
 		L0CompactionThreshold:       math.MaxInt32,

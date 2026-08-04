@@ -2,7 +2,7 @@
 //
 // # On-disk layout
 //
-// A single RocksDB instance at <dbPath> with 20 column families (Tables in
+// A single RocksDB instance at <dbPath> with 21 column families (Tables in
 // internal/ethrex/constants.go), all declared at open time. CFs written at genesis:
 //   - account_trie_nodes / storage_trie_nodes: MPT structural + leaf-NODE-RLP rows
 //     (storage rows are address-prefixed)
@@ -13,7 +13,7 @@
 //   - headers / bodies / block_numbers / canonical_block_hashes: genesis block
 //     (canonical_block_hashes[0] is the boot gate)
 //
-// Sidecars next to the DB: metadata.json ({"schema_version": 2}, required by
+// Sidecars next to the DB: metadata.json ({"schema_version": 3}, required by
 // ethrex Store::new) and ethrex-genesis.json (for `--network`).
 //
 // # Flat-KV (snap-synced-state) layer
@@ -33,9 +33,9 @@
 // # Pinned releases
 //
 // Golden test: byte-exact vs testdata/genesis_dump.json, regenerated at ethrex
-// v16.0.0; the state-bearing CFs are byte-identical v13–v16. E2e boot test
-// (e2e_test.go) pins the same v16.0.0 image (first release with
-// --skip-genesis-validation, lambdaclass/ethrex#6783).
+// v23.0.0; the state-bearing CFs are byte-identical v13–v23. E2e boot test
+// (e2e_test.go) pins the same v23.0.0 image. --skip-genesis-validation, which
+// the boot path requires, landed in v16.0.0 (lambdaclass/ethrex#6783).
 //
 // # Build
 //
