@@ -57,6 +57,11 @@ func TestCFIndicesMatchNames(t *testing.T) {
 // Inspect OPTIONS rather than LOG: RocksDB deliberately stops dumping CF
 // options to LOG once the database reaches 10 CFs, while OPTIONS persists the
 // complete configuration for every CF.
+//
+// Match filter_policy=bloomfilter (not bloomfilter:10:false): grocksdb sets
+// filters through RocksDB's C API wrapper, whose GetId() returns only Name()
+// ("bloomfilter") and drops the bits-per-key suffix a native BloomFilterPolicy
+// would serialize.
 func TestEveryColumnFamilyHasBloomFilter(t *testing.T) {
 	datadir := t.TempDir()
 	db, err := openBesuDB(datadir)
@@ -82,8 +87,8 @@ func TestEveryColumnFamilyHasBloomFilter(t *testing.T) {
 	if got := bytes.Count(optionsData, []byte("[CFOptions \"")); got != want {
 		t.Fatalf("RocksDB OPTIONS has %d CF sections, want %d", got, want)
 	}
-	if got := bytes.Count(optionsData, []byte("filter_policy=bloomfilter:10:false")); got != want {
-		t.Fatalf("RocksDB OPTIONS has %d full Bloom-filter CFs, want %d", got, want)
+	if got := bytes.Count(optionsData, []byte("filter_policy=bloomfilter")); got != want {
+		t.Fatalf("RocksDB OPTIONS has %d Bloom-filter CFs, want %d", got, want)
 	}
 	if bytes.Contains(optionsData, []byte("filter_policy=nullptr")) {
 		t.Fatal("RocksDB OPTIONS contains a column family without a filter policy")
