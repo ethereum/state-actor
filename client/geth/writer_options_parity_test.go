@@ -27,6 +27,12 @@ import (
 // live in the [Options] section, which is deliberately NOT compared:
 // state-actor legitimately tunes those for one-shot bulk import, and
 // they leave no trace in the sstables geth later reads.
+//
+// Known blind spot: pebble serializes filter_policy by NAME only
+// ("rocksdb.BuiltinBloomFilter"), not bits-per-key — a geth change
+// from bloom.FilterPolicy(10) to another bit count would pass this
+// test. There is no observable place the bit count is recorded, so
+// that dimension can only be caught by reviewing geth bumps.
 func TestPebbleLevelOptionsMatchGeth(t *testing.T) {
 	gethDir := t.TempDir()
 	gdb, err := gethpebble.New(gethDir, 16, 16, "parity-test", false)
@@ -54,7 +60,9 @@ func TestPebbleLevelOptionsMatchGeth(t *testing.T) {
 }
 
 // levelSections returns the concatenated [Level "N"] sections of the
-// newest OPTIONS-* file in a Pebble DB directory.
+// newest OPTIONS-* file in a Pebble DB directory. Lexicographic sort
+// is enough to pick "newest" here: a freshly created DB has exactly
+// one OPTIONS file.
 func levelSections(t *testing.T, dir string) string {
 	t.Helper()
 	matches, err := filepath.Glob(filepath.Join(dir, "OPTIONS-*"))

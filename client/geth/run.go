@@ -48,10 +48,15 @@ func Populate(ctx context.Context, cfg generator.Config, opts Options) (*generat
 	if err != nil {
 		return nil, fmt.Errorf("client/geth.Populate: open writer: %w", err)
 	}
+	closed := false
 	defer func() {
-		// Best-effort close; primary errors are returned via the explicit
-		// path below.
-		_ = w.Close()
+		// Safety net for error returns only. The success path closes
+		// explicitly below: Close runs the final full-keyspace
+		// compaction, and a failure there must surface — otherwise a
+		// "successful" run hands geth an uncompacted, L0-shaped DB.
+		if !closed {
+			_ = w.Close()
+		}
 	}()
 
 	stateRoot, stats, err := writeStateAndCollectRoot(ctx, cfg, w)
@@ -83,5 +88,9 @@ func Populate(ctx context.Context, cfg generator.Config, opts Options) (*generat
 		return nil, fmt.Errorf("client/geth.Populate: write genesis json: %w", err)
 	}
 
+	closed = true
+	if err := w.Close(); err != nil {
+		return nil, fmt.Errorf("client/geth.Populate: close writer (final compaction): %w", err)
+	}
 	return stats, nil
 }
