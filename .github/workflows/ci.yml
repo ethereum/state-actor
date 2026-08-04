@@ -127,7 +127,7 @@ jobs:
             env-prefix: BESU
             test-tags: 'cgo_besu oracle'
             test-pkg: ./client/besu/
-            test-run-filter: 'TestE2ESuite|TestDifferentialOracle'
+            test-run-filter: 'TestE2ESuite|TestDifferentialOracle|TestCFIndicesMatchNames|TestEveryColumnFamilyHasBloomFilter'
           - client: nethermind
             dockerfile: Dockerfile.nethermind
             image-tag: state-actor-nethermind-builder:latest

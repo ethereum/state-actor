@@ -96,7 +96,7 @@ State Actor generates Ethereum state in three phases:
 │  │  Key: ethereum-config-...      Value: chain_config_json            │ │
 │  ├─────────────────────────────────────────────────────────────────────┤ │
 │  │  reth: MDBX state tables + RocksDB history + nippy-jar static_files│ │
-│  │  besu: single RocksDB w/ 8 Bonsai column families + chainspec.json │ │
+│  │  besu: single RocksDB w/ 17 Bonsai column families + chainspec.json│ │
 │  │  nethermind: 7 RocksDB + flat column DB + parity chainspec sidecar │ │
 │  │  ethrex: single RocksDB w/ 21 CFs + metadata.json + genesis sidecar│ │
 │  │  erigon: Erigon v3 flat .kv snapshots + minimal MDBX               │ │
@@ -220,7 +220,7 @@ configurable worker pool / batch size at the generator level.
   tables, with a per-batch `dirSize` sample driving the target-size
   early stop.
 - **besu** (`client/besu/state_writer_cgo.go:60-160`): cgo + librocksdb.
-  Single RocksDB with 8 Bonsai column families; per-entity raw-bytes
+  Single RocksDB with 17 Bonsai column families; per-entity raw-bytes
   accumulator drives the target-size stop.
 - **nethermind** (`client/nethermind/{run_cgo,entitygen_cgo}.go`): cgo
   + grocksdb. Seven RocksDB instances plus an eighth flat-state column DB
@@ -349,10 +349,9 @@ Today's client adapters:
   RocksDB history + nippy-jar `static_files/` segments + a reth-format
   `chainspec.json` sidecar. Behind the `cgo_reth` build tag.
 - `client/besu/` — cgo + librocksdb writer producing a single RocksDB
-  with 8 Bonsai column families (default + `BLOCKCHAIN` +
-  `ACCOUNT_INFO_STATE` + `CODE_STORAGE` + `ACCOUNT_STORAGE_STORAGE` +
-  `TRIE_BRANCH_STORAGE` + `TRIE_LOG_STORAGE` + `VARIABLES`) plus a
-  besu-format chainspec sidecar. Behind the `cgo_besu` build tag.
+  with all 17 Bonsai column families in Besu enum order, including the
+  legacy-privacy, backward-sync, snap-sync, and chain-pruner segments,
+  plus a besu-format chainspec sidecar. Behind the `cgo_besu` build tag.
 - `client/nethermind/` — cgo + grocksdb writer producing seven RocksDB
   instances (`state`, `code`, `blocks`, `headers`, `blockNumbers`,
   `blockInfos`, `receipts`) plus an eighth `flat` column DB (byte-mirrored in
