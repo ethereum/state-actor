@@ -17,6 +17,13 @@
   no longer written.
 
 ### Changed
+- **Geth writer mirrors geth's per-level Pebble options** (10-bit bloom
+  filters on L0–L5, none on L6, 2→128 MiB file-size ladder), locked to
+  the pinned go-ethereum by a new OPTIONS-file parity test. Effect is
+  config parity + upstream-drift detection: the shipped datadir's bulk
+  data still lands filter-less in L6 via the Close-time compaction,
+  matching a real synced geth node. The final compaction's error is no
+  longer swallowed on the success path.
 - **Pinned Nethermind image bumped 1.37.0 → 1.39.0.** The flat-DB backend and
   its startup `State backend: flat/patricia` detection log only exist in
   Nethermind ≥ 1.39.0. A new `neth.PinnedNethermindVersion` constant plus a
