@@ -10,13 +10,9 @@ import (
 	"testing"
 )
 
-// TestNethOptionsPersisted opens the full Nethermind DB set with the
-// composed option strings and asserts that the settings Nethermind will
-// rely on were actually recorded by RocksDB — i.e. that GetOptionsFromString
-// accepted and applied the verbatim DbConfig fragments. RocksDB writes the
-// effective (post-parse) configuration to each DB's OPTIONS-* file, per
-// column family, which is the same evidence a mainnet Nethermind LOG/OPTIONS
-// diff would use.
+// TestNethOptionsPersisted opens the full Nethermind DB set and asserts
+// the composed DbConfig strings were accepted and applied, via the
+// effective per-CF configuration RocksDB records in each OPTIONS-* file.
 func TestNethOptionsPersisted(t *testing.T) {
 	dir := t.TempDir()
 	dbs, err := openNethDBs(dir)
@@ -39,7 +35,6 @@ func TestNethOptionsPersisted(t *testing.T) {
 			{`[TableOptions/BlockBasedTable "default"]`, "index_type=kTwoLevelIndexSearch"},
 		},
 		dbNameCode: {
-			// "Bloom crash with kHashSearch index" — code must have NO filter.
 			{`[TableOptions/BlockBasedTable "default"]`, "filter_policy=nullptr"},
 			{`[TableOptions/BlockBasedTable "default"]`, "index_type=kHashSearch"},
 			{`[CFOptions "default"]`, "optimize_filters_for_hits=false"},
@@ -49,11 +44,9 @@ func TestNethOptionsPersisted(t *testing.T) {
 			{`[CFOptions "default"]`, "compaction_pri=kOldestLargestSeqFirst"},
 		},
 		dbNameFlat: {
-			// Account: uncompressed, 4K blocks, keeps last-level filters.
 			{`[CFOptions "Account"]`, "compression=kNoCompression"},
 			{`[CFOptions "Account"]`, "optimize_filters_for_hits=false"},
 			{`[TableOptions/BlockBasedTable "Account"]`, "block_size=4096"},
-			// Trie-node columns: dynamic level bytes back on.
 			{`[CFOptions "StateNodes"]`, "level_compaction_dynamic_level_bytes=true"},
 			{`[TableOptions/BlockBasedTable "Storage"]`, "block_size=8000"},
 			{`[TableOptions/BlockBasedTable "StateTopNodes"]`, "index_type=kBinarySearch"},
@@ -72,9 +65,8 @@ func TestNethOptionsPersisted(t *testing.T) {
 				t.Errorf("%s %s: missing %q", db, c.section, c.want)
 			}
 		}
-		// Filter policies: every state/flat table must have SOME filter
-		// (bloom on state, ribbon on flat) — the exact serialization of the
-		// policy name varies across RocksDB versions, so assert non-null.
+		// Every state/flat table must have SOME filter — the exact policy
+		// serialization varies across RocksDB versions, so assert non-null.
 		if db == dbNameState || db == dbNameFlat {
 			for name, body := range sections {
 				if !strings.HasPrefix(name, `[TableOptions/BlockBasedTable`) {

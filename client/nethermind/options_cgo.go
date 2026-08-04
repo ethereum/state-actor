@@ -16,31 +16,17 @@ import (
 // This file makes state-actor's Nethermind databases carry Nethermind's own
 // RocksDB configuration instead of grocksdb defaults.
 //
-// Nethermind configures every database (and every column family) by
-// concatenating RocksDB option STRINGS — a global default plus per-DB
-// overrides — and feeding the result through rocksdb_get_options_from_string
-// (DbOnTheRocks.BuildOptions). grocksdb exposes the same C entry point as
-// GetOptionsFromString, so instead of hand-porting each knob we execute
-// Nethermind's exact strings, copied verbatim below, and RocksDB's own
-// parser guarantees identical semantics.
+// Nethermind configures every database and column family by concatenating
+// RocksDB option strings — a global default plus per-DB/per-column
+// overrides, later fragments winning — and parsing the result with
+// rocksdb_get_options_from_string (DbOnTheRocks.BuildOptions). grocksdb
+// exposes the same C entry point, so the strings below are executed
+// verbatim and RocksDB's own parser guarantees identical semantics.
 //
-// String provenance: src/Nethermind/Nethermind.Db.Rocks/Config/DbConfig.cs
-// at commit 2706ce9e024a679c38c18a9329c7f9f4ba7282da (2026-07-31, tracking
-// 1.39-dev). Composition rule (PerTableDbConfig.ReadRocksdbOptions):
-// effective = RocksDbOptions + <Table>DbRocksDbOptions for plain DBs, and
-// RocksDbOptions + <Table>DbRocksDbOptions + <Table><Column>DbRocksDbOptions
-// for column DBs; later fragments win. Like Nethermind's
-// NormalizeRocksDbOptions, duplicated optimize_filters_for_hits entries are
-// collapsed to the last occurrence before parsing — RocksDB rejects that
-// specific key appearing twice in one string.
-//
-// The strings decide everything persisted in the SST files Nethermind will
-// later read: filter policies (bloomfilter:15 on state, ribbonfilter:10:3 on
-// the flat CFs, none on code), per-DB optimize_filters_for_hits (whether the
-// bottommost level keeps its filters), index types, block sizes, compression,
-// format_version, target file sizes. Transient bulk-import tuning is layered
-// on top afterwards via typed setters (applyBulkImportDeltas) and leaves no
-// trace in the generated files.
+// Provenance: src/Nethermind/Nethermind.Db.Rocks/Config/DbConfig.cs at
+// commit 2706ce9e02 (master, 2026-07-31). Byte-identical to the pinned
+// 1.39.0 release except ReceiptsBlocksDb, which gained two keys on master
+// — both overridden by applyBulkImportDeltas anyway.
 
 // nethDefaultOptions is DbConfig.RocksDbOptions — the base every DB inherits.
 const nethDefaultOptions = "min_write_buffer_number_to_merge=1;" +
@@ -202,8 +188,9 @@ var nethPerDBOptions = map[string]string{
 }
 
 // nethFlatCFOptions maps flat.Column ordinals to their column override
-// fragment. The "default" CF has no Flat<Column>Db entry in DbConfig and
-// inherits the FlatDb base unchanged.
+// fragment. The mandatory "default" CF is absent from Nethermind's
+// FlatDbColumns enum (RocksDbSharp seeds it with raw defaults there); we
+// give it the FlatDb base instead — equivalent for a CF that stays empty.
 var nethFlatCFOptions = map[flat.Column]string{
 	flat.ColMetadata:      nethFlatMetadataCFOptions,
 	flat.ColAccount:       nethFlatAccountCFOptions,
@@ -237,10 +224,9 @@ func normalizeOptimizeFiltersForHits(s string) string {
 	}
 }
 
-// nethOptions composes Nethermind's effective option string for one DB (or
-// one column family) — base + override fragments, later wins — parses it
-// with RocksDB's own parser, and layers state-actor's transient bulk-import
-// tuning on top. The caller owns the returned Options (Destroy after close).
+// nethOptions composes Nethermind's effective option string — base +
+// override fragments, later wins — parses it with RocksDB's parser, and
+// layers the bulk-import tuning on top. Caller owns the returned Options.
 func nethOptions(fragments ...string) (*grocksdb.Options, error) {
 	combined := normalizeOptimizeFiltersForHits(nethDefaultOptions + strings.Join(fragments, ""))
 
@@ -255,11 +241,8 @@ func nethOptions(fragments ...string) (*grocksdb.Options, error) {
 }
 
 // applyBulkImportDeltas overlays state-actor's one-shot import tuning on a
-// parsed Nethermind option bag. Everything here is runtime-only — memtable
-// sizing, compaction scheduling, WAL flushing — and changes nothing about
-// the SST format Nethermind later reads. The write path stays the same as
-// the previous bulkRocksOptions: no compactions during the import, one
-// CompactRange at Close.
+// parsed Nethermind option bag. Runtime-only knobs — nothing here changes
+// the SST format Nethermind later reads.
 func applyBulkImportDeltas(opts *grocksdb.Options) {
 	opts.SetCreateIfMissing(true)
 	opts.SetCreateIfMissingColumnFamilies(true)
@@ -268,11 +251,10 @@ func applyBulkImportDeltas(opts *grocksdb.Options) {
 	opts.SetLevel0FileNumCompactionTrigger(math.MaxInt32)
 	opts.SetLevel0SlowdownWritesTrigger(math.MaxInt32)
 	opts.SetLevel0StopWritesTrigger(math.MaxInt32)
-	// Nethermind flushes the flat DB's WAL manually from its persistence
-	// layer; state-actor has no equivalent, so let RocksDB manage the WAL.
+	// Reversals of Nethermind runtime behaviours we have no equivalent for:
+	// its persistence layer flushes the flat DB's WAL manually, and its
+	// parallel commit path wants unordered_write; ours does neither.
 	opts.SetManualWALFlush(false)
-	// Nethermind's state DB enables unordered_write for its parallel commit
-	// path; our writer relies on ordered batch semantics.
 	opts.SetUnorderedWrite(false)
 	parallelism := runtime.NumCPU()
 	if parallelism > bulkBackgroundJobs {
