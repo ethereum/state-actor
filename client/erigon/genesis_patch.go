@@ -44,7 +44,13 @@ const (
 	bucketLastHeader      = "LastHeader"
 	bucketConfig          = "Config"
 	bucketMaxTxNum        = "MaxTxNum"
+	bucketSequence        = "Sequence"
 )
+
+// keyEthTxSequence is the kv.Sequence key for the kv.EthTx txn-id
+// allocator — upstream's convention is the table's own name string
+// (kv.EthTx = "BlockTransaction", db/kv/tables.go).
+const keyEthTxSequence = "BlockTransaction"
 
 // openChaindataEnv opens the chaindata MDBX env at <dbPath>/chaindata
 // with the geometry erigon's compatibility check expects. Caller owns
@@ -100,7 +106,7 @@ func strictGet(txn *mdbx.Txn, dbi mdbx.DBI, key []byte, label string) ([]byte, e
 //  2. Header           [BE(0) || hash]    REKEY old->new + new RLP value
 //  3. HeaderNumber     [hash]             REKEY old->new (value BE(0) preserved)
 //  4. HeadersTotalDifficulty [BE(0) || hash] REKEY old->new (RLP TD preserved)
-//  5. BlockBody        [BE(0) || hash]    REKEY old->new (RLP body preserved)
+//  5. BlockBody        [BE(0) || hash]    REKEY old->new + TxCount 2 -> StepSize
 //  6. LastBlock        ["LastBlock"]      value: oldHash       -> newHash
 //  7. LastHeader       ["LastHeader"]     value: oldHash       -> newHash
 //  8. Config           [hash]             REKEY old->new (JSON chain.Config preserved)
@@ -108,7 +114,9 @@ func strictGet(txn *mdbx.Txn, dbi mdbx.DBI, key []byte, label string) ([]byte, e
 // MaxTxNum's keys are BE(blockNum) alone (no hash component), so the
 // Root patch doesn't invalidate them. We DO, however, overwrite
 // MaxTxNum[0] from 1 to StepSize-1 ("fat genesis", step 9 below) — see
-// the rationale on the step-9 write.
+// the rationale on the step-9 write. Steps 5 (TxCount) and 10
+// (Sequence[EthTx]) keep the fat genesis SELF-HEALING and the txn-id
+// space aligned with it — see those steps for the rationale.
 //
 // Required because `erigon init` writes block 0 with whatever Root its
 // empty genesis alloc produced. State-actor's snapshot writer then
@@ -124,10 +132,13 @@ func strictGet(txn *mdbx.Txn, dbi mdbx.DBI, key []byte, label string) ([]byte, e
 // resolves. engine_forkchoiceUpdated falls through to SYNCING and
 // the daemon never opens RoSnapshots.ready.
 //
-// Strict mode: returns a fatal error if any of the 8 tables is
-// missing its expected row. This catches upstream genesis-write-set
-// drift (a new Erigon pin removing or renaming a table) at the first
-// bench instead of silently producing a broken chaindata.
+// Strict mode: returns a fatal error if any of the touched tables is
+// missing its expected row, if the genesis body deviates from the
+// erigon-init shape (BaseTxnID=0, TxCount=2), or if Sequence[EthTx]
+// is absent. This catches upstream genesis-write-set drift (a new
+// Erigon pin removing or renaming a table, or changing the genesis
+// body/sequence conventions) at the first bench instead of silently
+// producing a broken chaindata.
 func patchGenesisHeaderStateRoot(dbPath string, root common.Hash) error {
 	env, err := openChaindataEnv(dbPath)
 	if err != nil {
@@ -237,15 +248,40 @@ func patchGenesisHeaderStateRoot(dbPath string, root common.Hash) error {
 			return fmt.Errorf("Put(%s, BE(0)||newHash): %w", bucketHeaderTD, err)
 		}
 
-		// 5. BlockBody — rekey (preserve RLP body value).
+		// 5. BlockBody — rekey + fatten TxCount from 2 to StepSize.
+		//
+		// Makes the fat genesis (step 9) SELF-HEALING. Since erigon
+		// 2e41aa8308 (PR #22344), an FCU(head=genesis) — benchmarkoor's
+		// bootstrap FCU, because our head IS block 0 — wipes MaxTxNum
+		// (TxNums.Truncate(tx, 0)) and rebuilds block 0's entry from
+		// THIS row via AppendCanonicalTxNums, a cumulative accumulator
+		// over body TxCounts (block 0 gets TxCount-1). Upstream's
+		// TxCount=2 rebuilt MaxTxNum[0]=1, clobbering step 9's
+		// StepSize-1 and failing the FCU with "seems broken TxNums
+		// index not filled" (the commitment anchor txNum=StepSize-1 no
+		// longer mapped to a block). TxCount=StepSize makes every
+		// body-derived rebuild — including the TxnumReader fallback
+		// BaseTxnID+TxCount-1 (block_reader.go) — reproduce StepSize-1.
+		// Invariant: MaxTxNum[0] == BaseTxnID + TxCount - 1 ==
+		// StepSize-1. Known trade-off: erigon's ForAmount is
+		// count-bounded, NOT key-bounded, so reading genesis WITH
+		// transactions (e.g. eth_getBlockByNumber(0, true)) over-reads
+		// into later blocks' txns once any exist; the gen->boot->bench
+		// flow never issues such reads (ReadBody itself only panics on
+		// TxCount < 2). Inert on pre-2e41aa8308 daemons, which never
+		// rebuild block 0's entry.
 		bodyVal, err := strictGet(txn, bodyDBI, oldHeadersKey, bucketBlockBody)
 		if err != nil {
 			return err
 		}
+		fatBodyVal, err := fattenGenesisBody(bodyVal)
+		if err != nil {
+			return fmt.Errorf("%s[BE(0)||oldHash]: %w", bucketBlockBody, err)
+		}
 		if err := txn.Del(bodyDBI, oldHeadersKey, nil); err != nil {
 			return fmt.Errorf("Del(%s, BE(0)||oldHash): %w", bucketBlockBody, err)
 		}
-		if err := txn.Put(bodyDBI, newHeadersKey, bodyVal, 0); err != nil {
+		if err := txn.Put(bodyDBI, newHeadersKey, fatBodyVal, 0); err != nil {
 			return fmt.Errorf("Put(%s, BE(0)||newHash): %w", bucketBlockBody, err)
 		}
 
@@ -287,10 +323,10 @@ func patchGenesisHeaderStateRoot(dbPath string, root common.Hash) error {
 		// frozen file iff lastTxNumOfStep(S) >= files.EndTxNum()=StepSize,
 		// i.e. S>=1) instead of being shadowed. This is the no-patch fix
 		// for the block-2 "wrong trie root" stall: keep the bloat in flat
-		// files, keep only the advancing commitment in MDBX. The genesis
-		// block body still has 0 real txs; only the txNum bookkeeping is
-		// inflated, which the daemon reads from MaxTxNum (MDBX) directly
-		// (block_reader.go:1523 tries MDBX before the snapshot body).
+		// files, keep only the advancing commitment in MDBX. Genesis
+		// still has 0 real txs in kv.EthTx; the txNum bookkeeping is
+		// inflated here, and since step 5 the body's claimed TxCount
+		// matches it.
 		// Survives daemon boot: WriteGenesisBlock's already-written branch
 		// (genesis_write.go:173-242) does NOT re-append TxNums.
 		maxTxNumDBI, err := txn.OpenDBI(bucketMaxTxNum, 0, nil, nil)
@@ -303,6 +339,64 @@ func patchGenesisHeaderStateRoot(dbPath string, root common.Hash) error {
 			return fmt.Errorf("Put(%s, BE(0)=StepSize-1): %w", bucketMaxTxNum, err)
 		}
 
+		// 10. Sequence[EthTx] — bump the txn-id allocator from 2 to
+		// StepSize so runtime blocks' BaseTxnID starts at StepSize,
+		// exactly where genesis's fattened claim (step 5) ends. This
+		// keeps the two number spaces aligned — block 1 starts at
+		// StepSize in the body txn-id space AND at MaxTxNum[0]+1 =
+		// StepSize in the txNum space — so cumulative and body-derived
+		// MaxTxNum rebuilds agree for every later block, and MDBX
+		// append-mode writes to kv.EthTx stay monotonic. Strict read
+		// first: erigon init's WriteBody -> IncrementSequence(kv.EthTx, 2)
+		// must have created the entry; its absence signals
+		// genesis-write-set drift.
+		seqDBI, err := txn.OpenDBI(bucketSequence, 0, nil, nil)
+		if err != nil {
+			return fmt.Errorf("OpenDBI(%s): %w", bucketSequence, err)
+		}
+		if _, err := strictGet(txn, seqDBI, []byte(keyEthTxSequence), bucketSequence); err != nil {
+			return err
+		}
+		fatSequence := make([]byte, 8)
+		binary.BigEndian.PutUint64(fatSequence, internalerigon.StepSize)
+		if err := txn.Put(seqDBI, []byte(keyEthTxSequence), fatSequence, 0); err != nil {
+			return fmt.Errorf("Put(%s, %q=StepSize): %w", bucketSequence, keyEthTxSequence, err)
+		}
+
 		return nil
 	})
+}
+
+// bodyForStoragePrefix mirrors the leading fields of upstream
+// types.BodyForStorage (execution/types/block.go): BaseTxnID uint64,
+// TxCount uint32. Tail round-trips whatever follows (Uncles,
+// Withdrawals, and any field upstream appends later — e.g.
+// BlockAccessList on EIP-7928 branches) byte-for-byte, so the patch
+// works against any BodyForStorage schema that keeps the two leading
+// fields.
+type bodyForStoragePrefix struct {
+	BaseTxnID uint64
+	TxCount   uint32
+	Tail      []rlp.RawValue `rlp:"tail"`
+}
+
+// fattenGenesisBody rewrites the genesis BodyForStorage's TxCount from
+// upstream's 2 (leading + trailing system txn, zero real txns) to
+// StepSize, preserving every other byte. Strict mode: any deviation
+// from the erigon-init genesis shape (BaseTxnID=0, TxCount=2) is a
+// fatal error signalling upstream genesis-write-set drift.
+func fattenGenesisBody(raw []byte) ([]byte, error) {
+	var body bodyForStoragePrefix
+	if err := rlp.DecodeBytes(raw, &body); err != nil {
+		return nil, fmt.Errorf("RLP decode block-0 BodyForStorage: %w", err)
+	}
+	if body.BaseTxnID != 0 || body.TxCount != 2 {
+		return nil, fmt.Errorf("block-0 BodyForStorage: BaseTxnID=%d TxCount=%d, want 0/2 (genesis-write set drift?)", body.BaseTxnID, body.TxCount)
+	}
+	body.TxCount = uint32(internalerigon.StepSize)
+	out, err := rlp.EncodeToBytes(&body)
+	if err != nil {
+		return nil, fmt.Errorf("RLP encode fattened block-0 BodyForStorage: %w", err)
+	}
+	return out, nil
 }

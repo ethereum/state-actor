@@ -40,6 +40,15 @@
   duration and memory — the phases a SIGKILL would otherwise leave unrecorded.
 
 ### Fixed
+- **Erigon datadirs survive `FCU(head=genesis)` on erigon ≥ 2e41aa8308
+  (PR erigontech/erigon#22344; on `main` only, no release tag as of
+  v3.5.4).** That change rebuilds `MaxTxNum[0]` from the genesis body's
+  `TxCount` during the bootstrap FCU, clobbering the fat-genesis
+  `StepSize-1` and failing every FCU with `seems broken TxNums index not
+  filled`. `patchGenesisHeaderStateRoot` now fattens the genesis
+  `BodyForStorage.TxCount` to `StepSize` and bumps `Sequence[EthTx]` to
+  match, so any body-derived rebuild reproduces the fat value. Inert on
+  pre-22344 daemons. Erigon datadirs must be regenerated.
 - **`--client=ethrex` no longer OOM-kills on large `--target-size` runs
   (closes #116).** A 350 GB fill died at 51.3 GiB anon RSS on a 62 GiB host
   (kernel-confirmed OOM; 16 GiB of it transparent huge pages). Fixed on two

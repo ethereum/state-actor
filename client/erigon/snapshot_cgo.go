@@ -31,12 +31,16 @@ import (
 // files if a commitment file with the EXACT same range exists.
 //
 // Continuability is the "fat genesis" construction (genesis_patch.go
-// step 9 + the KeyCommitmentState anchor below): MaxTxNum[0]=StepSize-1
-// makes genesis occupy the whole frozen step 0, so block 1 resumes at
-// step 1 and its MDBX commitment WINS the getLatestFromDb EndTxNum gate
-// instead of being shadowed by the frozen file (the block-2 "wrong trie
-// root" fix — proven on stock erigon, cross-client root match). The
-// bench daemon runs --snap.state.stop, freezing this layout.
+// steps 5/9/10 + the KeyCommitmentState anchor below):
+// MaxTxNum[0]=StepSize-1 makes genesis occupy the whole frozen step 0,
+// so block 1 resumes at step 1 and its MDBX commitment WINS the
+// getLatestFromDb EndTxNum gate instead of being shadowed by the frozen
+// file (the block-2 "wrong trie root" fix — proven on stock erigon,
+// cross-client root match). Steps 5+10 (genesis body TxCount=StepSize,
+// Sequence[EthTx]=StepSize) keep that value self-healing: erigon
+// ≥2e41aa8308 rebuilds MaxTxNum[0] from the genesis body's TxCount on
+// FCU(head=genesis). The bench daemon runs --snap.state.stop, freezing
+// this layout.
 var fullRange = snap.StepRange{From: 0, To: 1}
 
 // erigonWorkers is the size of the Phase 1 autofill encode-worker pool.
