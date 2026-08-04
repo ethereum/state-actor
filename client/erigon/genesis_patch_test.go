@@ -192,9 +192,34 @@ func TestPatchGenesisHeaderStateRoot_BodyDriftFails(t *testing.T) {
 	}
 }
 
+// TestFattenGenesisBody_GoldenBytes pins the exact wire bytes of the
+// shim against erigon's BodyForStorage codec — the whole patch hinges
+// on cross-codec byte compatibility, so the fixtures here are
+// hardcoded hex, NOT produced by the shim's own encoder. Covers both
+// the erigon-init genesis shape [0, 2, [], []] and the nil-Withdrawals
+// (pre-Shanghai) shape [0, 2, []], whose tail has one element.
+func TestFattenGenesisBody_GoldenBytes(t *testing.T) {
+	cases := []struct{ name, in, want string }{
+		{"uncles+withdrawals", "c48002c0c0", "c7808305f5e1c0c0"},
+		{"uncles-only", "c38002c0", "c6808305f5e1c0"},
+	}
+	for _, tc := range cases {
+		got, err := fattenGenesisBody(common.FromHex(tc.in))
+		if err != nil {
+			t.Errorf("%s: fattenGenesisBody(%s): %v", tc.name, tc.in, err)
+			continue
+		}
+		if !bytes.Equal(got, common.FromHex(tc.want)) {
+			t.Errorf("%s: got %x, want %s", tc.name, got, tc.want)
+		}
+	}
+}
+
 // TestPatchGenesisHeaderStateRoot_MissingSequenceFails asserts strict
 // mode on the txn-id allocator: erigon init must have written
-// Sequence[EthTx]; its absence signals genesis-write-set drift.
+// Sequence[EthTx]; a missing entry (bucket present, key absent — the
+// realistic drift shape, exercising strictGet) signals
+// genesis-write-set drift.
 func TestPatchGenesisHeaderStateRoot_MissingSequenceFails(t *testing.T) {
 	goodBody := mustRLP(t, &bodyForStoragePrefix{
 		BaseTxnID: 0,
@@ -211,8 +236,8 @@ func TestPatchGenesisHeaderStateRoot_MissingSequenceFails(t *testing.T) {
 }
 
 // runPatchOnFixture populates a complete erigon-init-shaped fixture
-// (optionally without the Sequence row), runs the patch, and returns
-// its error.
+// (optionally without the Sequence[EthTx] row), runs the patch, and
+// returns its error.
 func runPatchOnFixture(t *testing.T, bodyVal []byte, withSequence bool) error {
 	t.Helper()
 	dbPath := t.TempDir()
@@ -249,6 +274,11 @@ func runPatchOnFixture(t *testing.T, bodyVal []byte, withSequence bool) error {
 	}
 	if withSequence {
 		rows = append(rows, bucketRow{bucketSequence, []byte(keyEthTxSequence), initSequence})
+	} else {
+		// Bucket exists but the EthTx key is absent: exercises the
+		// strictGet path (the realistic genesis-write-set drift),
+		// not the coarser OpenDBI bucket-missing error.
+		rows = append(rows, bucketRow{bucketSequence, []byte("unrelated-key"), initSequence})
 	}
 	mustSetup(t, dbPath, func(txn *mdbx.Txn) error {
 		return setupFixtures(txn, rows)
