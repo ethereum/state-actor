@@ -210,23 +210,91 @@ func TestEncodeStorageValue(t *testing.T) {
 // code.go golden checks
 // ---------------------------------------------------------------------------
 
-func TestComputeJumpTargets(t *testing.T) {
-	// 0x60015b00: PUSH1 0x01 (skips byte 1), JUMPDEST at 2, STOP at 3.
-	got := ComputeJumpTargets(hexBytes("60015b00"))
-	if len(got) != 1 || got[0] != 2 {
-		t.Errorf("ComputeJumpTargets(60015b00): got %v, want [2]", got)
+func TestComputeJumpdestBitmap(t *testing.T) {
+	tests := []struct {
+		name string
+		code string
+		want string // hex of the bitmap, "" for zero-length
+	}{
+		// PUSH1 0x01 (skips byte 1), JUMPDEST at 2, STOP at 3.
+		// Bit 2 of byte 0 → 1<<2 = 0x04.
+		{"jumpdest at offset 2", "60015b00", "04"},
+		// PUSH1 0x01, PUSH1 0x01, SSTORE, STOP — no JUMPDEST, so zero-length
+		// rather than a single all-zero byte.
+		{"no jumpdest", "600160015500", ""},
+		{"empty code", "", ""},
+		// Two destinations in the same byte: offsets 1 and 3 → 0x02|0x08 = 0x0a.
+		{"two in one byte", "005b005b", "0a"},
+		// The byte after PUSH1 is its immediate, so only offset 2 counts.
+		{"push immediate is not a destination", "605b5b", "04"},
+		// Offset 7 sets the high bit, which matters because the resulting
+		// bitmap byte (0x80) is no longer a self-encoding single RLP byte.
+		{"high bit of the first byte", "000000000000005b", "80"},
+		// Crossing a byte boundary: offsets 0 and 10 → byte 0 bit 0, byte 1 bit 2.
+		{"spans two bitmap bytes", "5b0000000000000000005b000000", "0104"},
+	}
+	for _, tc := range tests {
+		var code []byte
+		if tc.code != "" {
+			code = hexBytes(tc.code)
+		}
+		got := ComputeJumpdestBitmap(code)
+		var want []byte
+		if tc.want != "" {
+			want = hexBytes(tc.want)
+		}
+		if string(got) != string(want) {
+			t.Errorf("ComputeJumpdestBitmap(%s) [%s]: got %x, want %x",
+				tc.code, tc.name, got, want)
+		}
+	}
+}
+
+// TestJumpdestBitmapMatchesScan cross-checks the bitmap against an independent
+// scan of the same bytecode, bit by bit, the way ethrex's is_valid_jumpdest
+// reads it: bit (offset%8) of byte (offset/8), with a missing byte meaning "no
+// jump destination".
+func TestJumpdestBitmapMatchesScan(t *testing.T) {
+	// A JUMPDEST sea with PUSH runs threaded through it, so PUSH-immediate
+	// suppression and byte-boundary crossings both occur many times.
+	code := make([]byte, 0, 512)
+	for i := 0; i < 64; i++ {
+		code = append(code, 0x5B, 0x5B, 0x60, 0x5B, 0x5B, 0x7F)
+		code = append(code, make([]byte, 31)...) // PUSH32 immediate
 	}
 
-	// 0x600160015500: PUSH1 0x01, PUSH1 0x01, SSTORE 0x55, STOP — no JUMPDEST.
-	got2 := ComputeJumpTargets(hexBytes("600160015500"))
-	if len(got2) != 0 {
-		t.Errorf("ComputeJumpTargets(600160015500): got %v, want []", got2)
+	bitmap := ComputeJumpdestBitmap(code)
+
+	isSet := func(offset int) bool {
+		b := offset / 8
+		if b >= len(bitmap) {
+			return false
+		}
+		return bitmap[b]&(1<<(offset%8)) != 0
 	}
 
-	// Empty code.
-	got3 := ComputeJumpTargets(nil)
-	if len(got3) != 0 {
-		t.Errorf("ComputeJumpTargets(nil): got %v, want []", got3)
+	// Independent scan: walk the bytecode skipping PUSH immediates.
+	want := make(map[int]bool)
+	for i := 0; i < len(code); {
+		switch op := code[i]; {
+		case op == 0x5B:
+			want[i] = true
+			i++
+		case op >= 0x60 && op <= 0x7F:
+			i += int(op-0x5F) + 1
+		default:
+			i++
+		}
+	}
+
+	for offset := range code {
+		if isSet(offset) != want[offset] {
+			t.Fatalf("offset %d: bitmap says %v, scan says %v",
+				offset, isSet(offset), want[offset])
+		}
+	}
+	if got, wantLen := len(bitmap), (len(code)+7)/8; got != wantLen {
+		t.Errorf("bitmap length: got %d, want %d", got, wantLen)
 	}
 }
 
@@ -235,9 +303,15 @@ func TestEncodeCode(t *testing.T) {
 		code string
 		want string
 	}{
-		{"60015b00", "8460015b00c102"},
-		{"600160015500", "86600160015500c0"},
-		{"", "80c0"},
+		// RLP(bytecode) ++ RLP(bitmap). 0x04 is a self-encoding single byte.
+		{"60015b00", "8460015b0004"},
+		// Zero-length bitmap encodes as the RLP empty string, 0x80.
+		{"600160015500", "8660016001550080"},
+		{"", "8080"},
+		// A 0x80 bitmap byte needs the 0x81 length prefix, unlike 0x04 above.
+		{"000000000000005b", "88000000000000005b8180"},
+		// A 14-byte code needs a 2-byte bitmap, encoded as the short string 0x82.
+		{"5b0000000000000000005b000000", "8e5b0000000000000000005b000000820104"},
 	}
 	for _, tc := range tests {
 		var code []byte

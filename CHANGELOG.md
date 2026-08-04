@@ -17,6 +17,11 @@
   no longer written.
 
 ### Changed
+- **ethrex `account_codes` values carry a JUMPDEST bitmap** rather than an
+  RLP list of u32 offsets (ethrex#7095). Also adds the `state_history`
+  column family (22 CFs) and mirrors ethrex's table options for both code
+  CFs, and writes `schema_version: 4`. Boot image and golden fixture
+  repinned to ethrex commit 80bcc71.
 - **ethrex tracking bumped v16.0.0 → v23.0.0.** Adds the `bad_blocks`
   column family (21 CFs; upstream added it in v22.0.0, ethrex#6948 —
   previously ethrex created it itself on first boot) and writes

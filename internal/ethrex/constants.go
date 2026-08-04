@@ -1,7 +1,7 @@
 package ethrex
 
 // Column-family names for ethrex's single RocksDB instance.
-// Sourced from ethrex crates/storage/api/tables.rs at v23.0.0.
+// Sourced from ethrex crates/storage/api/tables.rs at commit 80bcc71.
 const (
 	CFChainData            = "chain_data"
 	CFAccountCodes         = "account_codes"
@@ -23,10 +23,11 @@ const (
 	CFMiscValues           = "misc_values"
 	CFExecutionWitnesses   = "execution_witnesses"
 	CFBlockAccessLists     = "block_access_lists"
+	CFStateHistory         = "state_history"
 	CFBadBlocks            = "bad_blocks"
 )
 
-// Tables is the ordered list of all 21 ethrex column families, matching
+// Tables is the ordered list of all 22 ethrex column families, matching
 // ethrex's TABLES array. It must not run ahead of the boot pin in
 // client/ethrex/e2e_test.go: ethrex silently drops any CF absent from
 // its own TABLES (drop_obsolete_cfs, warn-only).
@@ -51,6 +52,7 @@ var Tables = []string{
 	CFMiscValues,
 	CFExecutionWitnesses,
 	CFBlockAccessLists,
+	CFStateHistory,
 	CFBadBlocks,
 }
 
@@ -76,7 +78,7 @@ const EmptyTrieHashHex = "0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc00162
 // StoreSchemaVersion must equal ethrex's STORE_SCHEMA_VERSION
 // (crates/storage/lib.rs): lower triggers boot-time migration (which
 // rewrites metadata.json); higher is a hard MigrationFailed boot error.
-const StoreSchemaVersion = 3
+const StoreSchemaVersion = 4
 
 // misc_values keys/values controlling ethrex's flat-key-value (FKV) generator.
 // On boot the generator reads misc_values["last_written"]: empty = "not

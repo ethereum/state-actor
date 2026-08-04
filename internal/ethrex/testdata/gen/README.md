@@ -5,26 +5,42 @@
 column family as hex-encoded JSON. It must be regenerated whenever the ethrex
 storage schema changes.
 
-## Pinned release
+## Pinned commit
 
 ```
-lambdaclass/ethrex @ v23.0.0
+lambdaclass/ethrex @ 80bcc71
 ```
 
-This is the same pin as the e2e boot image (`client/ethrex/e2e_test.go`) and as
-the column-family list in `internal/ethrex/constants.go`. All three move
-together.
+A pre-release commit, not a tagged release: it is what the ethpandaops
+`glamsterdam-devnet-7` image was built from, and no release carries the changes
+below. The branch is not a descendant of v23.0.0; it diverges by a single
+commit, `chore: bump version to 23.0.0`, which touches only Cargo manifests, so
+it reports `v22.0.0` in `--version` while carrying strictly more storage code
+than v23.0.0. This is the same pin as the e2e boot image
+(`client/ethrex/e2e_test.go`) and as the column-family list in
+`internal/ethrex/constants.go`. All three move together.
 
-The state-bearing CFs (`account_trie_nodes`, `storage_trie_nodes`,
-`account_codes`, `account_code_metadata`) are byte-identical from v13.0.0
-(commit 318ec2888) through v23.0.0, each step verified by regenerating and
-diffing against the previous dump. Across that range only two things moved:
-`chain_data[0x80]` gained fork fields (`hegotaTime`, introduced upstream in
-v21.0.0 via ethrex#6326), and the `bad_blocks` column family arrived in
-v22.0.0 (ethrex#6948, empty at genesis). `STORE_SCHEMA_VERSION` reached 3 at
-v16 and has not moved since.
+`account_trie_nodes` and `storage_trie_nodes` are byte-identical from v13.0.0
+(commit 318ec2888) through this commit, each step verified by regenerating and
+diffing against the previous dump. What moved:
 
-Any ethrex release that bumps `STORE_SCHEMA_VERSION`, adds or removes a column
+- `chain_data[0x80]` gained fork fields (`hegotaTime`, upstream in v21.0.0 via
+  ethrex#6326).
+- `bad_blocks` arrived in v22.0.0 (ethrex#6948, empty at genesis).
+- `state_history` exists only on this branch, not in any release (v23.0.0 has
+  21 CFs). Empty at genesis.
+- `account_codes` values carry a JUMPDEST bitmap rather than an RLP list of u32
+  offsets (ethrex#7095). ethrex still reads the older form — `decode_jumpdests`
+  branches on the RLP item header and rebuilds the bitmap from the bytecode when
+  it finds a list — so this is a size and representativeness change, not a
+  compatibility break.
+
+`STORE_SCHEMA_VERSION` is 4 at this commit (ethrex#7095, gated by a no-op
+`migrate_3_to_4`), so `metadata.json` says 4. It must never run ahead of the
+pinned build: a value above ethrex's own is a hard `MigrationFailed` boot
+error.
+
+Any ethrex build that bumps `STORE_SCHEMA_VERSION`, adds or removes a column
 family, or changes the key layout of `account_trie_nodes`,
 `storage_trie_nodes`, `account_codes`, or `account_code_metadata` requires
 regenerating the dump and re-reviewing the Go codec in `internal/ethrex/`.
@@ -39,7 +55,7 @@ list, so `Tables` must never run ahead of this pin.
    ```sh
    git clone https://github.com/lambdaclass/ethrex
    cd ethrex
-   git checkout v23.0.0
+   git checkout 80bcc71
    ```
 
 2. Copy the dump harness into ethrex's examples directory:

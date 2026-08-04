@@ -32,7 +32,7 @@ const GenesisFileName = "ethrex-genesis.json"
 // MetadataFileName is the on-disk filename of the schema metadata file.
 const MetadataFileName = "metadata.json"
 
-// WriteStoreMetadata writes {"schema_version": 3} to <dbPath>/metadata.json.
+// WriteStoreMetadata writes {"schema_version": 4} to <dbPath>/metadata.json.
 // This file is REQUIRED by ethrex's Store::new: when the datadir is non-empty
 // but has no metadata.json, ethrex returns NotFoundDBVersion and refuses to
 // boot. state-actor must write it because it pre-fills the dir with SST files.

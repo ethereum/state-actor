@@ -27,14 +27,22 @@ import (
 )
 
 // pinnedEthrexImage is the upstream ethrex Docker image the e2e suite pins
-// against, digest-pinned for reproducibility. Override with
-// ETHREX_IMAGE=ghcr.io/lambdaclass/ethrex:<tag> to test a specific release.
+// against, digest-pinned for reproducibility. Override with ETHREX_IMAGE=<ref>
+// to test a specific build.
 //
-// Official release v23.0.0 (ghcr tag 23.0.0, published 2026-07-27). Boot
-// requires --skip-genesis-validation (lambdaclass/ethrex#6783, ≥v16.0.0).
-// This pin is also the source of internal/ethrex's Tables and of
-// testdata/genesis_dump.json; move all three together.
-const pinnedEthrexImage = "ghcr.io/lambdaclass/ethrex:23.0.0@sha256:1cbf2c4b498efcc71dc776a130cf5eed3f15d100896a18f05b6fa426ff0e7fc5"
+// ethpandaops glamsterdam-devnet-7, ethrex commit 80bcc71 — a pre-release
+// build, not a tagged release, because no release carries the three things
+// state-actor has to match here: account_codes values carry a JUMPDEST bitmap
+// instead of an RLP list of u32 offsets, STORE_SCHEMA_VERSION is 4 (both
+// lambdaclass/ethrex#7095), and TABLES gained state_history. The branch is not
+// a descendant of v23.0.0 — it diverges by the version-bump commit alone, so it
+// reports v22.0.0 while carrying strictly more storage code. Boot requires
+// --skip-genesis-validation (lambdaclass/ethrex#6783, ≥v16.0.0).
+//
+// This pin is also the source of internal/ethrex's Tables and StoreSchemaVersion
+// and of testdata/genesis_dump.json; move them together. Repin to a release tag
+// once one carries all three.
+const pinnedEthrexImage = "ethpandaops/ethrex:glamsterdam-devnet-7@sha256:edae9e568868f58ed6826bde99480ca22a64b5f7674de7a3e522c83de13487ed"
 
 func ethrexImageRef() string {
 	if v := os.Getenv("ETHREX_IMAGE"); v != "" {
