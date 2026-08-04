@@ -25,17 +25,19 @@ change to the constant.
 
 ## Realized/target factors (measured, seed 42, autofill shape 20/10/70)
 
-| client | factor | provenance |
-|---|---|---|
-| ethrex | **≈1.82×** | measured: 40 GB→73 GiB, 150 GB→273 GiB (bloatnet host, 2026-08) |
-| geth | TBM | to be measured by the cross-client 40 GB comparison run |
-| besu | TBM | 〃 |
-| nethermind | TBM | 〃 |
-| reth | TBM | 〃 |
-| erigon | TBM | 〃 |
+| client | factor | wall @40 GB | provenance |
+|---|---|---|---|
+| ethrex | **≈1.82×** (73 G) | **13.5 min** | measured 2026-08 (bloatnet host, seed 42); 150 GB→273 GiB confirms scale-invariance |
+| nethermind | ≈1.37× (55 G) | 29.8 min | same run set |
+| geth | ≈1.47× (59 G) | 31.3 min | same run set |
+| besu | ≈1.42× (57 G) | 53.0 min | same run set |
+| reth | TBM | TBM | needs the same 40 GB protocol |
+| erigon | TBM | TBM | 〃 |
 
-TBM entries are filled by the standing measurement protocol: same host, same
-seed, `--target-size=40GB` per client, record `du -sh` of the produced datadir.
+All four measured runs produced the identical genesis state root
+(0xa7bcafd7…5e11ac38) — the cross-client invariant holding on one host.
+TBM entries follow the standing protocol: same host, same seed,
+`--target-size=40GB`, record wall + `du -sh` of the produced datadir.
 
 ## Where ethrex's 1.82× comes from (byte model, reproduces measurement to ~8%)
 
