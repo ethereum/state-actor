@@ -11,42 +11,20 @@ storage schema changes.
 lambdaclass/ethrex @ 80bcc71
 ```
 
-A pre-release commit, not a tagged release: it is what the ethpandaops
-`glamsterdam-devnet-7` image was built from, and no release carries the changes
-below. The branch is not a descendant of v23.0.0; it diverges by a single
-commit, `chore: bump version to 23.0.0`, which touches only Cargo manifests, so
-it reports `v22.0.0` in `--version` while carrying strictly more storage code
-than v23.0.0. This is the same pin as the e2e boot image
-(`client/ethrex/e2e_test.go`) and as the column-family list in
-`internal/ethrex/constants.go`. All three move together.
+A pre-release commit, the one the ethpandaops `glamsterdam-devnet-7` image was
+built from. `--version` reports `v22.0.0` here: the branch does not descend from
+the v23.0.0 version bump, though its storage code is ahead of it. Don't take the
+version string as a sign the pin is wrong.
 
-`account_trie_nodes` and `storage_trie_nodes` are byte-identical from v13.0.0
-(commit 318ec2888) through this commit, each step verified by regenerating and
-diffing against the previous dump. What moved:
+The e2e boot image (`client/ethrex/e2e_test.go`) and `Tables`
+(`internal/ethrex/constants.go`) carry the same pin, and all three move
+together. `Tables` must never list a CF the pinned build lacks; ethrex's
+`drop_obsolete_cfs` drops any CF missing from its own `TABLES`.
 
-- `chain_data[0x80]` gained fork fields (`hegotaTime`, upstream in v21.0.0 via
-  ethrex#6326).
-- `bad_blocks` arrived in v22.0.0 (ethrex#6948, empty at genesis).
-- `state_history` exists only on this branch, not in any release (v23.0.0 has
-  21 CFs). Empty at genesis.
-- `account_codes` values carry a JUMPDEST bitmap rather than an RLP list of u32
-  offsets (ethrex#7095). ethrex still reads the older form — `decode_jumpdests`
-  branches on the RLP item header and rebuilds the bitmap from the bytecode when
-  it finds a list — so this is a size and representativeness change, not a
-  compatibility break.
-
-`STORE_SCHEMA_VERSION` is 4 at this commit (ethrex#7095, gated by a no-op
-`migrate_3_to_4`), so `metadata.json` says 4. It must never run ahead of the
-pinned build: a value above ethrex's own is a hard `MigrationFailed` boot
-error.
-
-Any ethrex build that bumps `STORE_SCHEMA_VERSION`, adds or removes a column
-family, or changes the key layout of `account_trie_nodes`,
-`storage_trie_nodes`, `account_codes`, or `account_code_metadata` requires
-regenerating the dump and re-reviewing the Go codec in `internal/ethrex/`.
-A CF added upstream must also be added to `Tables`; ethrex's
-`drop_obsolete_cfs` deletes any CF it finds that its own `TABLES` does not
-list, so `Tables` must never run ahead of this pin.
+Regenerate when a new pin bumps `STORE_SCHEMA_VERSION`, adds or removes a column
+family, or changes the key layout of `account_trie_nodes`, `storage_trie_nodes`,
+`account_codes`, or `account_code_metadata`. Re-review the codec in
+`internal/ethrex/` in the same commit.
 
 ## Steps
 
@@ -97,4 +75,3 @@ list, so `Tables` must never run ahead of this pin.
   let the background FKV generator thread exit cleanly. Do not remove that sleep.
 - `genesis.json` sets chainId 1337 with one EOA, one storage contract (3 slots),
   and one JUMPDEST contract. Changing `genesis.json` also invalidates the dump.
-- This approach mirrors the regeneration note in `internal/reth/doc.go`.
