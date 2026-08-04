@@ -42,6 +42,9 @@ const (
 // which case-maps "Default" → "default" at open time.
 var receiptsCFNames = []string{"default", "Transactions", "Blocks"}
 
+// receiptsBlocksCFIndex is the "Blocks" position in receiptsCFNames.
+const receiptsBlocksCFIndex = 2
+
 // nethDBs holds the open grocksdb handles state-actor writes during a
 // Nethermind genesis emission. Caller closes via Close() when done.
 type nethDBs struct {
@@ -137,7 +140,11 @@ func openNethDBs(dataDir string) (*nethDBs, error) {
 	// plus bulk-import tuning (see options_cgo.go).
 	open := func(name string) (*grocksdb.DB, error) {
 		path := filepath.Join(dbRoot, name)
-		opts, err := nethOptions(nethPerDBOptions[name])
+		fragment, ok := nethPerDBOptions[name]
+		if !ok {
+			return nil, fmt.Errorf("no Nethermind option fragment for db %q", name)
+		}
+		opts, err := nethOptions(fragment)
 		if err != nil {
 			return nil, fmt.Errorf("compose %s db options: %w", name, err)
 		}
@@ -189,7 +196,7 @@ func openNethDBs(dataDir string) (*nethDBs, error) {
 	cfOpts := make([]*grocksdb.Options, len(receiptsCFNames))
 	for i := range cfOpts {
 		fragments := []string{nethReceiptsOptions}
-		if receiptsCFNames[i] == "Blocks" {
+		if i == receiptsBlocksCFIndex {
 			fragments = append(fragments, nethReceiptsBlocksCFOptions)
 		}
 		cfOpts[i], err = nethOptions(fragments...)
@@ -209,7 +216,7 @@ func openNethDBs(dataDir string) (*nethDBs, error) {
 	}
 	dbs.receipts = receiptsDB
 	dbs.receiptsCFs = cfHandles
-	dbs.receiptsBlocksCF = cfHandles[2] // index 2 = "Blocks" per receiptsCFNames
+	dbs.receiptsBlocksCF = cfHandles[receiptsBlocksCFIndex]
 
 	// Flat-state column DB: one RocksDB with 8 CFs (default + the 7
 	// flat.ColumnNames), same multi-CF open pattern as receipts. Opened last so

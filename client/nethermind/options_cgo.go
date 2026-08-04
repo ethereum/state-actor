@@ -67,6 +67,10 @@ const (
 		"ttl=0;" +
 		"periodic_compaction_seconds=0;"
 
+	// filter_policy=null is not a value RocksDB recognizes ("nullptr" is);
+	// it only yields no-filter because unsupported values are silently
+	// dropped (ignore_unsupported_options) — typos in these strings fail
+	// the same silent way.
 	nethCodeOptions = "write_buffer_size=16000000;" +
 		"block_based_table_factory.block_cache=16000000;" +
 		"optimize_filters_for_hits=false;" +

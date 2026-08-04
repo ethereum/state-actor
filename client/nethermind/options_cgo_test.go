@@ -61,7 +61,9 @@ func TestNethOptionsPersisted(t *testing.T) {
 				t.Errorf("%s: OPTIONS file has no section %s (have: %v)", db, c.section, sectionNames(sections))
 				continue
 			}
-			if !strings.Contains(body, c.want+"\n") && !strings.HasSuffix(body, c.want) {
+			// Full-line match: a substring check would let e.g.
+			// metadata_block_size=4096 satisfy a block_size=4096 case.
+			if !strings.Contains("\n"+body, "\n"+c.want+"\n") {
 				t.Errorf("%s %s: missing %q", db, c.section, c.want)
 			}
 		}
