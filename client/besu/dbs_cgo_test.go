@@ -53,6 +53,10 @@ func TestCFIndicesMatchNames(t *testing.T) {
 // NativeFilterPolicy across CF table options. SetFilterPolicy moves the native
 // policy, so reuse silently configures only the first CF and leaves the rest
 // with filter_policy=nullptr.
+//
+// Inspect OPTIONS rather than LOG: RocksDB deliberately stops dumping CF
+// options to LOG once the database reaches 10 CFs, while OPTIONS persists the
+// complete configuration for every CF.
 func TestEveryColumnFamilyHasBloomFilter(t *testing.T) {
 	datadir := t.TempDir()
 	db, err := openBesuDB(datadir)
@@ -61,16 +65,27 @@ func TestEveryColumnFamilyHasBloomFilter(t *testing.T) {
 	}
 	db.Close()
 
-	logData, err := os.ReadFile(filepath.Join(datadir, "database", "LOG"))
+	optionFiles, err := filepath.Glob(filepath.Join(datadir, "database", "OPTIONS-*"))
 	if err != nil {
-		t.Fatalf("read RocksDB LOG: %v", err)
+		t.Fatalf("glob RocksDB OPTIONS files: %v", err)
+	}
+	if len(optionFiles) == 0 {
+		t.Fatal("RocksDB did not create an OPTIONS file")
+	}
+
+	optionsData, err := os.ReadFile(optionFiles[len(optionFiles)-1])
+	if err != nil {
+		t.Fatalf("read latest RocksDB OPTIONS file: %v", err)
 	}
 
 	want := len(keys.BonsaiCFNames())
-	if got := bytes.Count(logData, []byte("filter_policy: bloomfilter")); got != want {
-		t.Fatalf("RocksDB LOG has %d Bloom-filter CFs, want %d", got, want)
+	if got := bytes.Count(optionsData, []byte("[CFOptions \"")); got != want {
+		t.Fatalf("RocksDB OPTIONS has %d CF sections, want %d", got, want)
 	}
-	if bytes.Contains(logData, []byte("filter_policy: nullptr")) {
-		t.Fatal("RocksDB LOG contains a column family without a filter policy")
+	if got := bytes.Count(optionsData, []byte("filter_policy=bloomfilter:10:false")); got != want {
+		t.Fatalf("RocksDB OPTIONS has %d full Bloom-filter CFs, want %d", got, want)
+	}
+	if bytes.Contains(optionsData, []byte("filter_policy=nullptr")) {
+		t.Fatal("RocksDB OPTIONS contains a column family without a filter policy")
 	}
 }
