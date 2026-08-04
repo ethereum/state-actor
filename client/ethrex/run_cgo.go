@@ -51,9 +51,9 @@ func runImpl(ctx context.Context, cfg generator.Config, opts Options) (*generato
 	// Disk expectation up front: --target-size budgets the trie+code CFs
 	// only (the cross-client sizecal contract); ethrex's flat-KV layer is
 	// additional and the realized datadir lands at ≈1.8× the target
-	// (measured 40 GB→73 GiB, 150 GB→273 GiB; docs/CALIBRATION.md).
+	// (measured 40 GB→73 GiB, 150 GB→273 GiB).
 	if cfg.TargetSize > 0 {
-		log.Printf("ethrex: expect ≈1.8× --target-size on disk (flat-KV layer is additional; see docs/CALIBRATION.md)")
+		log.Printf("ethrex: expect ≈1.8× --target-size on disk (flat-KV layer is additional)")
 	}
 
 	g := cfg.Genesis
