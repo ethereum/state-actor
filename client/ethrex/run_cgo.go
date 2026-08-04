@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -13,6 +14,7 @@ import (
 	"github.com/ethereum/state-actor/generator"
 	"github.com/ethereum/state-actor/genesis"
 	"github.com/ethereum/state-actor/internal/genesisheader"
+	"github.com/ethereum/state-actor/internal/memlimit"
 )
 
 // runImpl is the cgo_ethrex orchestrator.
@@ -36,6 +38,22 @@ func runImpl(ctx context.Context, cfg generator.Config, opts Options) (*generato
 	}
 	if cfg.Archive {
 		return nil, errors.New("ethrex: --archive is not supported by the ethrex writer")
+	}
+
+	// Bound the Go heap against what RocksDB and Pebble have NOT already
+	// claimed. Without this the default GOGC=100 lets the heap reach ~2x the
+	// live set, and a spec that pins several GiB of PreAlloc bytecode for the
+	// whole run makes that doubling large enough to matter. An explicit
+	// GOMEMLIMIT wins; a declined limit is logged rather than swallowed,
+	// because it means this host gets no protection.
+	log.Printf("ethrex: %s", memlimit.Set(ethrexOffHeapReserveBytes))
+
+	// Disk expectation up front: --target-size budgets the trie+code CFs
+	// only (the cross-client sizecal contract); ethrex's flat-KV layer is
+	// additional and the realized datadir lands at ≈1.8× the target
+	// (measured 40 GB→73 GiB, 150 GB→273 GiB; docs/CALIBRATION.md).
+	if cfg.TargetSize > 0 {
+		log.Printf("ethrex: expect ≈1.8× --target-size on disk (flat-KV layer is additional; see docs/CALIBRATION.md)")
 	}
 
 	g := cfg.Genesis
@@ -66,17 +84,19 @@ func runImpl(ctx context.Context, cfg generator.Config, opts Options) (*generato
 	}
 	defer db.Close()
 
+	// Ordering matters: defers run LIFO, so this stops the sampler BEFORE
+	// db.Close() runs — it reads DB properties and grocksdb does not guard
+	// against a closed handle.
+	stopMemorySampler := startMemorySampler(ctx, db)
+	defer stopMemorySampler()
+
 	accountSink := newBatchSink(db, cfIdxAccountTrieNodes)
 	defer accountSink.Close()
-	storageSink := newBatchSink(db, cfIdxStorageTrieNodes)
-	defer storageSink.Close()
 
 	// Flat-KV sinks: every leaf full-path row also lands in the flat-KV CFs so
 	// the produced DB models a synced node (see writeState + ethrex store.rs).
 	accountFkvSink := newBatchSink(db, cfIdxAccountFlatKeyValue)
 	defer accountFkvSink.Close()
-	storageFkvSink := newBatchSink(db, cfIdxStorageFlatKeyValue)
-	defer storageFkvSink.Close()
 
 	// Bytecode sinks: route account_codes + account_code_metadata through the
 	// same batched, WAL-disabled path as the trie/flat-KV writes instead of
@@ -88,7 +108,9 @@ func runImpl(ctx context.Context, cfg generator.Config, opts Options) (*generato
 	codeMetaSink := newBatchSink(db, cfIdxAccountCodeMetadata)
 	defer codeMetaSink.Close()
 
-	stateRoot, stats, err := writeState(ctx, cfg, db, accountSink, storageSink, accountFkvSink, storageFkvSink, codeSink, codeMetaSink)
+	// Storage CFs get no shared sinks: Phase 0 and Stage B write them through
+	// per-worker batchSinks (writeState's pipeline doc has the ordering story).
+	stateRoot, stats, err := writeState(ctx, cfg, db, accountSink, accountFkvSink, codeSink, codeMetaSink)
 	if err != nil {
 		return nil, fmt.Errorf("ethrex: writeState: %w", err)
 	}

@@ -10,7 +10,6 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/crypto"
-	"github.com/holiman/uint256"
 
 	"github.com/ethereum/state-actor/generator"
 	ethrexinternal "github.com/ethereum/state-actor/internal/ethrex"
@@ -98,8 +97,8 @@ func runPhase0Storage(
 			// Each worker owns its own write batches targeting the two storage CFs.
 			// Per-worker batches avoid contention and keep each worker's writes
 			// isolated to its assigned addrHash-prefixed keyspace.
-			workerTrieSink := newBatchSink(db, cfIdxStorageTrieNodes)
-			workerFkvSink := newBatchSink(db, cfIdxStorageFlatKeyValue)
+			workerTrieSink := newBatchSinkWithThreshold(db, cfIdxStorageTrieNodes, workerFlushThresholdBytes)
+			workerFkvSink := newBatchSinkWithThreshold(db, cfIdxStorageFlatKeyValue, workerFlushThresholdBytes)
 			defer func() {
 				// Close both sinks, but report only the first failure: cancelDrain
 				// keeps the first cause, so capture it explicitly rather than letting
@@ -146,9 +145,10 @@ func runPhase0Storage(
 				var localBytes uint64
 				statSink := func(_, _, value common.Hash) error {
 					slotW.Slot()
-					enc := ethrexinternal.EncodeStorageValue(new(uint256.Int).SetBytes32(value[:]))
+					// Length arithmetic only — the previous full encode (with a
+					// uint256 conversion) existed solely to measure len(enc).
 					localSlots++
-					localBytes += uint64(len(enc))
+					localBytes += uint64(ethrexinternal.StorageValueRLPLength(value))
 					return nil
 				}
 

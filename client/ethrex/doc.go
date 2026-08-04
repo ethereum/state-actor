@@ -47,4 +47,31 @@
 // internal/ethrex.Builder is a streaming stack-trie — O(keyLen) RAM regardless of
 // leaf count. PreAlloc storage streams through internal/streamingtrie in Phase 0;
 // Phase 2 storage stays materialized and is bounded by construction.
+//
+// Peak RSS is mostly NOT the Go heap. The off-heap terms are budgeted by the
+// constants in dbs_cgo.go and summed as ethrexOffHeapReserveBytes:
+//
+//   - ethrexBlockCacheBytes — the shared LRU cache, which with
+//     cache_index_and_filter_blocks also bounds index + bloom-filter blocks.
+//     Left at RocksDB's default those blocks sit in per-SST table readers,
+//     outside every budget, growing with each SST for the whole import.
+//   - ethrexDBWriteBufferBytes — total memtable memory, now a backstop: the
+//     state CFs' 256 MiB × 4 sum to exactly this cap. (The previous mirrored
+//     512 MiB × 6 shape permitted 12 GiB resident, unsummed by RocksDB.)
+//   - ethrexAuxOffHeapBytes — WriteBatches, Pebble arenas, compaction scratch.
+//   - ethrexAllocatorSlackBytes — jemalloc overhead over the C heap, sized
+//     from the 40 GB A/B's measured off-heap plateau (see its comment).
+//
+// runImpl subtracts that reserve from the host's memory ceiling (cgroup, then
+// /proc/meminfo) and gives the remainder to internal/memlimit, which caps the
+// Go heap. Without it, GOGC=100 lets the heap reach ~2x a live set that a
+// bytecode-heavy --spec can push into the GiB range, since per-address code is
+// materialized for the whole run rather than streamed. The limit lands when the
+// writer starts, so it governs Phases 0-2 but not main.go's --spec parse, which
+// is where that bytecode is first allocated.
+//
+// None of these knobs change the logical database: KV content and state root
+// are identical regardless (physical SST packing varies with flush cadence),
+// because Close()'s CompactRange rewrites every state CF with the per-CF
+// compression/block/bloom options either way.
 package ethrex

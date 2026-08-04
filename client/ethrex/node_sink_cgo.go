@@ -6,33 +6,47 @@ import (
 	"bytes"
 	"container/heap"
 	"fmt"
-	"sort"
+	"slices"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/crypto"
-	"github.com/holiman/uint256"
 	"github.com/linxGnu/grocksdb"
 
 	ethrexinternal "github.com/ethereum/state-actor/internal/ethrex"
 )
 
-// flushThresholdBytes is the WriteBatch flush threshold during bulk import.
+// flushThresholdBytes is the WriteBatch flush threshold for the long-lived
+// shared sinks during bulk import.
 const flushThresholdBytes = 64 * 1024 * 1024
+
+// workerFlushThresholdBytes is the smaller threshold for PER-WORKER sinks
+// (Phase 0 and Stage B): a cleared WriteBatch retains its high-water C++
+// buffer for the sink's lifetime, so N workers × 2 sinks × ~2× threshold is
+// resident C heap — 16 MiB keeps 16 workers under ~1 GiB where 64 MiB would
+// be ~4 GiB.
+const workerFlushThresholdBytes = 16 * 1024 * 1024
 
 // batchSink wraps a grocksdb.WriteBatch targeting a specific CF and a shared
 // flush mechanism. It is used for the trie-node CFs (account_trie_nodes and
 // storage_trie_nodes) where NodeSink callbacks write (path, value) pairs.
 type batchSink struct {
-	db    *ethrexDB
-	cfIdx int
-	batch *grocksdb.WriteBatch
-	bytes int
+	db        *ethrexDB
+	cfIdx     int
+	batch     *grocksdb.WriteBatch
+	bytes     int
+	threshold int
 }
 
 // newBatchSink constructs a batchSink for the given CF index.
 // Caller must call Close() to flush any pending writes and free the WriteBatch.
 func newBatchSink(db *ethrexDB, cfIdx int) *batchSink {
-	return &batchSink{db: db, cfIdx: cfIdx, batch: grocksdb.NewWriteBatch()}
+	return newBatchSinkWithThreshold(db, cfIdx, flushThresholdBytes)
+}
+
+// newBatchSinkWithThreshold is newBatchSink with an explicit flush threshold —
+// per-worker sinks pass workerFlushThresholdBytes.
+func newBatchSinkWithThreshold(db *ethrexDB, cfIdx, threshold int) *batchSink {
+	return &batchSink{db: db, cfIdx: cfIdx, batch: grocksdb.NewWriteBatch(), threshold: threshold}
 }
 
 // put adds a key/value to the batch and triggers a flush if the threshold
@@ -45,7 +59,7 @@ func (s *batchSink) put(key, value []byte) error {
 
 // maybeFlush flushes the WriteBatch if the byte threshold is exceeded.
 func (s *batchSink) maybeFlush() error {
-	if s.bytes < flushThresholdBytes {
+	if s.bytes < s.threshold {
 		return nil
 	}
 	return s.flushAsync()
@@ -94,43 +108,11 @@ func (s *batchSink) Close() error {
 // Parallel pipeline types (Phase 2 of writeState)
 // ---------------------------------------------------------------------------
 
-// parallelStorageSlotThreshold is the per-account slot count above which storage
-// trie building is NOT dispatched to a worker. Accounts exceeding this threshold
-// are processed inline (single-threaded) by Stage C to bound worst-case memory.
-const parallelStorageSlotThreshold = 1 << 16 // 65536 slots ≈ 64 MiB buffered
-
-// storageRow is one (path, value) pair captured from the buffering storage sink.
-// path is already address-prefixed (as PrefixedSink would emit), so Stage C can
-// apply isLeafFullPathHelper and route directly without re-prefixing.
-type storageRow struct {
-	path  []byte
-	value []byte
-}
-
-// bufferingStorageSink returns a NodeSink that appends every (path, value) pair
-// to *rows instead of writing RocksDB. The caller wraps the raw Builder sink
-// with ethrexinternal.PrefixedSink first so that the captured paths are already
-// address-prefixed.
-func bufferingStorageSink(rows *[]storageRow) ethrexinternal.NodeSink {
-	return func(path, value []byte) error {
-		p := make([]byte, len(path))
-		copy(p, path)
-		v := make([]byte, len(value))
-		copy(v, value)
-		*rows = append(*rows, storageRow{path: p, value: v})
-		return nil
-	}
-}
-
 // accountWorkItem is sent from Stage A (reader) to the worker pool (Stage B).
 type accountWorkItem struct {
 	seq      uint64
 	addrHash common.Hash
 	ent      entity
-	// bigAccount is true when len(ent.slots) > parallelStorageSlotThreshold.
-	// Workers emit an accountResult with bigAccount=true and no storageRows;
-	// Stage C builds their storage inline at their seq position.
-	bigAccount bool
 	// hasPreAllocRoot is true when preAllocStorageRoots[addrHash] exists.
 	// Workers use preAllocRoot directly — no storage trie build needed.
 	hasPreAllocRoot bool
@@ -148,20 +130,17 @@ type accountStatDelta struct {
 }
 
 // accountResult is produced by Stage B workers and sent to Stage C for
-// ordered application. Fields relevant only to big accounts are labelled.
+// ordered application. Storage rows are ALREADY WRITTEN (each worker owns a
+// pair of storage batchSinks and streams the trie build directly into them),
+// so a result carries only scalars — the reorder heap holds tiny payloads
+// regardless of how large an account's storage was.
 type accountResult struct {
-	seq      uint64
-	addrHash common.Hash
-	// bigAccount is true when storage must be built inline by Stage C.
-	bigAccount bool
-	// bigEnt holds the entity for big accounts so Stage C can build storage inline.
-	bigEnt entity
-	// storageRows holds address-prefixed (path, value) rows for normal accounts.
-	storageRows []storageRow
+	seq         uint64
+	addrHash    common.Hash
 	storageRoot common.Hash
 	codeHash    common.Hash
 	code        []byte // nil for EOAs; non-nil for contracts (used by Stage C writeCode)
-	accountRLP  []byte // empty for big accounts; Stage C recomputes after inline build
+	accountRLP  []byte
 	stats       accountStatDelta
 	// buildErr carries a storage-build error from a worker.
 	buildErr error
@@ -208,10 +187,11 @@ func isLeafFullPathHelper(path []byte) bool {
 }
 
 // storageSlotKV is a (slotHash, value) pair used when sorting slots for the
-// storage trie build.
+// storage trie build. value stays the raw 32 bytes end-to-end — the encoders
+// trim it directly (EncodeStorageValueBytes32); no integer types involved.
 type storageSlotKV struct {
 	slotHash common.Hash
-	value    *uint256.Int
+	value    common.Hash
 }
 
 // collectNonZeroSlots builds a sorted []storageSlotKV from ent.slots, skipping
@@ -222,61 +202,31 @@ func collectNonZeroSlots(ent entity) []storageSlotKV {
 		return nil
 	}
 	kvs := make([]storageSlotKV, 0, len(ent.slots))
-	for slotKey, slotVal := range ent.slots {
-		if slotVal.IsZero() {
+	var zero common.Hash
+	for _, s := range ent.slots {
+		if s.Value == zero {
 			continue
 		}
 		kvs = append(kvs, storageSlotKV{
-			slotHash: crypto.Keccak256Hash(slotKey[:]),
-			value:    slotVal.Clone(),
+			slotHash: crypto.Keccak256Hash(s.Key[:]),
+			value:    s.Value,
 		})
 	}
 	if len(kvs) == 0 {
 		return nil
 	}
-	sort.Slice(kvs, func(i, j int) bool {
-		return bytes.Compare(kvs[i].slotHash[:], kvs[j].slotHash[:]) < 0
+	slices.SortFunc(kvs, func(a, b storageSlotKV) int {
+		return bytes.Compare(a.slotHash[:], b.slotHash[:])
 	})
 	return kvs
 }
 
-// buildStorageTrieBuffered builds the storage trie for ent entirely in memory,
-// returning the address-prefixed captured rows and the storage root.
-// It does NOT touch RocksDB. Used by Stage B workers.
-func buildStorageTrieBuffered(
-	addrHash common.Hash,
-	ent entity,
-	emptyTrieHash common.Hash,
-) (rows []storageRow, storageRoot common.Hash, storageSlotsCreated, storageBytes uint64, err error) {
-	kvs := collectNonZeroSlots(ent)
-	if kvs == nil {
-		return nil, emptyTrieHash, 0, 0, nil
-	}
-
-	var capturedRows []storageRow
-	captureSink := bufferingStorageSink(&capturedRows)
-	prefixedSink := ethrexinternal.PrefixedSink(addrHash, captureSink)
-	sb := ethrexinternal.NewBuilder(prefixedSink)
-
-	for _, e := range kvs {
-		enc := ethrexinternal.EncodeStorageValue(e.value)
-		if addErr := sb.AddLeaf(ethrexinternal.BytesToNibbles(e.slotHash[:]), enc); addErr != nil {
-			return nil, emptyTrieHash, 0, 0, fmt.Errorf("ethrex: storage leaf: %w", addErr)
-		}
-		storageSlotsCreated++
-		storageBytes += uint64(len(enc))
-	}
-
-	root, rootErr := sb.Root()
-	if rootErr != nil {
-		return nil, emptyTrieHash, 0, 0, fmt.Errorf("ethrex: storage root: %w", rootErr)
-	}
-	return capturedRows, root, storageSlotsCreated, storageBytes, nil
-}
-
-// buildStorageTrieInline builds the storage trie for ent and writes rows
-// directly to storageSink / storageFkvSink (no buffering). Used by Stage C for
-// big accounts.
+// buildStorageTrieInline builds the storage trie for ent, streaming every row
+// directly into storageSink / storageFkvSink — no per-account buffering, so
+// account size does not drive memory. Stage B workers call it with their own
+// per-worker sink pair (the same pattern Phase 0 has always used for these
+// two CFs); write order across accounts is therefore arbitrary, which the
+// memtable path is indifferent to.
 func buildStorageTrieInline(
 	addrHash common.Hash,
 	ent entity,
@@ -298,9 +248,10 @@ func buildStorageTrieInline(
 	prefixedSink := ethrexinternal.PrefixedSink(addrHash, inlineSink)
 	sb := ethrexinternal.NewBuilder(prefixedSink)
 
+	var nibScratch [64]byte
 	for _, e := range kvs {
-		enc := ethrexinternal.EncodeStorageValue(e.value)
-		if addErr := sb.AddLeaf(ethrexinternal.BytesToNibbles(e.slotHash[:]), enc); addErr != nil {
+		enc := ethrexinternal.EncodeStorageValueBytes32(e.value)
+		if addErr := sb.AddLeaf(ethrexinternal.AppendNibbles(nibScratch[:0], e.slotHash[:]), enc); addErr != nil {
 			return emptyTrieHash, 0, 0, fmt.Errorf("ethrex: storage leaf: %w", addErr)
 		}
 		storageSlotsCreated++

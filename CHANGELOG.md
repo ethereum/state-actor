@@ -29,7 +29,47 @@
   p2p enabled — its synchronizer must register the post-merge head as in-sync, otherwise
   Besu answers `SYNCING`.
 
+### Added
+- **`--client=ethrex` reports its memory split every 30s.** New
+  `internal/memstat` samples process RSS against the Go runtime's own total —
+  their difference being the cgo memory no `GOMEMLIMIT` can govern — plus
+  host-wide `MemAvailable`/`Dirty`/`Writeback`, which distinguish "this process
+  exhausted memory" from "unreclaimable page cache did". Alongside it the
+  ethrex writer logs RocksDB's own accounting (memtables, table readers,
+  block-cache usage, L0 file count), and `Close()` logs per-CF compaction
+  duration and memory — the phases a SIGKILL would otherwise leave unrecorded.
+
 ### Fixed
+- **`--client=ethrex` no longer OOM-kills on large `--target-size` runs
+  (closes #116).** A 350 GB fill died at 51.3 GiB anon RSS on a 62 GiB host
+  (kernel-confirmed OOM; 16 GiB of it transparent huge pages). Fixed on two
+  fronts. **Allocator**: the runtime image now runs RocksDB on jemalloc via
+  `LD_PRELOAD` — RocksDB-on-glibc is the documented pathological pairing
+  behind unbounded allocator retention, and jemalloc is what ethrex itself
+  ships as its default global allocator (`MALLOC_ARENA_MAX=2` stays as the
+  fallback for a failed preload). **Structure**, aligning the writer with the
+  besu/nethermind/geth/erigon disciplines: Phase-2 workers capped at 8 (was
+  uncapped `NumCPU()`); state-CF memtables 256 MiB × 4 (was 512 MiB × 6 with
+  min-merge) under a 4 GiB `db_write_buffer_size` backstop; index and
+  bloom-filter blocks routed through the shared block cache (512 MiB — as a
+  4 GiB bystander they sat in per-SST table readers outside every budget)
+  with `max_open_files` bounded; `Close()`-time CompactRange serialized
+  (concurrent manual compactions of never-compacted L0 stacked readahead at
+  the run's peak); Phase-1 sort spill moved from `/tmp` to the datadir
+  volume. The new `internal/memlimit` derives a `GOMEMLIMIT` from the host's
+  real ceiling (cgroup v2 → cgroup v1 → `/proc/meminfo`) minus the writer's
+  declared off-heap reserve; an explicit `GOMEMLIMIT` wins, and a limit too
+  small to help is declined and logged — one below the live heap trades an
+  OOM kill for an unbounded GC stall. The reserve is measured, not guessed:
+  a 40 GB same-seed A/B put the jemalloc off-heap plateau at ~4.4 GiB
+  (flat; the glibc baseline climbed to 6.2 GiB on identical work), so the
+  reserve is 8 GiB — budgeted caps plus a 1.5 GiB allocator slack — and the
+  heap takes half the post-reserve remainder. These are process-runtime knobs only:
+  the produced database is **logically identical** — same KV content, same
+  state root, pinned by `TestEthrexGoldenStateRoot` and
+  `TestGenesisDumpGolden` (physical SST packing legitimately varies with
+  flush cadence).
+
 - **`erc20` template now honors `approximate_size_bytes`.** Previously
   the universal entity-level sizing knob was silently ignored on the
   `erc20` template (only `raw` and `eoa` consumed it), even though
