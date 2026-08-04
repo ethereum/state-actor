@@ -26,6 +26,14 @@
   image and golden fixture repinned to 23.0.0; every state-bearing CF
   is byte-identical to the v16 dump, so the state root and the Go
   trie/code codecs are unaffected.
+- **Nethermind writer runs Nethermind's own RocksDB configuration.** All
+  8 databases (and every column family) now parse the verbatim DbConfig
+  option strings through RocksDB's own parser instead of hand-tuned
+  grocksdb defaults — bloom/ribbon filter policies, index types, block
+  sizes, compression now match what Nethermind itself writes. Transient
+  bulk-import tuning is layered on top and leaves no trace in the SSTs.
+  A new `TestNethOptionsPersisted` locks the composed options via each
+  DB's OPTIONS-* file.
 - **Geth writer mirrors geth's per-level Pebble options** (10-bit bloom
   filters on L0–L5, none on L6, 2→128 MiB file-size ladder), locked to
   the pinned go-ethereum by a new OPTIONS-file parity test. Effect is

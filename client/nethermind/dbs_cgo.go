@@ -4,10 +4,8 @@ package nethermind
 
 import (
 	"fmt"
-	"math"
 	"os"
 	"path/filepath"
-	"runtime"
 
 	"github.com/linxGnu/grocksdb"
 
@@ -20,28 +18,6 @@ const bulkBackgroundJobs = 8
 
 // perDBWriteBufferBytes is the per-DB memtable size during bulk import.
 const perDBWriteBufferBytes = 256 * 1024 * 1024
-
-// bulkRocksOptions returns *grocksdb.Options tuned for the bulk-import path:
-// L0 triggers pinned to MaxInt32 (no compaction during writes), one final
-// CompactRange at Close().
-func bulkRocksOptions() *grocksdb.Options {
-	opts := grocksdb.NewDefaultOptions()
-	opts.SetCreateIfMissing(true)
-	opts.SetCreateIfMissingColumnFamilies(true)
-	opts.SetWriteBufferSize(perDBWriteBufferBytes)
-	opts.SetMaxWriteBufferNumber(4)
-	opts.SetLevel0FileNumCompactionTrigger(math.MaxInt32)
-	opts.SetLevel0SlowdownWritesTrigger(math.MaxInt32)
-	opts.SetLevel0StopWritesTrigger(math.MaxInt32)
-	opts.SetMaxBytesForLevelBase(2 * 1024 * 1024 * 1024)
-	parallelism := runtime.NumCPU()
-	if parallelism > bulkBackgroundJobs {
-		parallelism = bulkBackgroundJobs
-	}
-	opts.IncreaseParallelism(parallelism)
-	opts.SetMaxBackgroundJobs(parallelism)
-	return opts
-}
 
 // nethDBNames mirrors the Nethermind.Db/DbNames.cs constants we need for
 // genesis-bootability. State, Code, Blocks, Headers, BlockNumbers, and
@@ -65,6 +41,9 @@ const (
 // The default CF is named "default" (lowercase) per DbOnTheRocks.cs:175,
 // which case-maps "Default" → "default" at open time.
 var receiptsCFNames = []string{"default", "Transactions", "Blocks"}
+
+// receiptsBlocksCFIndex is the "Blocks" position in receiptsCFNames.
+const receiptsBlocksCFIndex = 2
 
 // nethDBs holds the open grocksdb handles state-actor writes during a
 // Nethermind genesis emission. Caller closes via Close() when done.
@@ -157,14 +136,18 @@ func openNethDBs(dataDir string) (*nethDBs, error) {
 		dbs.Close()
 	}
 
-	// Helper: open a single-CF database with bulk-import tuning.
-	// All defaults were 2 MiB memtable, 1 background thread, L0 trigger 4
-	// — those defaults caused the May-17 nethermind run's 2:42 wall time.
-	// bulkRocksOptions raises memtable to 256 MiB and defers all L0
-	// compactions; Close()'s CompactRange pays the flattening cost once.
+	// open opens a single-CF database with Nethermind's per-DB options
+	// plus bulk-import tuning (see options_cgo.go).
 	open := func(name string) (*grocksdb.DB, error) {
 		path := filepath.Join(dbRoot, name)
-		opts := bulkRocksOptions()
+		fragment, ok := nethPerDBOptions[name]
+		if !ok {
+			return nil, fmt.Errorf("no Nethermind option fragment for db %q", name)
+		}
+		opts, err := nethOptions(fragment)
+		if err != nil {
+			return nil, fmt.Errorf("compose %s db options: %w", name, err)
+		}
 		dbs.openedOpts = append(dbs.openedOpts, opts)
 
 		db, err := grocksdb.OpenDb(opts, path)
@@ -200,17 +183,27 @@ func openNethDBs(dataDir string) (*nethDBs, error) {
 		return nil, err
 	}
 
-	// Receipts: 3 column families. Use bulk-import tuning for parity with
-	// the single-CF DBs even though receipts sees few writes at genesis
-	// (one empty receipts list at the genesis row) — the cost of tuned
-	// options on a near-empty DB is negligible.
+	// Receipts: 3 column families; every CF inherits the ReceiptsDb
+	// fragment, only Blocks adds an override.
 	receiptsPath := filepath.Join(dbRoot, dbNameReceipts)
-	receiptsOpts := bulkRocksOptions()
+	receiptsOpts, err := nethOptions(nethReceiptsOptions)
+	if err != nil {
+		cleanup()
+		return nil, fmt.Errorf("compose receipts db options: %w", err)
+	}
 	dbs.openedOpts = append(dbs.openedOpts, receiptsOpts)
 
 	cfOpts := make([]*grocksdb.Options, len(receiptsCFNames))
 	for i := range cfOpts {
-		cfOpts[i] = bulkRocksOptions()
+		fragments := []string{nethReceiptsOptions}
+		if i == receiptsBlocksCFIndex {
+			fragments = append(fragments, nethReceiptsBlocksCFOptions)
+		}
+		cfOpts[i], err = nethOptions(fragments...)
+		if err != nil {
+			cleanup()
+			return nil, fmt.Errorf("compose receipts %s CF options: %w", receiptsCFNames[i], err)
+		}
 		dbs.openedOpts = append(dbs.openedOpts, cfOpts[i])
 	}
 
@@ -223,18 +216,30 @@ func openNethDBs(dataDir string) (*nethDBs, error) {
 	}
 	dbs.receipts = receiptsDB
 	dbs.receiptsCFs = cfHandles
-	dbs.receiptsBlocksCF = cfHandles[2] // index 2 = "Blocks" per receiptsCFNames
+	dbs.receiptsBlocksCF = cfHandles[receiptsBlocksCFIndex]
 
 	// Flat-state column DB: one RocksDB with 8 CFs (default + the 7
 	// flat.ColumnNames), same multi-CF open pattern as receipts. Opened last so
 	// the single-CF DBs and receipts are already in dbs for cleanup() on error.
 	flatPath := filepath.Join(dbRoot, dbNameFlat)
-	flatOpts := bulkRocksOptions()
+	flatOpts, err := nethOptions(nethFlatOptions)
+	if err != nil {
+		cleanup()
+		return nil, fmt.Errorf("compose flat db options: %w", err)
+	}
 	dbs.openedOpts = append(dbs.openedOpts, flatOpts)
 
 	flatCFOpts := make([]*grocksdb.Options, len(flat.ColumnNames))
 	for i := range flatCFOpts {
-		flatCFOpts[i] = bulkRocksOptions()
+		fragments := []string{nethFlatOptions}
+		if extra, ok := nethFlatCFOptions[flat.Column(i)]; ok {
+			fragments = append(fragments, extra)
+		}
+		flatCFOpts[i], err = nethOptions(fragments...)
+		if err != nil {
+			cleanup()
+			return nil, fmt.Errorf("compose flat %s CF options: %w", flat.ColumnNames[i], err)
+		}
 		dbs.openedOpts = append(dbs.openedOpts, flatCFOpts[i])
 	}
 
