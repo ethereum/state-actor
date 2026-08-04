@@ -1,6 +1,7 @@
-// Package ethrex implements the trie codec primitives used by ethrex
-// (pinned release v23.0.0, lambdaclass/ethrex). The golden fixture's
-// state-bearing CFs are byte-identical from v13.0.0 through v23.0.0.
+// Package ethrex implements the trie and code codec primitives used by ethrex
+// (pinned commit 80bcc71, lambdaclass/ethrex). The golden fixture's trie-node
+// CFs are byte-identical from v13.0.0 through that commit; account_codes values
+// changed shape there (see EncodeCode).
 //
 // # Two-rows-per-leaf model
 //

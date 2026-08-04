@@ -15,6 +15,8 @@ import (
 	"context"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"math/big"
 	"os"
 	"strings"
@@ -88,7 +90,6 @@ func TestGenesisDumpGolden(t *testing.T) {
 	// chain-<chainid> (see ethrex.StoreDir), so read from there, not cfg.DBPath.
 	dbPath := ethrex.StoreDir(cfg.DBPath, g)
 	for _, cfName := range []string{
-		"account_codes",
 		"account_code_metadata",
 		"headers",
 		"bodies",
@@ -98,6 +99,14 @@ func TestGenesisDumpGolden(t *testing.T) {
 		wantRows := dump[cfName]
 		diffCF(t, dbPath, cfName, wantRows)
 	}
+
+	// account_codes is excluded above because testdata/genesis_dump.json still
+	// carries the pre-bitmap encoding (an RLP list of u32 JUMPDEST offsets)
+	// while the writer now emits the bitmap ethrex commit 80bcc71 writes. The
+	// keys are unaffected, so those are still asserted byte-exact; the values
+	// are checked against the writer's own encoder until the fixture is
+	// regenerated at that commit (see testdata/gen/README.md).
+	diffCFKeysOnly(t, dbPath, "account_codes", dump["account_codes"])
 
 	// Snap-sync layout: the trie-node CFs hold ONLY structural + leaf-NODE-RLP
 	// rows; the leaf full-path rows (keys ending in the leaf-flag nibble 0x10)
@@ -294,6 +303,84 @@ func readCFRows(t *testing.T, dbPath, cfName string) map[string]string {
 		t.Fatalf("CF %s iterator error: %v", cfName, err)
 	}
 	return gotMap
+}
+
+// diffCFKeysOnly asserts the CF holds exactly the keys the dump names, and that
+// each value is what internal/ethrex's encoder produces for the bytecode the
+// dump stores under that key. Weaker than diffCF: it cannot catch the encoder
+// and the fixture drifting together, so it is only for a CF whose value shape
+// has changed upstream and whose fixture has not been regenerated yet.
+func diffCFKeysOnly(t *testing.T, dbPath, cfName string, wantRows []dumpRow) {
+	t.Helper()
+
+	gotMap := readCFRows(t, dbPath, cfName)
+
+	wantKeys := make(map[string]struct{}, len(wantRows))
+	for _, row := range wantRows {
+		k := hex.EncodeToString(row.key)
+		wantKeys[k] = struct{}{}
+
+		gv, ok := gotMap[k]
+		if !ok {
+			t.Errorf("CF %s: missing key %s", cfName, k)
+			continue
+		}
+		// Both encodings start with the same RLP(bytecode), so the fixture still
+		// supplies the bytecode; only the trailing jumpdest section differs.
+		// Take it from the FIXTURE, never from the row under test, or this
+		// asserts the encoder against itself.
+		bytecode, err := bytecodeFromEncodedCode(hex.EncodeToString(row.val))
+		if err != nil {
+			t.Errorf("CF %s key %s: fixture value: %v", cfName, k, err)
+			continue
+		}
+		want := hex.EncodeToString(ethrexinternal.EncodeCode(bytecode))
+		if gv != want {
+			t.Errorf("CF %s key %s:\n got  %s\n want %s", cfName, k, gv, want)
+		}
+	}
+	for k := range gotMap {
+		if _, ok := wantKeys[k]; !ok {
+			t.Errorf("CF %s: unexpected key %s", cfName, k)
+		}
+	}
+}
+
+// bytecodeFromEncodedCode extracts the leading RLP byte string (the bytecode)
+// from a hex-encoded account_codes value, ignoring the jumpdest section.
+func bytecodeFromEncodedCode(hexVal string) ([]byte, error) {
+	raw, err := hex.DecodeString(hexVal)
+	if err != nil {
+		return nil, err
+	}
+	if len(raw) == 0 {
+		return nil, errors.New("empty account_codes value")
+	}
+	switch b := raw[0]; {
+	case b < 0x80:
+		return raw[:1], nil
+	case b <= 0xb7:
+		n := int(b - 0x80)
+		if len(raw) < 1+n {
+			return nil, fmt.Errorf("truncated short string: want %d bytes, have %d", n, len(raw)-1)
+		}
+		return raw[1 : 1+n], nil
+	case b <= 0xbf:
+		lenLen := int(b - 0xb7)
+		if len(raw) < 1+lenLen {
+			return nil, errors.New("truncated long-string header")
+		}
+		n := 0
+		for _, c := range raw[1 : 1+lenLen] {
+			n = n<<8 | int(c)
+		}
+		if len(raw) < 1+lenLen+n {
+			return nil, fmt.Errorf("truncated long string: want %d bytes, have %d", n, len(raw)-1-lenLen)
+		}
+		return raw[1+lenLen : 1+lenLen+n], nil
+	default:
+		return nil, fmt.Errorf("account_codes value starts with a list header (0x%02x)", b)
+	}
 }
 
 func diffCF(t *testing.T, dbPath, cfName string, wantRows []dumpRow) {

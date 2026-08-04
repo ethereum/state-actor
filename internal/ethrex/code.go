@@ -1,21 +1,30 @@
 package ethrex
 
-// ComputeJumpTargets scans bytecode and returns the offsets of JUMPDEST (0x5B)
-// opcodes that are not inside PUSH data. Mirrors ethrex account.rs:58-79.
+// ComputeJumpdestBitmap returns the JUMPDEST bitmap ethrex persists alongside a
+// bytecode: one bit per bytecode byte, set when that offset holds a JUMPDEST
+// (0x5B) that is not part of a PUSH immediate. Bit i lives in bit (i%8) of byte
+// (i/8), least-significant bit first, so the bitmap is ceil(len/8) bytes.
 //
-// Scan rules:
-//   - opcode 0x5B (JUMPDEST): append uint32(i), advance i by 1.
+// Bytecode with no jump destination gets a ZERO-LENGTH bitmap rather than an
+// all-zero one: ethrex reads a missing byte as "no jump destination"
+// (Code::is_valid_jumpdest), so it never allocates a map for the common
+// jumpless case (EOAs, tiny contracts).
+//
+// Scan rules (ethrex Code::compute_jumpdests, crates/common/types/account.rs):
+//   - opcode 0x5B (JUMPDEST): set bit i, advance i by 1.
 //   - opcode 0x60..0x7F (PUSH1..PUSH32): advance i by (opcode - 0x5F + 1) to skip
 //     the opcode itself plus its immediate bytes.
 //   - any other opcode: advance i by 1.
-func ComputeJumpTargets(bytecode []byte) []uint32 {
-	var targets []uint32
+func ComputeJumpdestBitmap(bytecode []byte) []byte {
+	bitmap := make([]byte, (len(bytecode)+7)/8)
+	found := false
 	i := 0
 	for i < len(bytecode) {
 		op := bytecode[i]
 		switch {
 		case op == 0x5B:
-			targets = append(targets, uint32(i))
+			bitmap[i/8] |= 1 << (i % 8)
+			found = true
 			i++
 		case op >= 0x60 && op <= 0x7F:
 			// PUSH1..PUSH32: skip opcode + immediate bytes.
@@ -24,34 +33,31 @@ func ComputeJumpTargets(bytecode []byte) []uint32 {
 			i++
 		}
 	}
-	return targets
+	if !found {
+		return nil
+	}
+	return bitmap
 }
 
 // EncodeCode returns the concatenation of:
 //
 //  1. RLP(bytecode) — bytecode encoded as an RLP byte string.
-//  2. RLP(jumpTargetsList) — jump targets encoded as an RLP list of minimal
-//     big-endian integers (one per uint32 target offset).
+//  2. RLP(jumpdestBitmap) — the JUMPDEST bitmap as an RLP byte string.
 //
 // The two RLP encodings are concatenated directly (not wrapped in an outer list).
-// Mirrors ethrex account_codes encoding.
+// Mirrors ethrex's encode_code (crates/storage/store.rs).
+//
+// The bitmap replaced an RLP list of u32 JUMPDEST offsets. ethrex still reads
+// that older form: decode_jumpdests branches on the RLP item header and rebuilds
+// the bitmap from the bytecode when it finds a list.
 //
 // Golden checks:
-//   - EncodeCode(0x60015b00) = 0x8460015b00 c1 02 (jumpTargets=[2])
-//   - EncodeCode(0x600160015500) = 0x86600160015500 c0 (empty jumpTargets)
-//   - EncodeCode(nil) = 0x80 c0
+//   - EncodeCode(0x60015b00) = 0x8460015b00 04 (JUMPDEST at offset 2)
+//   - EncodeCode(0x600160015500) = 0x86600160015500 80 (no JUMPDEST)
+//   - EncodeCode(nil) = 0x80 80
 func EncodeCode(bytecode []byte) []byte {
-	// Part 1: RLP(bytecode).
 	part1 := rlpEncodeBytes(bytecode)
-
-	// Part 2: RLP list of jump target uint32 values.
-	targets := ComputeJumpTargets(bytecode)
-	var listPayload []byte
-	for _, t := range targets {
-		listPayload = append(listPayload, rlpEncodeUint32(t)...)
-	}
-	part2 := rlpEncodeListRaw(listPayload)
-
+	part2 := rlpEncodeBytes(ComputeJumpdestBitmap(bytecode))
 	return append(part1, part2...)
 }
 
@@ -69,25 +75,4 @@ func CodeLengthMetadata(bytecode []byte) [8]byte {
 	out[6] = byte(n >> 8)
 	out[7] = byte(n)
 	return out
-}
-
-// rlpEncodeUint32 encodes a uint32 as an RLP integer (minimal big-endian).
-func rlpEncodeUint32(n uint32) []byte {
-	if n == 0 {
-		return []byte{0x80}
-	}
-	b := minBEBytesU32(n)
-	return rlpEncodeBytes(b)
-}
-
-// minBEBytesU32 returns the minimal big-endian encoding of a uint32.
-func minBEBytesU32(n uint32) []byte {
-	var buf [4]byte
-	i := 3
-	for n > 0 {
-		buf[i] = byte(n)
-		n >>= 8
-		i--
-	}
-	return buf[i+1:]
 }

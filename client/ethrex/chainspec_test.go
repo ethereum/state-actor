@@ -13,7 +13,7 @@ import (
 )
 
 // TestWriteStoreMetadata verifies that WriteStoreMetadata writes a valid JSON
-// file with schema_version=3.
+// file with schema_version=4.
 func TestWriteStoreMetadata(t *testing.T) {
 	dir := t.TempDir()
 	if err := ethrex.WriteStoreMetadata(dir); err != nil {
@@ -31,8 +31,8 @@ func TestWriteStoreMetadata(t *testing.T) {
 	if err := json.Unmarshal(data, &parsed); err != nil {
 		t.Fatalf("unmarshal metadata.json: %v", err)
 	}
-	if parsed.SchemaVersion != 3 {
-		t.Errorf("schema_version: got %d, want 3", parsed.SchemaVersion)
+	if parsed.SchemaVersion != 4 {
+		t.Errorf("schema_version: got %d, want 4", parsed.SchemaVersion)
 	}
 }
 

@@ -4,7 +4,7 @@
 #
 # RocksDB strategy: build from source. Pinned to RocksDB 10.10.1 to match
 # `grocksdb v1.10.8`'s C-binding expectations (its build.sh pins this exact
-# version). ethrex uses a single RocksDB instance with 21 column families;
+# version). ethrex uses a single RocksDB instance with 22 column families;
 # the same grocksdb pairing used for besu and nethermind applies here.
 #
 # Why 10.10.1 specifically: grocksdb v1.10.8's C bindings reference
@@ -22,8 +22,8 @@
 #       grocksdb v1.10.7 → RocksDB 10.9.1
 #       grocksdb v1.10.8 → RocksDB 10.10.1  ← we use this
 #
-#   * On-disk layout: single RocksDB at <dbPath> with 21 column families.
-#     Sidecar files: metadata.json (schema_version=3) and ethrex-genesis.json
+#   * On-disk layout: single RocksDB at <dbPath> with 22 column families.
+#     Sidecar files: metadata.json (schema_version=4) and ethrex-genesis.json
 #     (full genesis JSON for `ethrex --network <path>`).
 #
 # Run:
@@ -32,6 +32,7 @@
 #     --client=ethrex --db=/data --accounts=10 --contracts=0
 
 ARG ROCKSDB_VERSION=10.10.1
+ARG ROCKSDB_JOBS=2
 
 # ---------- Stage 1: builder (rocksdb + state-actor) ----------
 # Both the RocksDB shared library and the state-actor binary are built in
@@ -40,6 +41,7 @@ ARG ROCKSDB_VERSION=10.10.1
 FROM golang:1.25-bookworm AS builder
 
 ARG ROCKSDB_VERSION
+ARG ROCKSDB_JOBS
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
@@ -70,14 +72,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && apt-get update && apt-get install -y --no-install-recommends docker-ce-cli \
     && rm -rf /var/lib/apt/lists/*
 
-# Build RocksDB from source. -j2 keeps peak memory under ~4GB; rocksdb's
-# larger C++ files need 1-2GB per gcc instance and Docker Desktop's
-# default 8GB can't sustain $(nproc) parallel compiles on Apple Silicon.
+# Build RocksDB from source. ROCKSDB_JOBS defaults to 2, which keeps peak
+# memory under ~4GB: rocksdb's larger C++ files need 1-2GB per gcc instance,
+# and Docker Desktop's default 8GB can't sustain $(nproc) parallel compiles on
+# Apple Silicon. Raise it (--build-arg ROCKSDB_JOBS=$(nproc)) on a host with
+# RAM to spare.
 RUN mkdir -p /src && cd /src \
     && curl -fsSL "https://github.com/facebook/rocksdb/archive/refs/tags/v${ROCKSDB_VERSION}.tar.gz" \
        | tar xz \
     && cd rocksdb-${ROCKSDB_VERSION} \
-    && PORTABLE=1 USE_RTTI=1 DISABLE_WARNING_AS_ERROR=1 make -j2 shared_lib \
+    && PORTABLE=1 USE_RTTI=1 DISABLE_WARNING_AS_ERROR=1 make -j${ROCKSDB_JOBS} shared_lib \
     && make install-shared INSTALL_PATH=/usr/local \
     && ldconfig \
     && cd /src && rm -rf rocksdb-${ROCKSDB_VERSION}
