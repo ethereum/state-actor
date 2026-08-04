@@ -26,7 +26,7 @@ var errNotImplemented = errors.New(
 // It delegates to the build-tag-gated runImpl:
 //
 //   - Built with `-tags cgo_besu` (Docker only): runImpl in run_cgo.go opens
-//     one grocksdb instance with 8 column families, drives entitygen →
+//     one grocksdb instance with 17 column families, drives entitygen →
 //     trie.Builder → grocksdb writes, assembles the genesis block.
 //   - Built without the tag (local default): runImpl in run_stub.go returns
 //     errNotImplemented.
@@ -39,4 +39,3 @@ func Run(ctx context.Context, cfg generator.Config, opts Options) (*generator.St
 	}
 	return runImpl(ctx, cfg, opts)
 }
-

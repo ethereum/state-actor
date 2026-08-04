@@ -318,7 +318,7 @@ test-besu-suite: image-besu
 	  -e SPAMOOR=/usr/local/bin/spamoor \
 	  -e REQUIRE_SPAMOOR=1 \
 	  state-actor-besu-builder:latest \
-	  go test -tags 'cgo_besu oracle' ./client/besu/ -run 'TestE2ESuite|TestDifferentialOracle' -v -timeout 1800s
+	  go test -tags 'cgo_besu oracle' ./client/besu/ -run 'TestE2ESuite|TestDifferentialOracle|TestCFIndicesMatchNames|TestEveryColumnFamilyHasBloomFilter' -v -timeout 1800s
 	docker volume rm -f $(BESU_SUITE_VOL) >/dev/null 2>&1 || true
 
 ## test-nethermind-suite: Run the nethermind end-to-end suite

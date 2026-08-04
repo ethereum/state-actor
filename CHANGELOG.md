@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+### Changed
+- **Besu DB now created with all 17 mainnet Bonsai column families.**
+  A fresh mainnet Besu init creates every `KeyValueSegmentIdentifier`
+  segment with `BONSAI` in its format set, including `CHAIN_PRUNER_STATE`
+  with Besu's default BAL pruning — 17 CFs. state-actor previously created only the
+  8 it writes to, leaving Besu to auto-create the other 9 on first boot
+  (`create_missing_column_families`), so the pre-boot DB layout and CF-ID
+  assignment did not match a Besu-initialized database. The 9 additional
+  CFs (legacy privacy 0x03/0x04/0x0c, backward-sync 0x0d–0x0f, snap-sync
+  0x10/0x11, and chain-pruner state 0x12) are now created empty, in Besu's
+  enum order, from the new single-source-of-truth `keys.BonsaiCFNames()`.
+- **Besu Bloom filters are now enabled on every column family.** grocksdb's
+  `SetFilterPolicy` transfers ownership of its native policy, so reusing one
+  policy silently configured only the first CF. Each CF now receives its own
+  full Bloom filter at 10 bits/key, matching Besu.
+
 ### Added
 - **Nethermind flat-DB state generation (closes #111).** `--client=nethermind`
   now always writes Nethermind's flat-state layout — an eighth RocksDB

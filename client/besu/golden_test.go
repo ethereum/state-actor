@@ -88,16 +88,7 @@ func readWorldRoot(datadir string) (common.Hash, []byte, error) {
 	dbPath := filepath.Join(datadir, "database")
 
 	// Match the writer's CF set so RocksDB can open the DB.
-	cfNames := []string{
-		string(keys.CFDefault),
-		string(keys.CFBlockchain),
-		string(keys.CFAccountInfoState),
-		string(keys.CFCodeStorage),
-		string(keys.CFAccountStorageStorage),
-		string(keys.CFTrieBranchStorage),
-		string(keys.CFTrieLogStorage),
-		string(keys.CFVariables),
-	}
+	cfNames := keys.BonsaiCFNames()
 	cfOpts := make([]*grocksdb.Options, len(cfNames))
 	for i := range cfOpts {
 		cfOpts[i] = grocksdb.NewDefaultOptions()

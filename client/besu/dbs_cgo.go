@@ -23,24 +23,37 @@ const bulkBackgroundJobs = 8
 // → fewer L0 SSTs but more RAM per CF.
 const perCFWriteBufferBytes = 256 * 1024 * 1024
 
-// Besu opens ONE RocksDB instance under <datadir>/database/ with all 8 column
-// families declared. Even TRIE_LOG_STORAGE (no genesis-time writes) must be
-// declared on OpenDb — RocksDB compares the open's CF list against on-disk
-// CFs and fails if any is missing on subsequent reopens.
+// Besu opens ONE RocksDB instance under <datadir>/database/ with all 17
+// column families a fresh mainnet Bonsai init creates (keys.BonsaiCFNames).
+// Even CFs that receive no genesis-time writes (TRIE_LOG_STORAGE, the
+// backward-sync/snap-sync/legacy-privacy/chain-pruner CFs) must be declared on OpenDb —
+// RocksDB compares the open's CF list against on-disk CFs and fails if any
+// is missing on subsequent reopens — and creating them empty keeps the DB
+// layout identical to one initialized by Besu itself.
 
-// CF indices into besuDB.cfs. Must match the order of cfNames in openBesuDB.
+// CF indices into besuDB.cfs. Must match keys.BonsaiCFNames() order
+// (KeyValueSegmentIdentifier enum order); pinned by TestCFIndicesMatchNames.
 const (
 	cfIdxDefault = iota
 	cfIdxBlockchain
+	cfIdxPrivateTransactions
+	cfIdxPrivateState
 	cfIdxAccountInfoState
 	cfIdxCodeStorage
 	cfIdxAccountStorageStorage
 	cfIdxTrieBranchStorage
 	cfIdxTrieLogStorage
 	cfIdxVariables
+	cfIdxGoQuorumPrivateStorage
+	cfIdxBackwardSyncHeaders
+	cfIdxBackwardSyncBlocks
+	cfIdxBackwardSyncChain
+	cfIdxSnapsyncMissingAccountRange
+	cfIdxSnapsyncAccountToFix
+	cfIdxChainPrunerState
 )
 
-// besuDB holds the open grocksdb handle and the 8 CF handles. Caller closes
+// besuDB holds the open grocksdb handle and the 17 CF handles. Caller closes
 // via Close() when done.
 type besuDB struct {
 	db   *grocksdb.DB
@@ -49,10 +62,9 @@ type besuDB struct {
 
 	// Held for Destroy() during Close. grocksdb requires explicit option-bag
 	// cleanup or it leaks C++ allocations.
-	dbOpts        *grocksdb.Options
-	cfOpts        []*grocksdb.Options
-	tableOpts     []*grocksdb.BlockBasedTableOptions
-	bloomFilter   *grocksdb.NativeFilterPolicy
+	dbOpts    *grocksdb.Options
+	cfOpts    []*grocksdb.Options
+	tableOpts []*grocksdb.BlockBasedTableOptions
 }
 
 // openBesuDB creates a fresh Besu Bonsai RocksDB at <datadir>/database/.
@@ -84,32 +96,24 @@ func openBesuDB(datadir string) (*besuDB, error) {
 		return nil, fmt.Errorf("besu: mkdir datadir: %w", err)
 	}
 
-	// CF names use LITERAL bytes (0x01..0x0b for segment CFs, UTF-8 "default"
+	// CF names use LITERAL bytes (0x01..0x12 for segment CFs, UTF-8 "default"
 	// for the default CF) per KeyValueSegmentIdentifier.java:27-77. Order
 	// must match the cfIdx* constants above.
-	cfNames := []string{
-		string(keys.CFDefault),
-		string(keys.CFBlockchain),
-		string(keys.CFAccountInfoState),
-		string(keys.CFCodeStorage),
-		string(keys.CFAccountStorageStorage),
-		string(keys.CFTrieBranchStorage),
-		string(keys.CFTrieLogStorage),
-		string(keys.CFVariables),
-	}
+	cfNames := keys.BonsaiCFNames()
 
 	// Match Besu's per-CF settings from RocksDBColumnarKeyValueStorage.java:
 	// LZ4 compression, block-based table format_version=5, 32KB blocks,
 	// BloomFilter(10), dynamic-level compaction, BlobDB on BLOCKCHAIN +
 	// TRIE_LOG_STORAGE only. Matching avoids "files look weird, Besu silently
 	// re-tunes on first open" surprises.
-	bf := grocksdb.NewBloomFilter(10)
-
 	mkTable := func() *grocksdb.BlockBasedTableOptions {
 		t := grocksdb.NewDefaultBlockBasedTableOptions()
 		t.SetBlockSize(32 << 10) // 32 KB
 		t.SetFormatVersion(5)
-		t.SetFilterPolicy(bf)
+		// SetFilterPolicy takes ownership of the native policy. A fresh policy
+		// is therefore required for every CF; reusing one leaves every CF after
+		// the first with filter_policy=nullptr.
+		t.SetFilterPolicy(grocksdb.NewBloomFilterFull(10))
 		// SetPartitionFilters and SetCacheIndexAndFilterBlocks ARE exposed by
 		// grocksdb v1.10.x (earlier comments here claimed otherwise). Both
 		// stay at RocksDB defaults deliberately: the bulk path is write-only
@@ -177,18 +181,16 @@ func openBesuDB(datadir string) (*besuDB, error) {
 		for _, t := range tableOpts {
 			t.Destroy()
 		}
-		bf.Destroy()
 		return nil, fmt.Errorf("besu: open RocksDB at %s: %w", dbPath, err)
 	}
 
 	return &besuDB{
-		db:          db,
-		cfs:         cfHandles,
-		path:        dbPath,
-		dbOpts:      dbOpts,
-		cfOpts:      cfOpts,
-		tableOpts:   tableOpts,
-		bloomFilter: bf,
+		db:        db,
+		cfs:       cfHandles,
+		path:      dbPath,
+		dbOpts:    dbOpts,
+		cfOpts:    cfOpts,
+		tableOpts: tableOpts,
 	}, nil
 }
 
@@ -200,9 +202,11 @@ func openBesuDB(datadir string) (*besuDB, error) {
 // the bulk write's suppressed compactions, parallelised across MaxBackgroundJobs.
 func (b *besuDB) Close() {
 	if b.db != nil {
-		// CompactRange the user CFs only. The Default CF is empty in our
-		// usage; the Blockchain + TRIE_LOG_STORAGE CFs receive few writes
-		// at genesis and a CompactRange on them is near-instant.
+		// CompactRange the written CFs only. The Default CF and the
+		// mainnet-parity CFs (legacy privacy, backward-sync, snap-sync,
+		// chain-pruner)
+		// are empty in our usage; the Blockchain CF receives few writes
+		// at genesis and a CompactRange on it is near-instant.
 		emptyRange := grocksdb.Range{Start: nil, Limit: nil}
 		for _, idx := range []int{
 			cfIdxAccountInfoState,
@@ -247,11 +251,6 @@ func (b *besuDB) Close() {
 	if b.dbOpts != nil {
 		b.dbOpts.Destroy()
 		b.dbOpts = nil
-	}
-
-	if b.bloomFilter != nil {
-		b.bloomFilter.Destroy()
-		b.bloomFilter = nil
 	}
 }
 
