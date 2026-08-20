@@ -7,27 +7,17 @@ import (
 	"github.com/ethereum/go-ethereum/crypto"
 )
 
-// eip7954MaxCodeSize is the contract-code limit EIP-7954 raises EIP-170's
-// 24576 to at Amsterdam, and the size the execution-specs
-// `AccountMode.EXISTING_CONTRACT_*_64KIB` modes deploy at.
-//
-// Note that go-ethereum carried MaxCodeSizeAmsterdam = 32768 for a while
-// before settling on 65536 (glamsterdam-devnet-8 has the latter, matching both
-// EIP-7954 and EIP-7907). Nothing here depends on the client constant --
-// state-actor writes the runtime into the database rather than deploying it --
-// but a client still enforcing 32768 would reject these deployments, leaving
-// the addresses below empty.
+// eip7954MaxCodeSize is the Amsterdam code-size limit, and the size the
+// execution-specs `AccountMode.EXISTING_CONTRACT_*_64KIB` modes deploy at.
+// State-actor writes runtime directly so no client limit applies here, but a
+// client still enforcing the 32768 go-ethereum briefly carried would reject
+// these deployments and leave the addresses below empty.
 const eip7954MaxCodeSize = 0x10000
 
-// TestUniqueJumpdestEIP7954AddressesMatchEEST pins the derived addresses for
-// unique_jumpdest at the EIP-7954 limit, which the other adjustable patterns
-// already have (TestCreate2DeploysMaxAdjustableEIP7954AddressesMatchEEST) and
-// this one only had at 0x20000.
-//
-// This is the size execution-specs deploys at for
-// AccountMode.EXISTING_CONTRACT_JUMPDEST_64KIB, so a divergence here points
-// the benchmarks at accounts that were never deployed to -- which EXTCODESIZE
-// answers without complaint. Regenerate from an execution-specs checkout:
+// TestUniqueJumpdestEIP7954AddressesMatchEEST pins unique_jumpdest at the
+// EIP-7954 size, which the other two patterns already had and this one only
+// had at 0x20000. A divergence points the benchmarks at accounts nothing was
+// deployed to, which EXTCODESIZE answers without complaint. Regenerate:
 //
 //	from tests.benchmark.helper.account_creator import AccountCreator, AccountMode
 //	from execution_testing import DETERMINISTIC_FACTORY_ADDRESS, compute_create2_address
@@ -59,8 +49,7 @@ func TestUniqueJumpdestEIP7954AddressesMatchEEST(t *testing.T) {
 			t.Errorf("salt=%d: runtime length got %d, want %#x",
 				i, len(out[i].Code), eip7954MaxCodeSize)
 		}
-		// The entry jump target 0xFFFF is the largest that still fits a
-		// PUSH2, so this size keeps the 4-byte entry the default size has.
+		// 0xFFFF is the largest target that still fits a PUSH2.
 		entry := []byte{0x61, 0xFF, 0xFF, 0x56}
 		for j, b := range entry {
 			if out[i].Code[j] != b {
@@ -79,11 +68,9 @@ func TestUniqueJumpdestEIP7954AddressesMatchEEST(t *testing.T) {
 	}
 }
 
-// TestEIP7954InitcodeMatchesEEST pins keccak256 of all three adjustable
-// patterns' initcode at the EIP-7954 limit in one place, so that the size the
-// 64 KiB account modes use is covered for every pattern rather than for two of
-// the three. The values were read back from the initcode execution-specs
-// builds, which is byte-identical to what these builders emit at this size.
+// TestEIP7954InitcodeMatchesEEST covers all three patterns at the EIP-7954
+// size in one place. Verified byte-identical to what execution-specs builds,
+// not merely hash-equal.
 func TestEIP7954InitcodeMatchesEEST(t *testing.T) {
 	for _, c := range []struct {
 		name     string

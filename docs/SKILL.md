@@ -1,6 +1,6 @@
 ---
 name: state-actor
-description: Use this skill when a user wants to generate, boot, verify, or extend a state-actor-produced Ethereum database. Covers --client, --spec, --target-size, per-client boot recipes (geth / reth / besu / nethermind / ethrex / erigon), and the canonical 29-entity spec fixture.
+description: Use this skill when a user wants to generate, boot, verify, or extend a state-actor-produced Ethereum database. Covers --client, --spec, --target-size, per-client boot recipes (geth / reth / besu / nethermind / ethrex / erigon), and the canonical 33-entity spec fixture.
 ---
 
 # SKILL.md — how to use state-actor
@@ -13,7 +13,7 @@ state-actor generates client-ready Ethereum databases for geth, reth, besu, neth
 
 Read these in this order. The first one is load-bearing — read it before you read any prose about specs.
 
-1. [`examples/full-matrix-spec-feature.yaml`](../examples/full-matrix-spec-feature.yaml) — **the canonical syntax reference for `--spec`**. CI-pinned, 29 entities, every feature. Read this file before reading any other doc about specs; see the [Canonical spec reference](#canonical-spec-reference) section below for an intent → entity-# index.
+1. [`examples/full-matrix-spec-feature.yaml`](../examples/full-matrix-spec-feature.yaml) — **the canonical syntax reference for `--spec`**. CI-pinned, 33 entities, every feature. Read this file before reading any other doc about specs; see the [Canonical spec reference](#canonical-spec-reference) section below for an intent → entity-# index.
 2. [`SPEC.md`](SPEC.md) — the schema reference (parser rules, validation errors, address-resolution algorithm, `approximate_size_bytes` semantics). Read alongside the fixture.
 3. [`RUNBOOK.md`](RUNBOOK.md) — per-client boot recipes (geth / reth / besu / nethermind / ethrex / erigon).
 4. [`ARCHITECTURE.md`](ARCHITECTURE.md) — internal architecture; cross-client determinism; per-client writer differences.
@@ -30,11 +30,11 @@ Everything else has a sane default. Run `state-actor --help` for the full list (
 
 ## Canonical spec reference
 
-**The single source of truth for what a `--spec` YAML can express is [`examples/full-matrix-spec-feature.yaml`](../examples/full-matrix-spec-feature.yaml).** Read that file before reading anything else about specs. It is exhaustive (29 entities, every feature), self-documenting (six section banners + per-entity comments), and CI keeps it correct.
+**The single source of truth for what a `--spec` YAML can express is [`examples/full-matrix-spec-feature.yaml`](../examples/full-matrix-spec-feature.yaml).** Read that file before reading anything else about specs. It is exhaustive (33 entities, every feature), self-documenting (section banners + per-entity comments), and CI keeps it correct.
 
 The CI guarantees that hold this file as the canonical reference:
 
-- [`internal/specbuild/full_matrix_test.go`](../internal/specbuild/full_matrix_test.go) (`TestBuildFullMatrix`) pins the entity count at 29 and asserts the cross-client `PreAlloc` count equality. The unit-level drift gate — byte-identity is enforced downstream by the cross-client-genesis-root aggregator job.
+- [`internal/specbuild/full_matrix_test.go`](../internal/specbuild/full_matrix_test.go) (`TestBuildFullMatrix`) pins the entity count at 33 and asserts the cross-client `PreAlloc` count equality. The unit-level drift gate — byte-identity is enforced downstream by the cross-client-genesis-root aggregator job.
 - [`internal/e2e_testing/spec_setup.go`](../internal/e2e_testing/spec_setup.go) (`LoadCISpec`) loads the fixture with `seed=0` + `sizecal.NewFixed(64)` so every client sees the same input.
 - Per-client `TestE2ESuite` (in [`client/geth/e2e_test.go`](../client/geth/e2e_test.go), [`client/besu/e2e_test.go`](../client/besu/e2e_test.go), [`client/nethermind/e2e_test.go`](../client/nethermind/e2e_test.go), [`client/reth/oracle_test.go`](../client/reth/oracle_test.go) for reth, [`client/ethrex/e2e_test.go`](../client/ethrex/e2e_test.go) for ethrex, and [`client/erigon/e2e_test.go`](../client/erigon/e2e_test.go) for erigon) boots a real client against state-actor's output, runs spamoor, and verifies every entity via the Go oracle.
 - The `cross-client · genesis state-root invariant` aggregator job in [`.github/workflows/ci.yml`](../.github/workflows/ci.yml) refuses to merge a PR whose four clients produce different genesis roots from this fixture.
@@ -49,6 +49,8 @@ The fixture is organised into six labelled sections; each one pins a feature clu
 | `10-12. Raw bytecode flavors` | 10-12 | `kind: contract` + `code:` (no template); large code; storage synth |
 | `13-15. EIP-7702 EOA flavors` | 13-15 | `0xef0100<delegate>` delegation marker × address modes × storage bloat |
 | `16-22. Plain EOA flavors` | 16-22 | All address modes, zero balance, hex-form balance, default-nonce, storage on EOA |
+| `23-29. PR 76 repricing-benchmark templates` | 23-29 | `storage_pattern`, `create2_factory`, `create2_deploys` (literal and fixed `code_pattern`), `create_preimage_deploys`, `sequential_eoas`, `sequential_pkey_eoas` |
+| `30-33. Size-adjustable code patterns` | 30-33 | `code_size:` on `unique_jumpdest` / `max_same` / `max_diff`, including the EIP-7954 64 KiB limit, and on `sequential_pkey_delegations` |
 
 ### Intent → entity-# index
 
@@ -71,6 +73,11 @@ The fixture is organised into six labelled sections; each one pins a feature clu
 | ERC-20 explicit + bulk combined | 9 | Explicit-owners + allowances |
 | Raw bytecode contract | 10, 11, 12 | Raw bytecode flavors |
 | Plain EOA with omitted-nonce default (0) | 22 | Plain EOA flavors |
+| CREATE2 deployments at derived addresses | 25, 29 | PR 76 templates |
+| A 24 KiB fixed-size code pattern | 29 | PR 76 templates |
+| A code pattern at a chosen `code_size` | 30, 31, 32 | Size-adjustable code patterns |
+| A 64 KiB (EIP-7954) contract runtime | 31 | Size-adjustable code patterns |
+| EIP-7702 authorities delegating to planted contracts | 33 | Size-adjustable code patterns |
 
 ### How to adapt the fixture to a new spec
 

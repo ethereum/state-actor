@@ -356,3 +356,59 @@ entities:
     parameters:
       code_pattern: unique_jumpdest_pre_amsterdam
       salt_count: 2
+
+  # ── 30-33. Size-adjustable code patterns ────────────────────────────
+  # The `code_size:` parameter, one entity per pattern, so every client
+  # writer sees a runtime whose length is not the 24_576 the fixed
+  # *_pre_amsterdam patterns hard-code. Sizes are chosen for coverage per
+  # byte: max_same carries the EIP-7954 64 KiB limit once (all salts
+  # alias one blob), while the two per-address-unique patterns stay small
+  # so the fixture keeps its ~500 KB budget. APPENDED LAST, as entity 29
+  # was, so existing entities keep their index and derived addresses.
+
+  # 30. unique_jumpdest at its minimum code_size. 0x61 is the smallest
+  # size whose entry JUMP is valid for every derived address: jumpdest
+  # analysis decodes the embedded address as opcodes, and a PUSH byte in
+  # it can swallow a target closer than 0x60.
+  - kind: contract
+    template: create2_deploys
+    name: ci-create2-unique-jumpdest-min
+    parameters:
+      code_pattern: unique_jumpdest
+      code_size: 0x61
+      salt_count: 2
+
+  # 31. max_same at the EIP-7954 limit — the 64 KiB blob EELS deploys for
+  # AccountMode.EXISTING_CONTRACT_SAME_MAX_64KIB. Shared runtime, so both
+  # salts point at identical bytes and the fixture pays for it once.
+  - kind: contract
+    template: create2_deploys
+    name: ci-create2-max-same-64kib
+    parameters:
+      code_pattern: max_same
+      code_size: 0x10000
+      salt_count: 2
+
+  # 32. max_diff, per-address-unique. Kept small: the layout is max_same
+  # plus an embedded address, which entity 31 already covers at 64 KiB.
+  - kind: contract
+    template: create2_deploys
+    name: ci-create2-max-diff-small
+    parameters:
+      code_pattern: max_diff
+      code_size: 0x100
+      salt_count: 2
+
+  # 33. sequential_pkey_delegations with a size-adjustable pattern. This
+  # template was user-visible but in neither this fixture nor SPEC.md, and
+  # `code_size:` reaches it too. Same pattern, size, factory and salt_start
+  # as entity 32, so authority #i delegates to the contract entity 32
+  # plants at salt i — the pairing execution-specs relies on.
+  - kind: contract
+    template: sequential_pkey_delegations
+    name: ci-pkey-delegations-max-diff
+    parameters:
+      start_pkey: "0x3333333333333333333333333333333333333333333333333333333333333333"
+      count: 2
+      code_pattern: max_diff
+      code_size: 0x100

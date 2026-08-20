@@ -2,6 +2,7 @@ package templates
 
 import (
 	"bytes"
+	"math/rand/v2"
 	"testing"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -47,7 +48,7 @@ func TestBuildUniqueJumpdestInitcodeMatchesEESTSizes(t *testing.T) {
 		keccak   string
 	}{
 		// Minimum size, and the largest still entered by a PUSH1.
-		{0x41, "0xa04269b63348a0db52e897141f3133c359dc29ab105f3486511f7f9372159134"},
+		{0x61, "0xa2b285daef896ad01cef3d7bb6e98419b363c495e9c6314701c17bea91d185dc"},
 		{0x100, "0x068a051642eef559a9da27724afa363d316e26b3d4f473d5c556b6ba74d347c4"},
 		// First PUSH2-encoded size (entry `PUSH2 0x0100; JUMP`).
 		{0x101, "0x9d85953b1bfac9014d0b7bb053c16f46d4653d7f9d1cbc6c6cd6459a0f98e889"},
@@ -105,19 +106,17 @@ func TestBuildUniqueJumpdestRuntimeLayoutPush3(t *testing.T) {
 	}
 }
 
-// TestBuildUniqueJumpdestRuntimeEntryBoundary pins the entry encoding at
-// each width the minimal push produces, including both sides of the two
-// boundaries. Every value here is `bytes(Op.JUMP(code_size - 1))` read
-// out of execution-specs, which is the point: the entry was a
-// fixed-width PUSH2 before and disagreed with EEST for every size whose
-// target fits one byte.
+// TestBuildUniqueJumpdestRuntimeEntryBoundary pins the entry at each push
+// width. Every value is `bytes(Op.JUMP(code_size - 1))` read out of
+// execution-specs, which the old fixed-width PUSH2 disagreed with below
+// 0x101.
 func TestBuildUniqueJumpdestRuntimeEntryBoundary(t *testing.T) {
 	addr := common.HexToAddress("0x000000000000000000000000000000000000beef")
 	cases := []struct {
 		codeSize uint64
 		entry    []byte
 	}{
-		{0x41, []byte{0x60, 0x40, 0x56}},                // PUSH1, the minimum size
+		{0x61, []byte{0x60, 0x60, 0x56}},                // PUSH1, the minimum size
 		{0x100, []byte{0x60, 0xFF, 0x56}},               // largest PUSH1
 		{0x101, []byte{0x61, 0x01, 0x00, 0x56}},         // first PUSH2
 		{0x6000, []byte{0x61, 0x5F, 0xFF, 0x56}},        // the default
@@ -206,7 +205,7 @@ func TestCreate2DeploysUniqueJumpdestDefaultSizeAddresses(t *testing.T) {
 
 // TestCodeSizeParameterValidation pins the code_size parameter rules:
 // only valid together with a size-adjustable code_pattern, and only
-// within [0x41, 0x01000000].
+// within [0x61, 0x01000000].
 func TestCodeSizeParameterValidation(t *testing.T) {
 	c2 := &create2DeploysTemplate{}
 	cp := &createPreimageDeploysTemplate{}
@@ -276,7 +275,7 @@ func TestCodeSizeParameterValidation(t *testing.T) {
 	}{
 		{"create2: minimum code_size", c2, map[string]any{
 			"code_pattern": CodePatternUniqueJumpdest,
-			"code_size":    0x41,
+			"code_size":    0x61,
 			"salt_count":   1,
 		}},
 		{"create2: maximum code_size", c2, map[string]any{
@@ -336,5 +335,61 @@ func TestPatternResidentCodeCapLargeCodeSize(t *testing.T) {
 	}
 	if err := c2.ValidateParameters(bad); err == nil {
 		t.Errorf("salt_count=4097 at 16 MiB should exceed the 64 GiB cap, got nil")
+	}
+}
+
+// jumpdestValid reports whether pc is reachable as a JUMPDEST by the EVM's
+// linear code scan, i.e. is not inside a PUSH immediate.
+func jumpdestValid(code []byte, pc int) bool {
+	for i := 0; i < len(code); {
+		if i == pc {
+			return code[i] == 0x5B
+		}
+		if op := code[i]; op >= 0x60 && op <= 0x7F {
+			i += int(op) - 0x5F + 1
+		} else {
+			i++
+		}
+	}
+	return false
+}
+
+// TestUniqueJumpdestEntryReachable covers why minUniqueJumpdestCodeSize is
+// 0x61: jumpdest analysis decodes the embedded address as opcodes, so a PUSH
+// byte in it can turn the entry jump's target into push data.
+func TestUniqueJumpdestEntryReachable(t *testing.T) {
+	const cs = minUniqueJumpdestCodeSize
+
+	// Every byte value at every address position.
+	for pos := range 20 {
+		for v := range 256 {
+			var addr common.Address
+			addr[pos] = byte(v)
+			if !jumpdestValid(BuildUniqueJumpdestRuntime(addr, cs), cs-1) {
+				t.Fatalf("code_size=%#x: address byte %d = %#02x makes target %#x invalid",
+					cs, pos, v, cs-1)
+			}
+		}
+	}
+
+	// Full addresses, where PUSH bytes can chain.
+	rng := rand.New(rand.NewPCG(1, 2))
+	for range 5000 {
+		var addr common.Address
+		for i := range addr {
+			addr[i] = byte(rng.UintN(256))
+		}
+		if !jumpdestValid(BuildUniqueJumpdestRuntime(addr, cs), cs-1) {
+			t.Fatalf("code_size=%#x: address %s makes target %#x invalid",
+				cs, addr.Hex(), cs-1)
+		}
+	}
+
+	// One size below the minimum, to show the bound is not arbitrary: a
+	// PUSH12 at 0x34 swallows the target at 0x40.
+	var bad common.Address
+	bad[8] = 0x6B
+	if jumpdestValid(BuildUniqueJumpdestRuntime(bad, 0x41), 0x40) {
+		t.Errorf("code_size=0x41 with a PUSH12 in the address: target should be invalid")
 	}
 }

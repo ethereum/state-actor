@@ -142,7 +142,7 @@ func TestCreate2DeploysMaxAdjustableEIP7954AddressesMatchEEST(t *testing.T) {
 
 // TestMaxAdjustableCodeSizeBounds pins the per-pattern minimum: the
 // stop-jumpdest layouts accept code_size down to 0x20 (the max_diff
-// address region ends there) while unique_jumpdest requires 0x41.
+// address region ends there) while unique_jumpdest requires 0x61.
 func TestMaxAdjustableCodeSizeBounds(t *testing.T) {
 	c2 := &create2DeploysTemplate{}
 	for _, pattern := range []string{CodePatternMaxSame, CodePatternMaxDiff} {
@@ -165,7 +165,7 @@ func TestMaxAdjustableCodeSizeBounds(t *testing.T) {
 	if err := c2.ValidateParameters(map[string]any{
 		"code_pattern": CodePatternUniqueJumpdest, "code_size": 0x40, "salt_count": 1,
 	}); err == nil {
-		t.Errorf("unique_jumpdest: code_size=0x40 should be rejected (min 0x41)")
+		t.Errorf("unique_jumpdest: code_size below the minimum should be rejected")
 	}
 }
 
