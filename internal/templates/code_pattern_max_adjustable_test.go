@@ -159,7 +159,7 @@ func TestMaxAdjustableCodeSizeBounds(t *testing.T) {
 		if err := c2.ValidateParameters(map[string]any{
 			"code_pattern": pattern, "code_size": 0x1000001, "salt_count": 1,
 		}); err == nil {
-			t.Errorf("%s: code_size above the PUSH3 cap should be rejected", pattern)
+			t.Errorf("%s: code_size above the cap should be rejected", pattern)
 		}
 	}
 	if err := c2.ValidateParameters(map[string]any{

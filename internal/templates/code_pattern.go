@@ -46,12 +46,12 @@ const (
 	// matches execution-specs `JochemnetPredeployContractInitcode`
 	// with the same code_size.
 	//
-	// The entry jump target is a fixed-width push: PUSH2 for any
-	// code_size up to 0x010000 (so the default size reproduces the
-	// pre-Amsterdam initcode byte-for-byte — state already deployed on
-	// live testnets keeps its CREATE2 addresses), PUSH3 above it (the
-	// target no longer fits two bytes, which changes the initcode and
-	// therefore the derived addresses).
+	// The entry jump target is a minimal push, as execution-specs emits
+	// it: PUSH1 while `code_size - 1` fits one byte, PUSH2 up to
+	// 0x010000, PUSH3 above. The default size lands in the PUSH2 range
+	// either way, so it reproduces the pre-Amsterdam initcode
+	// byte-for-byte and state already deployed on live testnets keeps
+	// its CREATE2 addresses.
 	CodePatternUniqueJumpdest = "unique_jumpdest"
 
 	// CodePatternMaxSame — size-adjustable variant of the max-same
@@ -76,9 +76,11 @@ const (
 // amsterdam pattern variant will live alongside this one when scheduled.
 const preAmsterdamMaxCodeSize = 0x6000 // 24576 bytes.
 
-// maxPatternCodeSize caps the size-adjustable patterns: the entry jump
-// target is at most a 3-byte PUSH3 immediate (0xFFFFFF), so the runtime
-// can be at most 0x01000000 bytes long.
+// maxPatternCodeSize caps the size-adjustable patterns at 16 MiB, three
+// bytes of entry jump target. Nothing in the layout breaks above it —
+// the entry push simply grows — but no benchmark wants a runtime that
+// large, and a cap keeps a mistyped code_size from asking the builder
+// for gigabytes of JUMPDEST.
 const maxPatternCodeSize = 0x01000000 // 16 MiB
 
 // minUniqueJumpdestCodeSize is the smallest runtime the unique-jumpdest
@@ -90,11 +92,6 @@ const minUniqueJumpdestCodeSize = 0x41
 // layouts support: the max-diff embedded-address region ends at byte
 // 0x20 (max-same shares the bound for simplicity).
 const minStopJumpdestCodeSize = 0x20
-
-// entryPush3Boundary: code sizes up to this bound encode the entry jump
-// target as a fixed-width PUSH2 (matching state already deployed on
-// live testnets); above it the target needs three bytes (PUSH3).
-const entryPush3Boundary = 0x010000
 
 // single source of truth for recognized pattern names.
 var knownCodePatterns = []string{
@@ -216,9 +213,10 @@ func BuildUniqueJumpdestRuntimePreAmsterdam(addr common.Address) []byte {
 // BuildUniqueJumpdestRuntime returns the codeSize-byte runtime for one
 // derived contract under the size-adjustable unique-jumpdest pattern.
 // Same layout as the pre-Amsterdam variant, with the entry jump target
-// at codeSize-1: `PUSH2 target; JUMP` (4 bytes) for codeSize up to
-// 0x010000, `PUSH3 target; JUMP` (5 bytes) above it. All bytes outside
-// the entry and the embedded address at 0x2C..0x40 are JUMPDEST.
+// at codeSize-1 as a minimal push: `PUSH1 target; JUMP` (3 bytes) while
+// the target fits one byte, `PUSH2` (4 bytes) up to 0x010000, `PUSH3`
+// (5 bytes) above it. All bytes outside the entry and the embedded
+// address at 0x2C..0x40 are JUMPDEST.
 //
 // codeSize must be in [minUniqueJumpdestCodeSize, maxPatternCodeSize];
 // parseCodePatternCodeSize enforces this before any builder runs.
@@ -232,7 +230,7 @@ func BuildUniqueJumpdestRuntime(addr common.Address, codeSize uint64) []byte {
 		out[i] = 0x5B
 	}
 
-	// Entry: PUSH2/PUSH3 codeSize-1; JUMP.
+	// Entry: PUSHn codeSize-1; JUMP.
 	copy(out, appendEntryJump(nil, codeSize))
 
 	// Bytes up to 0x02C already JUMPDEST from default fill.
@@ -247,19 +245,16 @@ func BuildUniqueJumpdestRuntime(addr common.Address, codeSize uint64) []byte {
 	return out
 }
 
-// appendEntryJump appends the runtime entry `PUSHn codeSize-1; JUMP`.
-// The push is fixed-width per size class — PUSH2 for codeSize up to
-// entryPush3Boundary, PUSH3 above — NOT a minimal push: state already
-// deployed on live testnets used the PUSH2 encoding, so sizes in the
-// PUSH2 range must keep producing byte-identical initcode (and thereby
-// unchanged CREATE2 addresses).
+// appendEntryJump appends the runtime entry `PUSHn codeSize-1; JUMP`,
+// with the target as a minimal push. This mirrors execution-specs
+// `Op.JUMP(code_size - 1)`, which is what makes the initcode — and so
+// the derived CREATE2 addresses — agree with it at every size. A
+// fixed-width PUSH2 was used here before and diverged for every
+// codeSize up to 0x100, where the target fits a single byte; the two
+// encodings agree from 0x101 up, so the 24576 default and everything
+// deployed at it are unaffected.
 func appendEntryJump(buf []byte, codeSize uint64) []byte {
-	target := codeSize - 1
-	if codeSize <= entryPush3Boundary {
-		buf = append(buf, 0x61, byte(target>>8), byte(target)) // PUSH2
-	} else {
-		buf = append(buf, 0x62, byte(target>>16), byte(target>>8), byte(target)) // PUSH3
-	}
+	buf = append(buf, pushImmediate(codeSize-1)...)
 	return append(buf, 0x56) // JUMP
 }
 
@@ -313,10 +308,9 @@ func BuildUniqueJumpdestInitcodePreAmsterdam() []byte {
 
 // BuildUniqueJumpdestInitcode returns the initcode that — if run —
 // would deploy the codeSize-byte unique-jumpdest runtime. Same shape as
-// the pre-Amsterdam variant with two size-dependent spots: the entry
-// pushed in step 3 (PUSH2 target for codeSize up to 0x010000, PUSH3
-// above — see appendEntryJump) and the RETURN length in step 5
-// (minimal push of codeSize, matching Python's Op.RETURN encoding).
+// the pre-Amsterdam variant with two size-dependent spots, both of them
+// minimal pushes as Python emits them: the entry jump target in step 3
+// (see appendEntryJump) and the RETURN length in step 5.
 // For the 24576 default the output is byte-identical to
 // BuildUniqueJumpdestInitcodePreAmsterdam. Vendored from
 // execution-specs `JochemnetPredeployContractInitcode`; only the

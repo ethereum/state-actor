@@ -30,9 +30,9 @@ func TestUniqueJumpdestDefaultMatchesPreAmsterdam(t *testing.T) {
 
 // TestBuildUniqueJumpdestInitcodeMatchesEESTSizes pins keccak256 of the
 // size-adjustable initcode against execution-specs
-// `JochemnetPredeployContractInitcode(code_size=...)` for sizes on both
-// sides of the PUSH2→PUSH3 entry-encoding boundary at 0x010000.
-// Regenerate from an execution-specs checkout:
+// `JochemnetPredeployContractInitcode(code_size=...)` for sizes at every
+// entry-push width and on both sides of each boundary (0x100 and
+// 0x010000). Regenerate from an execution-specs checkout:
 //
 //	import sys; sys.path.insert(0, 'tests/benchmark')
 //	from helper.account_creator import JochemnetPredeployContractInitcode
@@ -46,8 +46,11 @@ func TestBuildUniqueJumpdestInitcodeMatchesEESTSizes(t *testing.T) {
 		codeSize uint64
 		keccak   string
 	}{
-		{0x41, "0x38c595a4df0631d8df37721abc62f2a2834f09c6019cc4e0cab1af5b6dab2e6b"},
-		{0x100, "0xd925f01c3f4a9a5ce1d3bb1452d7ff2e020ed423b78a88261e6147eb0df586ce"},
+		// Minimum size, and the largest still entered by a PUSH1.
+		{0x41, "0xa04269b63348a0db52e897141f3133c359dc29ab105f3486511f7f9372159134"},
+		{0x100, "0x068a051642eef559a9da27724afa363d316e26b3d4f473d5c556b6ba74d347c4"},
+		// First PUSH2-encoded size (entry `PUSH2 0x0100; JUMP`).
+		{0x101, "0x9d85953b1bfac9014d0b7bb053c16f46d4653d7f9d1cbc6c6cd6459a0f98e889"},
 		// Default size: same pin as TestBuildUniqueJumpdestInitcodeMatchesEEST.
 		{0x6000, "0xb9cdb9047474294c9743cf3944156c844bf91763de66271493caa07a3de77ec5"},
 		// Largest PUSH2-encoded size (entry `PUSH2 0xFFFF; JUMP`).
@@ -55,7 +58,7 @@ func TestBuildUniqueJumpdestInitcodeMatchesEESTSizes(t *testing.T) {
 		// First PUSH3-encoded size (entry `PUSH3 0x010000; JUMP`).
 		{0x10001, "0xfb6c8fdbd5b4f1624cb84a9fc37181e6aab74f3bbb0990f58e6d13c49cd8baf8"},
 		{0x20000, "0xc03348b4fde3c0eed2f9707c8b003c62ae4752d85f36544d1a2ddad623114d07"},
-		// The PUSH3-capped maximum.
+		// The capped maximum.
 		{0x1000000, "0x51f4a0dab520358d8b1a8c641f318e3fefbf722c164807c11c1ee76504ffc5d2"},
 	}
 	for _, c := range cases {
@@ -102,17 +105,21 @@ func TestBuildUniqueJumpdestRuntimeLayoutPush3(t *testing.T) {
 	}
 }
 
-// TestBuildUniqueJumpdestRuntimeEntryBoundary pins the fixed-width entry
-// encoding on both sides of the 0x010000 boundary. Sizes at or below it
-// MUST stay PUSH2 — a minimal push would flip small sizes to PUSH1 and
-// silently change initcode already deployed on live testnets.
+// TestBuildUniqueJumpdestRuntimeEntryBoundary pins the entry encoding at
+// each width the minimal push produces, including both sides of the two
+// boundaries. Every value here is `bytes(Op.JUMP(code_size - 1))` read
+// out of execution-specs, which is the point: the entry was a
+// fixed-width PUSH2 before and disagreed with EEST for every size whose
+// target fits one byte.
 func TestBuildUniqueJumpdestRuntimeEntryBoundary(t *testing.T) {
 	addr := common.HexToAddress("0x000000000000000000000000000000000000beef")
 	cases := []struct {
 		codeSize uint64
 		entry    []byte
 	}{
-		{0x41, []byte{0x61, 0x00, 0x40, 0x56}},          // PUSH2, not PUSH1
+		{0x41, []byte{0x60, 0x40, 0x56}},                // PUSH1, the minimum size
+		{0x100, []byte{0x60, 0xFF, 0x56}},               // largest PUSH1
+		{0x101, []byte{0x61, 0x01, 0x00, 0x56}},         // first PUSH2
 		{0x6000, []byte{0x61, 0x5F, 0xFF, 0x56}},        // the default
 		{0x10000, []byte{0x61, 0xFF, 0xFF, 0x56}},       // largest PUSH2
 		{0x10001, []byte{0x62, 0x01, 0x00, 0x00, 0x56}}, // first PUSH3
@@ -226,7 +233,7 @@ func TestCodeSizeParameterValidation(t *testing.T) {
 			"code_size":    0x40,
 			"salt_count":   1,
 		}},
-		{"create2: code_size above PUSH3 cap", c2, map[string]any{
+		{"create2: code_size above cap", c2, map[string]any{
 			"code_pattern": CodePatternUniqueJumpdest,
 			"code_size":    0x1000001,
 			"salt_count":   1,

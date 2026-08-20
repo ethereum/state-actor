@@ -60,7 +60,7 @@ func TestUniqueJumpdestEIP7954AddressesMatchEEST(t *testing.T) {
 				i, len(out[i].Code), eip7954MaxCodeSize)
 		}
 		// The entry jump target 0xFFFF is the largest that still fits a
-		// PUSH2, so this size keeps the 4-byte entry of the smaller ones.
+		// PUSH2, so this size keeps the 4-byte entry the default size has.
 		entry := []byte{0x61, 0xFF, 0xFF, 0x56}
 		for j, b := range entry {
 			if out[i].Code[j] != b {
