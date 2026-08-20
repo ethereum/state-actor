@@ -122,6 +122,7 @@ least one holder has a non-zero balance).
 | `create2_factory` | — | — | Plants the 69-byte Arachnid deterministic-deployment proxy runtime. The deployed address defaults to the canonical Arachnid factory address `0x4e59b44847b379578588920cA78FbF26c0B4956C` when neither `address:` nor `name:` is set; explicit `address:` (or name-derived) values are honored verbatim. The runtime is always the canonical Arachnid bytecode regardless of address. **Invariant**: if any `create2_deploys` entity uses the Arachnid factory (its `factory:` is unset or explicitly set to the Arachnid address), specbuild rejects the spec unless at least one `create2_factory` entity resolves to that address. The check is narrow to Arachnid — custom factories at non-Arachnid addresses are the user's responsibility. |
 | `create2_deploys` | `salt_count`, plus `initcode`+`runtime` OR `code_pattern` | `salt_start`, `factory`, `storage_init`, `code_size` | For each salt in `[salt_start, salt_start+salt_count)`, derives the CREATE2 address and plants the resolved runtime there. Either supply literal `initcode:` + `runtime:` (shared across all derived addresses), OR `code_pattern:` to opt into a named generator (see below). `factory` defaults to the canonical Arachnid address. `storage_init` is an optional map of slot → value applied identically to every derived contract. `code_size` is only valid with a size-adjustable `code_pattern:` (see below). |
 | `create_preimage_deploys` | `sender`, `count`, plus `runtime` OR `code_pattern` | `start_nonce`, `storage_init`, `code_size` | For each nonce in `[start_nonce, start_nonce+count)`, derives `keccak256(rlp([sender, nonce]))[12:]` and plants the resolved runtime there. Either supply literal `runtime:` (shared) or `code_pattern:` (named generator). `storage_init` is an optional map of slot → value applied identically to every derived contract. `code_size` is only valid with a size-adjustable `code_pattern:` (see below). Backs `CreatePreimageLayout` in bloatnet benchmarks (EXISTING_CONTRACT mode of `test_account_access`). |
+| `sequential_pkey_delegations` | `start_pkey`, `count`, plus `code_pattern` OR `initcode` | `balance`, `factory`, `salt_start`, `code_size` | One entity → `count` EIP-7702-delegated EOAs. Authority #i has private key `start_pkey + i` and code `0xef0100` followed by `target_i`, where `target_i` is the CREATE2 address for salt `salt_start + i` — the same derivation `create2_deploys` uses, so pointing both at the same `code_pattern` + `code_size` + `factory` + `salt_start` makes every authority delegate to that entity's planted contract. Only the target's initcode hash matters here; the target contracts themselves are planted by the paired `create2_deploys` entity. Entity-level fields are rejected (`balance` goes in `parameters`); nonce is 1. `balance` defaults to `1` wei and must be > 0. Backs `yield_distinct_delegate_receiver()` in bloatnet `test_transaction_types`. |
 
 ### `code_pattern` — named per-address runtime generators
 
@@ -133,20 +134,21 @@ producing per-derived-address byte-unique runtime. `code_pattern:` is
 
 | Pattern name | Description |
 |---|---|
-| `unique_jumpdest_pre_amsterdam` | 24 KiB-per-contract runtime matching execution-specs `build_unique_contract_initcode` (Fusaka-era, EIP-170 limit = 0x6000). Entry: `PUSH2 0x5FFF; JUMP`; bytes 0x2C..0x40 hold the derived contract's own 20-byte address; remainder is `JUMPDEST` filler with a valid `JUMPDEST` byte at 0x5FFF where the entry JUMP lands. Backs the `diff_to_unique_code_jumpdest_contract` case in `test_transaction_types.py`. |
+| `unique_jumpdest_pre_amsterdam` | 24 KiB-per-contract runtime matching execution-specs `JochemnetPredeployContractInitcode(code_size=24576)` (Fusaka-era, EIP-170 limit = 0x6000). Entry: `PUSH2 0x5FFF; JUMP`; bytes 0x2C..0x40 hold the derived contract's own 20-byte address; remainder is `JUMPDEST` filler with a valid `JUMPDEST` byte at 0x5FFF where the entry JUMP lands. Backs the `diff_to_unique_code_jumpdest_contract` case in `test_transaction_types.py`. |
 | `unique_jumpdest` | Size-adjustable variant of the layout above; matches execution-specs `JochemnetPredeployContractInitcode(code_size=...)`. Takes the optional `code_size:` parameter (default 24576, range `[0x61, 0x01000000]`). The entry jump target (`code_size - 1`) is a **minimal** push, as execution-specs emits it — `PUSH1` while the target fits one byte (`code_size` ≤ 0x100), `PUSH2` up to 0x010000, `PUSH3` above. At the 24576 default this is byte-identical to `unique_jumpdest_pre_amsterdam` (same initcode, same CREATE2 addresses), so state already deployed on live testnets stays reachable; each width boundary changes the initcode and therefore the derived CREATE2 addresses. |
-| `max_same_pre_amsterdam` | Fixed 24576-byte runtime, byte-identical across all derived contracts: STOP at byte 0, JUMPDEST elsewhere. Matches execution-specs `StopJumpdestInitcode(diff=False)`. Backs `AccountMode.EXISTING_CONTRACT_SAME_MAX`. |
-| `max_diff_pre_amsterdam` | Fixed 24576-byte runtime, byte-unique per contract: STOP + zero padding + the derived contract's own address at bytes 0x0C..0x20, JUMPDEST elsewhere. Matches `StopJumpdestInitcode(diff=True)`. Backs `AccountMode.EXISTING_CONTRACT_DIFF_MAX`. |
-| `max_same` | Size-adjustable variant of `max_same_pre_amsterdam`; matches `StopJumpdestInitcode(code_size=..., diff=False)`. Optional `code_size:` (default 24576, range `[0x20, 0x01000000]`). The layout has no jump target, so no PUSH2/PUSH3 boundary applies — only the fill loop and RETURN length scale. Byte-identical to the fixed pattern at the default. |
+| `max_same_pre_amsterdam` | Fixed 24576-byte runtime, byte-identical across all derived contracts: STOP at byte 0, JUMPDEST elsewhere. Matches execution-specs `StopJumpdestInitcode(code_size=24576, diff=False)`. Backs `AccountMode.EXISTING_CONTRACT_SAME_MAX`. |
+| `max_diff_pre_amsterdam` | Fixed 24576-byte runtime, byte-unique per contract: STOP + zero padding + the derived contract's own address at bytes 0x0C..0x20, JUMPDEST elsewhere. Matches `StopJumpdestInitcode(code_size=24576, diff=True)`. Backs `AccountMode.EXISTING_CONTRACT_DIFF_MAX`. |
+| `max_same` | Size-adjustable variant of `max_same_pre_amsterdam`; matches `StopJumpdestInitcode(code_size=..., diff=False)`. Optional `code_size:` (default 24576, range `[0x20, 0x01000000]`). The layout has no jump target, so the entry-push widths that shift `unique_jumpdest`'s initcode do not apply here — only the fill loop and RETURN length scale. Byte-identical to the fixed pattern at the default. |
 | `max_diff` | Size-adjustable variant of `max_diff_pre_amsterdam`; matches `StopJumpdestInitcode(code_size=..., diff=True)`. Same `code_size:` rules as `max_same`. Byte-identical to the fixed pattern at the default. |
 
-`code_size:` is rejected on the fixed-size `*_pre_amsterdam` patterns
+`code_size:` is rejected on the fixed-size `*_pre_amsterdam` patterns,
 and without `code_pattern:`.
 
-Amsterdam (EIP-7907) raises `MAX_CODE_SIZE`; larger-than-EIP-170
-runtimes are covered by `unique_jumpdest` with an explicit
-`code_size:`. Existing pre-Amsterdam fixtures stay valid by their
-explicit name suffix.
+EIP-7954 raises `MAX_CODE_SIZE` to 64 KiB at Amsterdam. Runtimes above
+the EIP-170 limit are reached through the three size-adjustable
+patterns with an explicit `code_size:` — there is no
+`*_amsterdam`-suffixed pattern. Existing pre-Amsterdam fixtures stay
+valid and byte-identical by their explicit name suffix.
 
 Symmetry note: `create2_deploys` and `create_preimage_deploys` are
 twin templates — their only meaningful difference is the

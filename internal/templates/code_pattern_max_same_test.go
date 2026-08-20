@@ -32,7 +32,7 @@ func TestBuildMaxSameInitcodeMatchesEEST(t *testing.T) {
 		t.Fatalf("initcode keccak diverged from EEST: got %s want %s\n"+
 			"  state-actor and execution-specs must derive the same CREATE2\n"+
 			"  addresses from this initcode; a mismatch means planted\n"+
-			"  contracts live at addresses EXISTING_CONTRACT_SAME never queries.",
+			"  contracts live at addresses EXISTING_CONTRACT_SAME_MAX never queries.",
 			got, eestInitcodeKeccak)
 	}
 }

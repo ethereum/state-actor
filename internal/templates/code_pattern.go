@@ -23,11 +23,11 @@ const (
 
 	// 24576-byte runtime, identical across copies (STOP at 0x00, then
 	// JUMPDESTs), so they share one code hash. AccountMode
-	// EXISTING_CONTRACT_SAME; CodePatternRuntimeSize = 0.
+	// EXISTING_CONTRACT_SAME_MAX; CodePatternRuntimeSize = 0.
 	CodePatternMaxSamePreAmsterdam = "max_same_pre_amsterdam"
 
 	// As above but with the address embedded at 0x0C..0x20, so
-	// byte-unique per contract. AccountMode EXISTING_CONTRACT_DIFF.
+	// byte-unique per contract. AccountMode EXISTING_CONTRACT_DIFF_MAX.
 	CodePatternMaxDiffPreAmsterdam = "max_diff_pre_amsterdam"
 
 	// The three above with the runtime size taken from the optional
@@ -157,7 +157,7 @@ const patternResidentCodeCapBytes = uint64(64) << 30 // 64 GiB
 // BuildUniqueJumpdestRuntimePreAmsterdam returns the 24576-byte runtime
 // for one derived contract under the unique-jumpdest pattern.
 //
-// Layout (matches execution-specs build_unique_contract_initcode):
+// Layout (matches execution-specs JochemnetPredeployContractInitcode):
 //
 //	offset    size         contents
 //	------    ----         --------

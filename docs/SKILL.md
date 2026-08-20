@@ -39,7 +39,7 @@ The CI guarantees that hold this file as the canonical reference:
 - Per-client `TestE2ESuite` (in [`client/geth/e2e_test.go`](../client/geth/e2e_test.go), [`client/besu/e2e_test.go`](../client/besu/e2e_test.go), [`client/nethermind/e2e_test.go`](../client/nethermind/e2e_test.go), [`client/reth/oracle_test.go`](../client/reth/oracle_test.go) for reth, [`client/ethrex/e2e_test.go`](../client/ethrex/e2e_test.go) for ethrex, and [`client/erigon/e2e_test.go`](../client/erigon/e2e_test.go) for erigon) boots a real client against state-actor's output, runs spamoor, and verifies every entity via the Go oracle.
 - The `cross-client · genesis state-root invariant` aggregator job in [`.github/workflows/ci.yml`](../.github/workflows/ci.yml) refuses to merge a PR whose four clients produce different genesis roots from this fixture.
 
-The fixture is organised into six labelled sections; each one pins a feature cluster:
+The fixture is organised into labelled sections; each one pins a feature cluster:
 
 | Section banner (in the YAML) | Entities | Feature pinned |
 |---|---|---|
@@ -75,7 +75,7 @@ The fixture is organised into six labelled sections; each one pins a feature clu
 | Plain EOA with omitted-nonce default (0) | 22 | Plain EOA flavors |
 | CREATE2 deployments at derived addresses | 25, 29 | PR 76 templates |
 | A 24 KiB fixed-size code pattern | 29 | PR 76 templates |
-| A code pattern at a chosen `code_size` | 30, 31, 32 | Size-adjustable code patterns |
+| A code pattern at a chosen `code_size` | 30-33 | Size-adjustable code patterns |
 | A 64 KiB (EIP-7954) contract runtime | 31 | Size-adjustable code patterns |
 | EIP-7702 authorities delegating to planted contracts | 33 | Size-adjustable code patterns |
 

@@ -35,9 +35,9 @@ func TestUniqueJumpdestDefaultMatchesPreAmsterdam(t *testing.T) {
 // entry-push width and on both sides of each boundary (0x100 and
 // 0x010000). Regenerate from an execution-specs checkout:
 //
-//	import sys; sys.path.insert(0, 'tests/benchmark')
-//	from helper.account_creator import JochemnetPredeployContractInitcode
 //	from execution_testing import keccak256
+//	from tests.benchmark.helper.account_creator import (
+//	    JochemnetPredeployContractInitcode)
 //	print(keccak256(bytes(JochemnetPredeployContractInitcode(code_size=CS))).hex())
 //
 // If EEST changes the Python initcode shape, update these constants in
@@ -141,9 +141,9 @@ func TestBuildUniqueJumpdestRuntimeEntryBoundary(t *testing.T) {
 // derived addresses for a PUSH3-range code_size against values computed
 // by execution-specs. Regenerate:
 //
-//	import sys; sys.path.insert(0, 'tests/benchmark')
-//	from helper.account_creator import JochemnetPredeployContractInitcode
 //	from execution_testing import compute_create2_address
+//	from tests.benchmark.helper.account_creator import (
+//	    JochemnetPredeployContractInitcode)
 //	ic = bytes(JochemnetPredeployContractInitcode(code_size=0x20000))
 //	print(compute_create2_address(0x4e59b44847b379578588920cA78FbF26c0B4956C, 0, ic))
 func TestCreate2DeploysUniqueJumpdestCodeSizeAddressesMatchEEST(t *testing.T) {

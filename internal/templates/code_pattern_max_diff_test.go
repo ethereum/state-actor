@@ -9,7 +9,7 @@ import (
 )
 
 // TestBuildMaxDiffRuntimePreAmsterdamLayout pins the per-address runtime
-// against execution-specs UniqueMaxContractInitcode(diff=True): STOP +
+// against execution-specs StopJumpdestInitcode(diff=True): STOP +
 // 11 zero padding bytes, the 20-byte address at 0x0C..0x20, JUMPDEST sea.
 func TestBuildMaxDiffRuntimePreAmsterdamLayout(t *testing.T) {
 	addr := common.HexToAddress("0x000000000000000000000000000000000000beef")
@@ -53,17 +53,15 @@ func TestBuildMaxDiffRuntimeUnique(t *testing.T) {
 }
 
 // TestBuildMaxDiffInitcodeMatchesEEST pins the keccak256 of the
-// state-actor-emitted initcode to the value EEST's
-// UniqueMaxContractInitcode(diff=True) produces, so state-actor and
-// execution-specs derive the same CREATE2 addresses for
-// AccountMode.EXISTING_CONTRACT_DIFF.
+// state-actor-emitted initcode to what EEST produces, so both sides
+// derive the same CREATE2 addresses for
+// AccountMode.EXISTING_CONTRACT_DIFF_MAX.
 //
 // Regenerate from an execution-specs checkout:
 //
-//	from tests.benchmark.helper.account_creator import (
-//	    UniqueMaxContractInitcode)
-//	from eth_utils import keccak
-//	print(keccak(bytes(UniqueMaxContractInitcode(diff=True))).hex())
+//	from execution_testing import keccak256
+//	from tests.benchmark.helper.account_creator import StopJumpdestInitcode
+//	print(keccak256(bytes(StopJumpdestInitcode(code_size=0x6000, diff=True))).hex())
 func TestBuildMaxDiffInitcodeMatchesEEST(t *testing.T) {
 	const eestInitcodeKeccak = "0xbdaf429840ac400acad3d230653b726a2cdf9201f645976fe353bb45e45bfe63"
 	ic := BuildMaxDiffInitcodePreAmsterdam()
@@ -71,7 +69,7 @@ func TestBuildMaxDiffInitcodeMatchesEEST(t *testing.T) {
 	if got != eestInitcodeKeccak {
 		t.Fatalf("initcode keccak diverged from EEST: got %s want %s\n"+
 			"  a mismatch means planted contracts live at addresses\n"+
-			"  EXISTING_CONTRACT_DIFF never queries.",
+			"  EXISTING_CONTRACT_DIFF_MAX never queries.",
 			got, eestInitcodeKeccak)
 	}
 }

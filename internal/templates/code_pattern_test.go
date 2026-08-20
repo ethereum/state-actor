@@ -10,9 +10,8 @@ import (
 )
 
 // TestBuildUniqueJumpdestRuntimePreAmsterdamLayout pins the byte-for-byte
-// structure of the per-address runtime against the layout documented in
-// execution-specs/tests/benchmark/stateful/bloatnet/test_transaction_
-// types.py::build_unique_contract_initcode.
+// structure of the per-address runtime against the layout of
+// execution-specs JochemnetPredeployContractInitcode.
 func TestBuildUniqueJumpdestRuntimePreAmsterdamLayout(t *testing.T) {
 	addr := common.HexToAddress("0x000000000000000000000000000000000000beef")
 	got := BuildUniqueJumpdestRuntimePreAmsterdam(addr)
@@ -71,22 +70,17 @@ func TestBuildUniqueJumpdestRuntimePreAmsterdamUnique(t *testing.T) {
 }
 
 // TestBuildUniqueJumpdestInitcodeMatchesEEST pins the keccak256 of the
-// state-actor-emitted initcode to the value EEST's
-// `build_unique_contract_initcode()` produces. State-actor's CREATE2
-// derivation uses keccak256(initcode) as the third CREATE2 input, so
-// the planted contract addresses MUST line up with what
-// execution-specs `yield_distinct_unique_code_jumpdest_receiver()`
-// queries — otherwise tests call empty addresses and benchmark gas
+// state-actor-emitted initcode to what EEST produces. CREATE2 hashes the
+// initcode, so the planted addresses must line up with the ones the
+// benchmarks query — otherwise the tests call empty accounts and the gas
 // drifts by the contract's body cost × iteration count.
 //
-// Pinned value verified against the live EEST snapshot at
-// tests/benchmark/stateful/bloatnet/test_transaction_types.py;
-// regenerate this constant from Python via:
+// Regenerate from an execution-specs checkout:
 //
-//   import sys; sys.path.insert(0, 'tests/benchmark/stateful/bloatnet')
-//   from test_transaction_types import JOCHEMNET_UNIQUE_CONTRACT_INITCODE
-//   from Crypto.Hash import keccak
-//   print(keccak.new(digest_bits=256, data=JOCHEMNET_UNIQUE_CONTRACT_INITCODE).hexdigest())
+//	from execution_testing import keccak256
+//	from tests.benchmark.helper.account_creator import (
+//	    JochemnetPredeployContractInitcode)
+//	print(keccak256(bytes(JochemnetPredeployContractInitcode(code_size=0x6000))).hex())
 //
 // If EEST changes the Python initcode shape, update this constant in
 // lockstep — both sides must always agree byte-for-byte.
@@ -120,11 +114,11 @@ func TestBuildUniqueJumpdestInitcodeMatchesEEST(t *testing.T) {
 // link in the derivation chain. Regenerate from an execution-specs
 // checkout:
 //
-//	import sys; sys.path.insert(0, 'tests/benchmark/stateful/bloatnet')
-//	from test_transaction_types import JOCHEMNET_UNIQUE_CONTRACT_INITCODE
-//	from ethereum_test_tools import compute_create2_address
-//	print(compute_create2_address(0x4e59b44847b379578588920cA78FbF26c0B4956C, 0,
-//	      JOCHEMNET_UNIQUE_CONTRACT_INITCODE))
+//	from execution_testing import compute_create2_address
+//	from tests.benchmark.helper.account_creator import (
+//	    JochemnetPredeployContractInitcode)
+//	ic = bytes(JochemnetPredeployContractInitcode(code_size=0x6000))
+//	print(compute_create2_address(0x4e59b44847b379578588920cA78FbF26c0B4956C, 0, ic))
 //
 // Fallback derivation (used to produce these pins; two independent
 // keccak implementations — pycryptodome and eth_hash — agree):

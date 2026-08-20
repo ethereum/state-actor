@@ -32,7 +32,7 @@ const delegationDesignatorPrefix = "\xef\x01\x00"
 //
 // Backs execution-specs `yield_distinct_delegate_receiver()`
 // (account_sender_receiver.py): authority EOA(key=DELEGATE_BASE_KEY + i)
-// delegates to EXISTING_CONTRACT_DIFF receiver i. The target derivation
+// delegates to EXISTING_CONTRACT_DIFF_MAX receiver i. The target derivation
 // mirrors create2_deploys, so pointing this template at the same
 // code_pattern + factory + salt_start as a create2_deploys entity makes
 // every authority delegate to that entity's planted contract.

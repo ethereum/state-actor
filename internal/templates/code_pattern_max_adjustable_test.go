@@ -32,9 +32,8 @@ func TestMaxAdjustableDefaultMatchesPreAmsterdam(t *testing.T) {
 // `StopJumpdestInitcode(code_size=..., diff=...)`. Regenerate from an
 // execution-specs checkout:
 //
-//	import sys; sys.path.insert(0, 'tests/benchmark')
-//	from helper.account_creator import StopJumpdestInitcode
 //	from execution_testing import keccak256
+//	from tests.benchmark.helper.account_creator import StopJumpdestInitcode
 //	print(keccak256(bytes(StopJumpdestInitcode(code_size=CS, diff=DIFF))).hex())
 //
 // If EEST changes the Python initcode shape, update these constants in
