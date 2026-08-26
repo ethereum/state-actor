@@ -11,12 +11,12 @@ import (
 // TestSequentialPkeyDelegationsMatchesEELS pins the authority addresses
 // and full EIP-7702 delegation codes against execution-specs
 // `yield_distinct_delegate_receiver()`: authority EOA(key=DELEGATE_BASE_KEY
-// + i) delegates to EXISTING_CONTRACT_DIFF receiver i (max_diff CREATE2).
+// + i) delegates to EXISTING_CONTRACT_DIFF_MAX receiver i (max_diff CREATE2).
 //
 // start_pkey = keccak256("gas-repricings-7702-delegate"). Authorities and
 // codes regenerated from an execution-specs checkout via
 // account_sender_receiver.yield_distinct_delegate_receiver +
-// AccountCreator(EXISTING_CONTRACT_DIFF).initcode.
+// AccountCreator(EXISTING_CONTRACT_DIFF_MAX).initcode.
 func TestSequentialPkeyDelegationsMatchesEELS(t *testing.T) {
 	ent := mkContractEntity("sequential_pkey_delegations", map[string]any{
 		"start_pkey":   "0x959a83d905ff1fab43bf72c3e87020e4c77fd4bde0e5eeb48e5edbf74a9ec64e",

@@ -32,7 +32,7 @@ const delegationDesignatorPrefix = "\xef\x01\x00"
 //
 // Backs execution-specs `yield_distinct_delegate_receiver()`
 // (account_sender_receiver.py): authority EOA(key=DELEGATE_BASE_KEY + i)
-// delegates to EXISTING_CONTRACT_DIFF receiver i. The target derivation
+// delegates to EXISTING_CONTRACT_DIFF_MAX receiver i. The target derivation
 // mirrors create2_deploys, so pointing this template at the same
 // code_pattern + factory + salt_start as a create2_deploys entity makes
 // every authority delegate to that entity's planted contract.
@@ -78,7 +78,7 @@ type sequentialPkeyDelegationsParams struct {
 func parseSequentialPkeyDelegationsParams(params map[string]any) (sequentialPkeyDelegationsParams, error) {
 	var pp sequentialPkeyDelegationsParams
 	if err := RejectUnknownKeys(params, "sequential_pkey_delegations", []string{
-		"start_pkey", "count", "balance", "code_pattern", "initcode", "factory", "salt_start",
+		"start_pkey", "count", "balance", "code_pattern", "initcode", "factory", "salt_start", "code_size",
 	}); err != nil {
 		return pp, err
 	}
@@ -160,6 +160,9 @@ func parseSequentialPkeyDelegationsParams(params map[string]any) (sequentialPkey
 func parseDelegationTargetInitcode(params map[string]any) ([]byte, error) {
 	_, hasPattern := params["code_pattern"]
 	_, hasInitcode := params["initcode"]
+	if _, hasCodeSize := params["code_size"]; hasCodeSize && !hasPattern {
+		return nil, fmt.Errorf("sequential_pkey_delegations: `code_size` is only valid together with `code_pattern:`")
+	}
 	switch {
 	case hasPattern && hasInitcode:
 		return nil, fmt.Errorf("sequential_pkey_delegations: set exactly one of `code_pattern` or `initcode`, not both")
@@ -172,7 +175,11 @@ func parseDelegationTargetInitcode(params map[string]any) ([]byte, error) {
 			return nil, fmt.Errorf("sequential_pkey_delegations: unknown code_pattern %q (known: %s)",
 				name, strings.Join(knownCodePatterns, ", "))
 		}
-		return codePatternInitcodeFor(name)
+		codeSize, err := parseCodePatternCodeSize(params, name)
+		if err != nil {
+			return nil, fmt.Errorf("sequential_pkey_delegations: %w", err)
+		}
+		return codePatternInitcodeFor(name, codeSize)
 	case hasInitcode:
 		ic, err := ParseHexBytesParam(params["initcode"], "initcode")
 		if err != nil {

@@ -337,9 +337,9 @@ entities:
       count: 3
       balance: "1000000000000000000"
 
-  # 29. create2_deploys in code_pattern mode — the ONLY entity that
-  # drives a large, byte-UNIQUE-per-address code blob through every
-  # client writer's code store. salt_count: 2 → two 24_576-byte runtimes
+  # 29. create2_deploys in code_pattern mode — the entity that drives a
+  # LARGE byte-unique-per-address code blob through every client writer's
+  # code store. salt_count: 2 → two 24_576-byte runtimes
   # (the unique_jumpdest_pre_amsterdam pattern, each embedding its own
   # derived address) at the externally-pinned CREATE2 addresses
   # 0xEC9B…aAd8 (salt 0) and 0x59B3…c5Aa (salt 1). Uses the default
@@ -348,11 +348,69 @@ entities:
   # CodeHash (computed in shared code), so a client persisting truncated
   # or wrong code bytes still agrees on the root; only the byte-exact
   # eth_getCode probe (CheckInjections) catches it. ~49 KB of state.
-  # APPENDED LAST so existing entities keep their 0-based index — and
-  # thus their seed-derived addresses — unchanged.
+  # Appended after entity 28 so the entities before it keep their 0-based
+  # index — and thus their seed-derived addresses — unchanged; 30-33 were
+  # appended after it on the same rule.
   - kind: contract
     template: create2_deploys
     name: ci-create2-deploys-pattern
     parameters:
       code_pattern: unique_jumpdest_pre_amsterdam
       salt_count: 2
+
+  # ── 30-33. Size-adjustable code patterns ────────────────────────────
+  # The `code_size:` parameter, on each of the three size-adjustable
+  # patterns plus sequential_pkey_delegations, so every client writer sees
+  # a runtime whose length is not the 24_576 the *_pre_amsterdam patterns
+  # hard-code. Sizes are chosen for coverage per byte: max_same carries
+  # the EIP-7954 64 KiB limit once, since all its salts alias one blob,
+  # while the per-address-unique patterns stay small so the fixture keeps
+  # its ~500 KB budget. Appended, as entity 29 was, so the entities before
+  # keep their index and their seed-derived addresses.
+
+  # 30. unique_jumpdest at its minimum code_size. 0x61 is the smallest
+  # size whose entry JUMP is valid for every derived address: jumpdest
+  # analysis decodes the embedded address as opcodes, and a PUSH byte in
+  # it can swallow a target closer than 0x60.
+  - kind: contract
+    template: create2_deploys
+    name: ci-create2-unique-jumpdest-min
+    parameters:
+      code_pattern: unique_jumpdest
+      code_size: 0x61
+      salt_count: 2
+
+  # 31. max_same at the EIP-7954 limit — the 64 KiB blob EELS deploys for
+  # AccountMode.EXISTING_CONTRACT_SAME_MAX_64KIB. Shared runtime, so both
+  # salts point at identical bytes and the fixture pays for it once.
+  - kind: contract
+    template: create2_deploys
+    name: ci-create2-max-same-64kib
+    parameters:
+      code_pattern: max_same
+      code_size: 0x10000
+      salt_count: 2
+
+  # 32. max_diff, per-address-unique. Kept small: the layout is max_same
+  # plus an embedded address, which entity 31 already covers at 64 KiB.
+  - kind: contract
+    template: create2_deploys
+    name: ci-create2-max-diff-small
+    parameters:
+      code_pattern: max_diff
+      code_size: 0x100
+      salt_count: 2
+
+  # 33. sequential_pkey_delegations, which `code_size:` also reaches and
+  # which was in neither this fixture nor SPEC.md before. Same pattern,
+  # size, factory and salt_start as entity 32, so authority #i delegates
+  # to the contract entity 32 plants at salt i — the pairing
+  # execution-specs relies on.
+  - kind: contract
+    template: sequential_pkey_delegations
+    name: ci-pkey-delegations-max-diff
+    parameters:
+      start_pkey: "0x3333333333333333333333333333333333333333333333333333333333333333"
+      count: 2
+      code_pattern: max_diff
+      code_size: 0x100

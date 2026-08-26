@@ -9,7 +9,7 @@ import (
 )
 
 func TestBuildMaxSameRuntimePreAmsterdamLayout(t *testing.T) {
-	got := buildMaxSameRuntimePreAmsterdam()
+	got := BuildMaxSameRuntime(preAmsterdamMaxCodeSize)
 
 	if len(got) != 0x6000 {
 		t.Fatalf("length: got %d, want 0x6000 (24576)", len(got))
@@ -32,7 +32,7 @@ func TestBuildMaxSameInitcodeMatchesEEST(t *testing.T) {
 		t.Fatalf("initcode keccak diverged from EEST: got %s want %s\n"+
 			"  state-actor and execution-specs must derive the same CREATE2\n"+
 			"  addresses from this initcode; a mismatch means planted\n"+
-			"  contracts live at addresses EXISTING_CONTRACT_SAME never queries.",
+			"  contracts live at addresses EXISTING_CONTRACT_SAME_MAX never queries.",
 			got, eestInitcodeKeccak)
 	}
 }
@@ -64,7 +64,7 @@ func TestCreate2DeploysMaxSameAddressesMatchEEST(t *testing.T) {
 }
 
 func TestMaxSameRuntimeSharedAndExempt(t *testing.T) {
-	if got := CodePatternRuntimeSize(CodePatternMaxSamePreAmsterdam); got != 0 {
+	if got := CodePatternRuntimeSize(CodePatternMaxSamePreAmsterdam, 0); got != 0 {
 		t.Fatalf("CodePatternRuntimeSize(max_same) = %d, want 0 (shared/exempt)", got)
 	}
 
