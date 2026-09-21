@@ -12,17 +12,28 @@ import (
 // codePoolSeed is fixed (not --seed) so every client derives the same pool.
 const codePoolSeed = 0x57a7ec0de
 
-// poolCode returns code-pool entry j: a CodeSampler-sized slice of the
-// embedded ERC20 runtime rotated by j (real bytecode compresses under LZ4;
-// random bytes do not).
+// poolCode returns code-pool entry j: a CodeSampler-sized slice of real mainnet bytecode.
 //
-// ponytail: one real contract sliced at rotating offsets, not a corpus.
-// Upgrade to a small corpus if a benchmark shows it over-compresses.
+// Entry j starts in corpus member j % N at an offset that also advances with j, and when the
+// member runs out it continues into the next member rather than wrapping back into the same
+// one, so no byte sequence repeats inside an entry and an entry compresses like real code
+// (about 0.45 deflate), not like a tiled runtime (about 0.2). Spreading entries evenly over
+// the members keeps two entries from the same member rare within one data block; the store
+// orders code by hash, so a block holds a random handful of entries.
+//
+// The previous implementation tiled one ERC20 runtime and rotated it per entry. A store built
+// from it compressed its code column family to 0.056 physical over logical against mainnet's
+// 0.371, and a benchmark against that store read code 46% faster than mainnet.
 func poolCode(j int, s Sampler) ([]byte, common.Hash) {
-	src := templates.ERC20RuntimeBytecode
+	corpus := templates.CodeCorpus
 	code := make([]byte, s.Draw(mrand.New(mrand.NewSource(codePoolSeed+int64(j)))))
-	for n := copy(code, src[j%len(src):]); n < len(code); {
-		n += copy(code[n:], src)
+	member := j % len(corpus)
+	// A stride coprime with typical member lengths spreads same-member entries across the
+	// member instead of sharing a prefix.
+	off := (j / len(corpus) * 4099) % len(corpus[member])
+	for n := 0; n < len(code); {
+		n += copy(code[n:], corpus[member][off:])
+		member, off = (member+1)%len(corpus), 0
 	}
 	return code, crypto.Keccak256Hash(code)
 }
