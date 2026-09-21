@@ -44,7 +44,7 @@ const (
 
 // MainnetAccountsPerDistinctBytecode sizes autofill's code pool; mainnet
 // measures ~28.2 accounts per distinct bytecode.
-const MainnetAccountsPerDistinctBytecode = 32
+const MainnetAccountsPerDistinctBytecode = 28
 
 // Default returns the package-level SizeApproximator backed by the single
 // global trie-only constant. Identical across clients — required by the

@@ -12,7 +12,7 @@ import (
 // Contracts share code from a pool of DistinctBytecodes entries, each sized
 // within the CodeSampler bounds.
 func TestDrawContract_SharesPoolCode(t *testing.T) {
-	p, err := PlanForBudget(10 << 20) // ~205 contracts → 6 distinct codes
+	p, err := PlanForBudget(10 << 20) // ~205 contracts → 7 distinct codes
 	if err != nil {
 		t.Fatal(err)
 	}

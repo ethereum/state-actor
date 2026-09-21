@@ -23,6 +23,13 @@ type EOAFlavors struct {
 // DefaultEOAFlavors returns the mainnet-shaped defaults: 90 % non-0 balance,
 // 2 % EIP-7702 delegation. 2 % is a deliberate floor, not a measured rate:
 // 30 % made designators 94.6 % of Besu's code CF (mainnet 4.2 %).
+//
+// Designators land in CODE_STORAGE keyed by their own code hash (confirmed
+// against a live mainnet read: 23 B records are ~0.13 % of cf07 by count),
+// same as any contract's code. They fall below every ≥1 KiB compressibility
+// gate in internal/autofill/code_pool_compress_test.go, so the code-pool
+// compression fix (see code_pool.go) neither touches nor is affected by
+// this population; the 2 % floor is out of scope for that fix.
 func DefaultEOAFlavors() EOAFlavors {
 	return EOAFlavors{
 		HasBalance:    0.90,

@@ -41,6 +41,11 @@
 //   - code_pattern.go     — named per-derived-address runtime generators
 //     (`unique_jumpdest_pre_amsterdam`) shared by the two deploy templates.
 //   - sizing.go           — shared streaming storage-slot synthesizer.
+//   - corpus.go, corpus.bin, corpus.idx — CodeCorpus: real mainnet runtime
+//     bytecode consumed by internal/autofill's shared code pool (see
+//     internal/autofill/code_pool.go), not by any spec template. corpus.idx
+//     records each member's mainnet code hash; regenerate with
+//     scripts/dump-code-corpus against a Besu Bonsai store.
 //
 // What does NOT live here:
 //   - The YAML schema and parser (internal/spec/).
