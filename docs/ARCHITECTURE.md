@@ -67,7 +67,7 @@ State Actor generates Ethereum state in three phases:
 │  │  ┌─────────────────────────────────────────────────────────────┐   │ │
 │  │  │       Per-client Writer (client/<name>/)                    │   │ │
 │  │  │  • generator.Writer interface                               │   │ │
-│  │  │  • geth: pure-Go Pebble. reth/besu/nethermind: cgo.         │   │ │
+│  │  │  • geth: pure-Go Pebble. reth/besu/nethermind/nimbus: cgo.  │   │ │
 │  │  └─────────────────────────────────────────────────────────────┘   │ │
 │  └─────────────────────────────────────────────────────────────────────┘ │
 └──────────────────────────────────────────────────────────────────────────┘
@@ -100,6 +100,7 @@ State Actor generates Ethereum state in three phases:
 │  │  nethermind: 7 RocksDB + flat column DB + parity chainspec sidecar │ │
 │  │  ethrex: single RocksDB w/ 22 CFs + metadata.json + genesis sidecar│ │
 │  │  erigon: Erigon v3 flat .kv snapshots + minimal MDBX               │ │
+│  │  nimbus: single RocksDB w/ Aristo trie + Kvt CFs (static vids)     │ │
 │  └─────────────────────────────────────────────────────────────────────┘ │
 └──────────────────────────────────────────────────────────────────────────┘
 ```
@@ -245,6 +246,16 @@ configurable worker pool / batch size at the generator level.
   `client/erigon/genesis_patch.go` + `snapshot_cgo.go`) keeps the
   commitment continuable past block 2. Behind the `cgo_erigon` build
   tag.
+- **nimbus** (`client/nimbus/run_cgo.go`): cgo + grocksdb. Single
+  RocksDB (`<db>/ecdb`) with nimbus's own column families. Account and
+  storage tries are emitted as Aristo vertex records by
+  `internal/nimbus.Builder` — a stack trie that also assigns nimbus's
+  static (top 8 levels, path-derived) and dynamic (allocator-issued)
+  vertex IDs, merges extension+branch into one `ExtBranch` record and
+  stores every branch's Merkle key so boot never re-hashes. Writes the
+  admin record (`vTop`), the genesis Kvt rows and a `nimbus-genesis.json`
+  sidecar (empty alloc; boot with `--debug-rewrite-datadir-id`). Behind
+  the `cgo_nimbus` build tag.
 
 Each adapter implements the `generator.Writer` interface
 (`WriteAccount`, `WriteStorage`, `WriteCode`, `SetStateRoot`, …); the
@@ -376,6 +387,13 @@ Today's client adapters:
   commitment anchor, see `client/erigon/genesis_patch.go` +
   `snapshot_cgo.go`) keeps the commitment continuable across genesis →
   first-live-block. Behind the `cgo_erigon` build tag.
+- `client/nimbus/` — cgo + grocksdb writer producing nimbus-eth1's single
+  RocksDB (`ecdb`: `AriVtx` / `KvtGen` / `KvtSync` / `default`) with the
+  Aristo vertex codec, vertex-ID scheme and Kvt keys in `internal/nimbus/`
+  (verified byte-for-byte against a dump from nimbus's own genesis path,
+  and structurally by `internal/nimbus.VerifyState`). Pinned to the
+  `master-2f0ae87` image because that commit changed the on-disk format.
+  Behind the `cgo_nimbus` build tag.
 
 The Nethermind adapter takes a different route from the others: instead of
 writing a chainspec for the client to consume, it writes the seven RocksDB
@@ -401,7 +419,8 @@ state-actor/
 │   ├── besu/                        # cgo + librocksdb writer (cgo_besu build tag)
 │   ├── nethermind/                  # cgo + grocksdb writer (cgo_neth build tag)
 │   ├── ethrex/                      # cgo + grocksdb writer, 22 CFs (cgo_ethrex build tag)
-│   └── erigon/                      # cgo + mdbx-go writer, Erigon v3 flat .kv (cgo_erigon build tag)
+│   ├── erigon/                      # cgo + mdbx-go writer, Erigon v3 flat .kv (cgo_erigon build tag)
+│   └── nimbus/                      # cgo + grocksdb writer, Aristo trie + Kvt (cgo_nimbus build tag)
 ├── generator/                       # Core generation pipeline + Writer interface
 ├── genesis/                         # Client-neutral chainspec types + builder
 ├── internal/
@@ -420,6 +439,7 @@ state-actor/
 │   ├── neth/                        # Nethermind-side helpers
 │   ├── ethrex/                      # ethrex path-keyed trie codec + RocksDB helpers
 │   ├── erigon/                      # erigon v3 snapshot codec (seg/btindex/recsplit) + helpers
+│   ├── nimbus/                      # nimbus Aristo vertex codec, vertex-ID scheme, Kvt keys, verifier
 │   ├── engineapi/                   # Mock CL engine-API driver (besu / nethermind boot)
 │   ├── e2e_testing/                 # Shared per-client TestE2ESuite phases + checks + RPC oracle
 │   ├── rpcprobe/                    # Waitfor-RPC + JSON-RPC helpers
@@ -431,13 +451,13 @@ state-actor/
 
 ## Cross-client determinism
 
-State Actor guarantees that the same `--seed`, the same `--spec`, and the same client-policy preamble produce **the same genesis state root** across all six MPT clients (geth / reth / besu / nethermind / ethrex / erigon). This is the load-bearing invariant the project exists to enable.
+State Actor guarantees that the same `--seed`, the same `--spec`, and the same client-policy preamble produce **the same genesis state root** across all seven MPT clients (geth / reth / besu / nethermind / ethrex / erigon / nimbus). This is the load-bearing invariant the project exists to enable.
 
 The mechanism is three-layered:
 
 - **Deterministic address derivation.** Spec address modes — explicit, name-derived (`keccak256(BE_u64(seed) || utf8(name))[12:]`), position-derived (same but with `anon-N`) — are pure functions of the spec input. Pinned at unit level by `internal/specbuild/derive_test.go:TestResolveAddressDeterministicAcrossRuns`.
-- **Single global byte-budget constant.** `--spec`'s `approximate_size_bytes` is converted to a synthesised slot count via the global `bytesPerSlot` constant in [`internal/sizecal/factors.go`](../internal/sizecal/factors.go) — identical across all six clients, which is precisely what makes the cross-client root match. The CI invariance gate calls `sizecal.NewFixed(64)` to decouple test sizing from the production `Default()`, so a drift in either side can't silently mask the other.
-- **Canonical syscontract preamble.** Every per-client writer must run `syscontracts.AddCanonicalSystemContracts(&cfg)` before producing state. The five EIP-mandated system contracts (BeaconRoots, HistoryStorage, WithdrawalQueue, ConsolidationQueue, DepositContract) must exist at their canonical addresses; without them besu refuses to boot and the other four clients compute a different root.
+- **Single global byte-budget constant.** `--spec`'s `approximate_size_bytes` is converted to a synthesised slot count via the global `bytesPerSlot` constant in [`internal/sizecal/factors.go`](../internal/sizecal/factors.go) — identical across all seven clients, which is precisely what makes the cross-client root match. The CI invariance gate calls `sizecal.NewFixed(64)` to decouple test sizing from the production `Default()`, so a drift in either side can't silently mask the other.
+- **Canonical syscontract preamble.** Every per-client writer must run `syscontracts.AddCanonicalSystemContracts(&cfg)` before producing state. The five EIP-mandated system contracts (BeaconRoots, HistoryStorage, WithdrawalQueue, ConsolidationQueue, DepositContract) must exist at their canonical addresses; without them besu refuses to boot and the other clients compute a different root.
 
 The CI keystone job `cross-client-genesis-root` (defined in `.github/workflows/ci.yml`, exercising `examples/full-matrix-spec-feature.yaml`) re-asserts the invariant on every PR. When a divergence appears, the most likely cause is calibration drift (`internal/sizecal/`) or a missing syscontract preamble; less common but possible is per-client codec drift (`internal/reth/`, `internal/neth/`, etc.).
 

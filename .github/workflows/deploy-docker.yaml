@@ -10,6 +10,7 @@
 #   Dockerfile.geth        → ghcr.io/<owner>/state-actor-geth
 #   Dockerfile.ethrex      → ghcr.io/<owner>/state-actor-ethrex
 #   Dockerfile.erigon      → ghcr.io/<owner>/state-actor-erigon
+#   Dockerfile.nimbus      → ghcr.io/<owner>/state-actor-nimbus
 #
 # Same release approach as ethpandaops/benchmarkoor's deploy-docker.* workflows:
 # native amd64 + arm64 builds run in parallel on per-arch runners, get pushed
@@ -55,7 +56,7 @@ on:
         required: true
         type: string
       images:
-        description: 'Images to build: "all", or a comma-separated subset of base,besu,nethermind,reth,geth,ethrex,erigon.'
+        description: 'Images to build: "all", or a comma-separated subset of base,besu,nethermind,reth,geth,ethrex,erigon,nimbus.'
         required: false
         default: all
         type: string
@@ -168,7 +169,8 @@ jobs:
             {"name":"reth",       "suffix":"-reth",      "dockerfile":"Dockerfile.reth"},
             {"name":"geth",       "suffix":"-geth",      "dockerfile":"Dockerfile.geth"},
             {"name":"ethrex",     "suffix":"-ethrex",    "dockerfile":"Dockerfile.ethrex"},
-            {"name":"erigon",     "suffix":"-erigon",    "dockerfile":"Dockerfile.erigon"}
+            {"name":"erigon",     "suffix":"-erigon",    "dockerfile":"Dockerfile.erigon"},
+            {"name":"nimbus",     "suffix":"-nimbus",    "dockerfile":"Dockerfile.nimbus"}
           ]'
           if [[ "$GITHUB_EVENT_NAME" != "workflow_dispatch" || -z "${IMAGES:-}" || "$IMAGES" == "all" ]]; then
             SELECTED="$ALL"

@@ -65,6 +65,12 @@ type Error struct {
 // Call sends a single JSON-RPC call and returns the raw result blob. A
 // non-nil error envelope from the server is surfaced as a Go error.
 func Call(url, method string, params []any) (json.RawMessage, error) {
+	// nil would marshal as "params": null, which JSON-RPC 2.0 does not allow
+	// (params is an array, an object, or absent). geth-style servers tolerate
+	// null; nimbus rejects it with -32600, so always send an empty array.
+	if params == nil {
+		params = []any{}
+	}
 	req := Request{
 		JSONRPC: "2.0",
 		Method:  method,

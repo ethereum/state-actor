@@ -1,10 +1,11 @@
 .PHONY: all build test test-race test-coverage bench clean install lint fmt tidy deps help \
-	image-reth image-besu image-nethermind image-erigon \
+	image-reth image-besu image-nethermind image-erigon image-nimbus \
 	docker-nethermind smoke-nethermind smoke-nethermind-spamoor \
 	docker-besu smoke-besu smoke-besu-spamoor \
 	docker-geth smoke-geth \
 	docker-erigon smoke-erigon smoke-erigon-spamoor \
-	test-besu-suite test-geth-suite test-nethermind-suite test-reth-suite test-erigon-suite \
+	docker-nimbus \
+	test-besu-suite test-geth-suite test-nethermind-suite test-reth-suite test-erigon-suite test-nimbus-suite \
 	spamoor-install
 
 # Binary name
@@ -411,6 +412,46 @@ test-erigon-suite: image-erigon
 	  state-actor-erigon-builder:latest \
 	  go test -tags 'cgo_erigon oracle' ./client/erigon/ -v -timeout 3600s
 	docker volume rm -f $(ERIGON_SUITE_VOL) >/dev/null 2>&1 || true
+
+## image-nimbus: Build the cgo_nimbus Docker builder image for direct-write nimbus
+##   Used by test-nimbus-suite. Also reused by CI's per-job docker build.
+image-nimbus:
+	docker build -f Dockerfile.nimbus --target builder -t state-actor-nimbus-builder:latest .
+
+## docker-nimbus: Build the runtime image (state-actor + nimbus writer).
+##   Emits both `state-actor-nimbus:latest` (canonical) and
+##   `state-actor:nimbus` (alias consumed by scripts/run-bloatnet.sh which
+##   references `state-actor:$client`).
+docker-nimbus:
+	docker build -f Dockerfile.nimbus \
+	  --build-arg STATE_ACTOR_VERSION=$(VERSION) \
+	  --build-arg STATE_ACTOR_REVISION=$(REVISION) \
+	  -t state-actor-nimbus:latest \
+	  -t state-actor-nimbus:$(VERSION) \
+	  -t state-actor:nimbus .
+
+## test-nimbus-suite: Run the nimbus end-to-end suite (db-gen → boot → spamoor → re-query)
+##   NIMBUS_IMAGE overrides the pinned statusim/nimbus-eth1 image.
+NIMBUS_SUITE_VOL ?= nimbus-suite-datadir
+test-nimbus-suite: image-nimbus
+	mkdir -p $(RESULT_DIR)
+	docker volume rm -f $(NIMBUS_SUITE_VOL) >/dev/null 2>&1 || true
+	docker volume create $(NIMBUS_SUITE_VOL)
+	docker run --rm \
+	  -v $(NIMBUS_SUITE_VOL):/oracle-data \
+	  -v $(RESULT_DIR):/result \
+	  -v $(shell command -v $(SPAMOOR) 2>/dev/null || echo /dev/null):/usr/local/bin/spamoor:ro \
+	  -v /var/run/docker.sock:/var/run/docker.sock \
+	  -e NIMBUS_ORACLE_DATADIR=/oracle-data \
+	  -e NIMBUS_ORACLE_VOL=$(NIMBUS_SUITE_VOL) \
+	  -e NIMBUS_DOCKER_PLATFORM \
+	  -e NIMBUS_IMAGE \
+	  -e RESULT_PATH=/result/nimbus-result.json \
+	  -e SPAMOOR=/usr/local/bin/spamoor \
+	  -e REQUIRE_SPAMOOR=1 \
+	  state-actor-nimbus-builder:latest \
+	  go test -tags 'cgo_nimbus oracle' ./client/nimbus/ -v -timeout 3600s
+	docker volume rm -f $(NIMBUS_SUITE_VOL) >/dev/null 2>&1 || true
 
 ## help: Show this help
 help:

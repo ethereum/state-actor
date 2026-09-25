@@ -13,10 +13,13 @@ export PATH=$HOME/.foundry/bin:/usr/local/go/bin:$PATH
 
 WORK=${WORK:-$HOME/work/bloatnet}
 REPO=${STATE_ACTOR_REPO:-$HOME/state-actor}
-CLIENTS=${CLIENTS:-geth reth nethermind besu erigon ethrex}
+CLIENTS=${CLIENTS:-geth reth nethermind besu erigon ethrex nimbus}
 # ethrex image must include --skip-genesis-validation (lambdaclass/ethrex#6783).
 # Pin to a digest once a release ships it; :main is the post-merge interim tag.
 ETHREX_IMAGE=${ETHREX_IMAGE:-ghcr.io/lambdaclass/ethrex:main}
+# nimbus image must read the static-storage-vid Aristo format (nimbus-eth1
+# commit 2f0ae87cd or later); the pin matches client/nimbus/e2e_test.go.
+NIMBUS_IMAGE=${NIMBUS_IMAGE:-statusim/nimbus-eth1:master-2f0ae87}
 SPEC_TARGET_GB=${SPEC_TARGET_GB:-25}
 SPEC=$WORK/spec-bloatnet-${SPEC_TARGET_GB}gb.yaml
 SEED=${SEED:-42}
@@ -336,6 +339,31 @@ NETH_CFG
                 --authrpc.addr 127.0.0.1 --authrpc.port 8551 \
                 --authrpc.jwtsecret /data/jwt.hex
             ;;
+        nimbus)
+            # nimbus has no dev/self-mining mode, so it is engine-driven like
+            # ethrex and likewise mandates a JWT on the engine API. The
+            # `executionClient` subcommand selects the EL inside the combined
+            # `nimbus` binary. --debug-rewrite-datadir-id skips nimbus's
+            # rebuild-genesis-from-alloc hash check (the alloc in the sidecar is
+            # empty; the real state root is in the stored header) — the analogue
+            # of ethrex's --skip-genesis-validation. --rpc-api takes only
+            # eth/debug/admin; web3_*/net_* are always served.
+            cp "$JWT_HEX" "$data/jwt.hex"
+            chmod 0777 "$data"
+            docker run -d --name $ct \
+                --network host \
+                -v $data:/data \
+                $NIMBUS_IMAGE \
+                executionClient \
+                --data-dir=/data \
+                --network=/data/nimbus-genesis.json \
+                --debug-rewrite-datadir-id \
+                --rpc --rpc-api=eth,debug \
+                --http-address=127.0.0.1 --http-port=8545 \
+                --engine-api --engine-api-address=127.0.0.1 --engine-api-port=8551 \
+                --jwt-secret=/data/jwt.hex \
+                --max-peers=0 --discv5=false --nat=none
+            ;;
         *)
             echo "unknown client: $client" >&2; return 1 ;;
     esac
@@ -350,15 +378,15 @@ NETH_CFG
 start_engine_driver_if_needed() {
     local client=$1 logdir=$2
     case $client in
-        besu|nethermind|erigon|ethrex) ;;
+        besu|nethermind|erigon|ethrex|nimbus) ;;
         *) return 0 ;;
     esac
     echo "=== starting engine-driver for $client ==="
-    # erigon and ethrex both enforce JWT on authrpc (besu/nethermind run with
+    # erigon, ethrex and nimbus enforce JWT on authrpc (besu/nethermind run with
     # it disabled and ignore the -jwt arg). The driver signs engine calls with
     # the same secret the container reads at /data/jwt.hex.
     local jwt_arg=""
-    case $client in erigon|ethrex) jwt_arg="-jwt $JWT_HEX" ;; esac
+    case $client in erigon|ethrex|nimbus) jwt_arg="-jwt $JWT_HEX" ;; esac
     nohup $ENGINE_DRIVER \
         -engine http://127.0.0.1:8551 \
         -eth http://127.0.0.1:8545 \

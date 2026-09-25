@@ -6,7 +6,8 @@
 #                                   tag set. Catches compile + non-cgo
 #                                   regressions early.
 #   cgo-suite (matrix: besu,
-#     nethermind, reth, ethrex)   — per-client e2e suite for the 4 cgo
+#     nethermind, reth, ethrex,
+#     erigon, nimbus)             — per-client e2e suite for the 6 cgo
 #                                   clients. Each leg runs db-gen → boot
 #                                   → genesis-root capture → oracle
 #                                   re-query @ "0x0" → spamoor (~100
@@ -29,7 +30,7 @@
 #   cross-client-genesis-root     — needs cgo-suite + geth-suite.
 #                                   Downloads each artifact; validates
 #                                   the genesis_state_root regex +
-#                                   rejects all-zero; asserts all 5
+#                                   rejects all-zero; asserts all 7
 #                                   clients agree. ~30 sec.
 #
 # Replaces the previous 9-job layout (default + reth-cgo + 3 oracles +
@@ -171,6 +172,17 @@ jobs:
             test-tags: 'cgo_erigon cgo_erigon_commitment gofuzz oracle'
             test-pkg: ./client/erigon/
             test-run-filter: 'TestErigonGoldenStateRoot|TestE2ESuite|TestPatchGenesisHeaderStateRoot'
+          - client: nimbus
+            dockerfile: Dockerfile.nimbus
+            image-tag: state-actor-nimbus-builder:latest
+            cache-scope: nimbus-builder
+            env-prefix: NIMBUS
+            test-tags: 'cgo_nimbus oracle'
+            test-pkg: ./client/nimbus/
+            # TestGenesisDumpGolden diffs the written DB byte-for-byte against a
+            # dump produced by nimbus's own genesis path; TestNimbusGoldenStateRoot
+            # re-derives every Merkle key + vertex placement from the written rows.
+            test-run-filter: 'TestNimbusGoldenStateRoot|TestGenesisDumpGolden|TestE2ESuite'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: ./.github/actions/cgo-suite
@@ -255,16 +267,16 @@ jobs:
           path: _artifacts
           pattern: '*-result'
           merge-multiple: true
-      - name: Compare genesis state-roots across all 6 clients
+      - name: Compare genesis state-roots across all 7 clients
         run: |
           set -euo pipefail
           cd _artifacts
           ls -l
-          # All 6 clients must have uploaded a result. Otherwise the
-          # invariant check is meaningless — e.g. if 5 of 6 suites fail
+          # All 7 clients must have uploaded a result. Otherwise the
+          # invariant check is meaningless — e.g. if 6 of 7 suites fail
           # before Phase 3, only 1 result lands here and the "all unique
           # roots == 1" check would trivially pass with 1 entry.
-          want=(besu erigon ethrex geth nethermind reth)
+          want=(besu erigon ethrex geth nethermind nimbus reth)
           missing=()
           for c in "${want[@]}"; do
             if [ ! -f "$c-result.json" ]; then
@@ -305,4 +317,4 @@ jobs:
             echo "$uniq_roots" | jq .
             exit 1
           fi
-          echo "PASS: all 5 clients agree on genesis state-root: $(echo "$uniq_roots" | jq -r '.[0]')"
+          echo "PASS: all 7 clients agree on genesis state-root: $(echo "$uniq_roots" | jq -r '.[0]')"

@@ -1,6 +1,6 @@
 # AGENTS.md
 
-state-actor generates client-ready Ethereum databases for geth, reth, besu, nethermind, ethrex, and erigon without going through each client's `init` path.
+state-actor generates client-ready Ethereum databases for geth, reth, besu, nethermind, ethrex, erigon, and nimbus without going through each client's `init` path.
 
 The agent-facing canonical doc is **[`docs/SKILL.md`](docs/SKILL.md)** — read it first. This file is a pointer.
 

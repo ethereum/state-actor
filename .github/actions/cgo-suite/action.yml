@@ -12,7 +12,7 @@ description: |
 
 inputs:
   client:
-    description: Client name (besu | nethermind | reth | ethrex | erigon) — used in volume names + result filename
+    description: Client name (besu | nethermind | reth | ethrex | erigon | nimbus) — used in volume names + result filename
     required: true
   dockerfile:
     description: Dockerfile path for this client's builder image
@@ -24,7 +24,7 @@ inputs:
     description: GHA buildx cache scope (per-client to avoid eviction)
     required: true
   env-prefix:
-    description: 'Prefix for ORACLE_DATADIR / ORACLE_VOL / DOCKER_PLATFORM env vars (BESU | NETH | RETH | ETHREX | ERIGON)'
+    description: 'Prefix for ORACLE_DATADIR / ORACLE_VOL / DOCKER_PLATFORM env vars (BESU | NETH | RETH | ETHREX | ERIGON | NIMBUS)'
     required: true
   test-tags:
     description: 'go test -tags string (e.g. "cgo_besu oracle")'

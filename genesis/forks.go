@@ -145,8 +145,8 @@ func SortedForks() []string {
 // boot with a "wrong genesis hash" mismatch.
 //
 // Today's ceilings (all clients on Osaka after the writer migration to internal/genesisheader.Build):
-//   - geth, reth, besu, nethermind, ethrex: osaka. Header construction flows
-//     through internal/genesisheader.Build for besu/reth/nethermind/ethrex
+//   - geth, reth, besu, nethermind, ethrex, nimbus: osaka. Header construction flows
+//     through internal/genesisheader.Build for besu/reth/nethermind/ethrex/nimbus
 //     (geth uses go-ethereum's native genesis builder, which handles
 //     every fork through Osaka identically). Per-client chainspec
 //     writers emit shanghaiTime/cancunTime/pragueTime/osakaTime/
@@ -168,7 +168,7 @@ func SortedForks() []string {
 // corresponding header fields.
 func MaxForkForClient(client string) string {
 	switch client {
-	case "geth", "reth", "besu", "nethermind", "erigon", "ethrex":
+	case "geth", "reth", "besu", "nethermind", "erigon", "ethrex", "nimbus":
 		return "osaka"
 	default:
 		return DefaultFork

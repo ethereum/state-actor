@@ -58,6 +58,7 @@ jobs:
             state-actor-geth
             state-actor-ethrex
             state-actor-erigon
+            state-actor-nimbus
           )
 
           err=$(mktemp)

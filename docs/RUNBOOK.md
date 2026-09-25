@@ -1,6 +1,6 @@
 # Runbook: booting each client against a state-actor database
 
-state-actor writes a client-native database. The boot command for that database differs by client. This file lists the six CI-verified recipes — one per client — extracted from `client/<c>/e2e_test.go` (and `client/reth/oracle_test.go`).
+state-actor writes a client-native database. The boot command for that database differs by client. This file lists the seven CI-verified recipes — one per client — extracted from `client/<c>/e2e_test.go` (and `client/reth/oracle_test.go`).
 
 Every section here is size-agnostic. `--target-size=10MB` and `--target-size=1TB` invoke the same code path, and the boot commands are the same in both cases.
 
@@ -351,11 +351,63 @@ docker run --rm \
 cast chain-id --rpc-url http://<container-ip>:8545   # → 0x539
 ```
 
+## Nimbus
+
+Reference: `client/nimbus/e2e_test.go` (`TestE2ESuite`).
+
+**Generate.** nimbus uses cgo (RocksDB bindings via grocksdb) — build via Docker.
+
+```bash
+docker build -f Dockerfile.nimbus -t state-actor-nimbus .
+docker run --rm \
+  -v /tmp/sa-nimbus:/data \
+  state-actor-nimbus \
+  --client=nimbus --db=/data \
+  --target-size=100MB \
+  --seed=42 \
+  --chain-id=1337 --gas-limit=60000000 \
+  --timestamp=1700000000 --extra-data=0xdeadbeef
+```
+
+**On-disk layout:**
+
+- `/data/ecdb/` — the single RocksDB nimbus opens under its `--data-dir` (no flag for it): `AriVtx` holds every account- and storage-trie vertex in nimbus's Aristo format (static vertex IDs for the top 8 levels, dynamic IDs below, every branch carrying its Merkle key) plus the admin record under the empty key; `KvtGen` holds the genesis header / total difficulty / number→hash / fcuHead / canonical-head rows and `0x06‖codeHash → bytecode`; `KvtSync` and `default` are empty
+- `/data/nimbus-genesis.json` — Geth-style genesis with an EMPTY alloc; pass via `--network` when booting
+
+**Boot path.** Nimbus rebuilds genesis from `--network`'s alloc on every start and refuses a datadir whose block-0 hash differs (`preventLoadingDataDirForTheWrongNetwork`). The sidecar's alloc is empty — the state lives in `AriVtx` and the real root is in the stored header — so boot with the hidden `--debug-rewrite-datadir-id` flag, which skips that check: the analogue of ethrex's `--skip-genesis-validation`. With block 0 present nimbus never rewrites genesis, `initializeDb` sees the canonical-head row and skips, and ForkedChain loads base = block 0 (a "Cannot find previous FC state" warning at boot is expected). Every branch ships with its Merkle key, so boot does not walk the state (no `Writing computeKey cache` line). Required boot flags (validated by the e2e suite):
+
+```bash
+docker run -d --name nimbus \
+  -v /tmp/sa-nimbus:/data \
+  statusim/nimbus-eth1:master-2f0ae87 \
+  executionClient \
+  --data-dir=/data \
+  --network=/data/nimbus-genesis.json \
+  --debug-rewrite-datadir-id \
+  --rpc --rpc-api=eth \
+  --http-address=0.0.0.0 --http-port=8545 \
+  --engine-api --engine-api-address=0.0.0.0 --engine-api-port=8551 \
+  --jwt-secret=/data/jwt.hex \
+  --max-peers=0 --discv5=false --nat=none
+```
+
+`executionClient` selects the EL inside the combined `nimbus` binary (without it the image runs CL + EL). `--rpc-api` accepts only `eth`, `debug`, `admin` (`web3_*` / `net_*` are always served). Nimbus has no dev / self-mining mode, so the chain is engine-driven like besu / nethermind, and the engine API mandates a JWT: write 32 random bytes as bare hex to `/data/jwt.hex` before booting and sign engine calls with it (`internal/e2e_testing.StartEngineDriverWithJWT`). Nimbus chmods the data dir to 0700 at startup; the container runs as root, so a bind mount works.
+
+**Image pin.** `statusim/nimbus-eth1:master-2f0ae87` (commit `2f0ae87cd`, "Storage trie static vids"). A master build, not a release: that commit changed the Aristo on-disk format (static storage-trie vertex IDs, the AccLeaf `stoHint` byte, the `0x7e` SavedState trailer) and no tagged release reads it. `NIMBUS_IMAGE` overrides the pin in `TestE2ESuite` / `make test-nimbus-suite`; `internal/nimbus/testdata/gen/README.md` explains how to regenerate the golden fixture when the pin moves.
+
+**Verify.**
+
+```bash
+cast chain-id --rpc-url http://<container-ip>:8545   # → 0x539
+```
+
 ## Troubleshooting
 
 | Symptom | Likely cause | Fix |
 |---|---|---|
-| `missing librocksdb` at build | cgo client built without the system RocksDB | Build via the per-client `Dockerfile.<client>` (see [Besu](#besu) / [Nethermind](#nethermind) / [Reth](#reth) / [Ethrex](#ethrex) / [Erigon](#erigon)) |
+| `missing librocksdb` at build | cgo client built without the system RocksDB | Build via the per-client `Dockerfile.<client>` (see [Besu](#besu) / [Nethermind](#nethermind) / [Reth](#reth) / [Ethrex](#ethrex) / [Erigon](#erigon) / [Nimbus](#nimbus)) |
+| Nimbus: `Data dir already initialized with other network configuration` | booted without `--debug-rewrite-datadir-id`, so nimbus rebuilt genesis from the empty-alloc sidecar and compared hashes | add the flag (see [Nimbus](#nimbus)) |
+| Nimbus: boot stalls on `Writing computeKey cache` | a branch vertex was shipped without its Merkle key, so nimbus re-hashes the whole trie | regenerate; `internal/nimbus.VerifyState` (run by `TestNimbusGoldenStateRoot`) pins that every branch carries its key |
 | Reth: `mmap: cannot allocate memory` | `vm.max_map_count` too low | `sudo sysctl -w vm.max_map_count=1048576` (see [Reth](#reth) operational hygiene) |
 | Besu / Neth: empty `eth_blockNumber` indefinitely | No consensus layer driving the Engine API | Run a mock CL (see `internal/engineapi/`) or use `internal/e2e_testing.StartEngineDriver` ([Besu engine-API note](#besu), [Nethermind engine-API note](#nethermind)) |
 | `eth_getCode` returns `0x` for a name-derived spec entity | Auto-fill collided with the derived address | Re-run without `--target-size` (no auto-fill) or with a smaller `--target-size` |

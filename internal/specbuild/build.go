@@ -16,7 +16,7 @@ type BuildOptions struct {
 	// Seed drives deterministic name→address derivation and
 	// synthesized storage generation.
 	Seed int64
-	// ClientName is "geth", "besu", "nethermind", or "reth".
+	// ClientName is "geth", "besu", "nethermind", "reth", or "nimbus".
 	ClientName string
 	// Sizer translates approximate_size_bytes → slot count.
 	Sizer templates.SizeApproximator

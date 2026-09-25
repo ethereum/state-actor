@@ -1,5 +1,5 @@
 // Package main is the state-actor CLI: generates Ethereum client
-// databases (geth / besu / nethermind / reth / ethrex / erigon) end-to-end without
+// databases (geth / besu / nethermind / reth / ethrex / erigon / nimbus) end-to-end without
 // going through the client binary's init path.
 package main
 
@@ -22,6 +22,7 @@ import (
 	clientethrex "github.com/ethereum/state-actor/client/ethrex"
 	"github.com/ethereum/state-actor/client/geth"
 	"github.com/ethereum/state-actor/client/nethermind"
+	clientnimbus "github.com/ethereum/state-actor/client/nimbus"
 	"github.com/ethereum/state-actor/client/reth"
 	"github.com/ethereum/state-actor/generator"
 	"github.com/ethereum/state-actor/genesis"
@@ -48,7 +49,7 @@ var (
 	benchmark  = flag.Bool("benchmark", false, "Run in benchmark mode (print detailed stats)")
 	binaryTrie = flag.Bool("binary-trie", false, "Generate state for binary trie mode (EIP-7864)")
 
-	targetSize = flag.String("target-size", "", "Advisory budget (e.g. '5GB', '500MB') that sizes the auto-fill of 20/10/70 mainnet-shaped synthetic state. Required unless --spec is set. With --spec, fills the headroom after the spec's projected cost; if the spec already meets the target, no auto-fill runs. Not a hard on-disk cap — actual size may vary per client. Honored by geth, besu, nethermind, reth, ethrex, and erigon.")
+	targetSize = flag.String("target-size", "", "Advisory budget (e.g. '5GB', '500MB') that sizes the auto-fill of 20/10/70 mainnet-shaped synthetic state. Required unless --spec is set. With --spec, fills the headroom after the spec's projected cost; if the spec already meets the target, no auto-fill runs. Not a hard on-disk cap — actual size may vary per client. Honored by geth, besu, nethermind, reth, ethrex, erigon, and nimbus.")
 
 	autofillProfile = flag.String("autofill-profile", "mainnet", "Auto-fill byte-split profile: 'mainnet' (20/10/70 account/code/storage, default) or 'accounts' (account-trie only — all EOAs, no contracts/storage). 'accounts' generates account-dominated tries for low-memory big-trie validation; it stays on the streaming DrawEOA path, so all clients must use the same value + --seed for cross-client state-root invariance.")
 
@@ -63,12 +64,12 @@ var (
 
 	groupDepth = flag.Int("group-depth", 8, "Binary trie group depth (1-8, default 8). Controls serialization unit size.")
 
-	client = flag.String("client", "geth", "Target Ethereum client: 'geth' (default), 'nethermind', 'besu', 'reth', 'ethrex', or 'erigon'.")
+	client = flag.String("client", "geth", "Target Ethereum client: 'geth' (default), 'nethermind', 'besu', 'reth', 'ethrex', 'erigon', or 'nimbus'.")
 
 	archive = flag.Bool("archive", false, "Configure the generated DB for archive-mode operation.\n"+
 		"  reth: writes StoragesHistory + AccountsHistory + StorageChangeSets + AccountChangeSets at genesis.\n"+
 		"  geth: writes PathDB archive-anchor metadata for --gcmode=archive boots.\n"+
-		"Rejected for besu and nethermind (no archive code path).")
+		"Rejected for besu, nethermind, and nimbus (no archive code path).")
 )
 
 func main() {
@@ -383,6 +384,13 @@ func generate(reproducedFrom string) *generator.Stats {
 		stats, err = clientethrex.Run(context.Background(), config, clientethrex.Options{})
 		if err != nil {
 			log.Fatalf("Failed to populate ethrex DB: %v", err)
+		}
+
+	case "nimbus":
+		var err error
+		stats, err = clientnimbus.Run(context.Background(), config, clientnimbus.Options{})
+		if err != nil {
+			log.Fatalf("Failed to populate Nimbus DB: %v", err)
 		}
 	}
 

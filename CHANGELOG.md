@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+### Added
+- **New `--client=nimbus` target** (nimbus-eth1). Writes nimbus's single
+  RocksDB (`<db>/ecdb`: `AriVtx` state-trie vertices in the Aristo format
+  with static/dynamic vertex IDs and stored Merkle keys, `KvtGen` genesis
+  rows + bytecode) plus a `nimbus-genesis.json` sidecar, so nimbus boots
+  without rebuilding state (`--debug-rewrite-datadir-id`; see
+  `docs/RUNBOOK.md#nimbus`). Codec in `internal/nimbus/`, golden-pinned
+  against a dump from nimbus's own genesis path and structurally verified by
+  `internal/nimbus.VerifyState`. Docker-only (`Dockerfile.nimbus`,
+  `cgo_nimbus`); e2e pinned to `statusim/nimbus-eth1:master-2f0ae87`, the
+  first build carrying the current on-disk format.
+
 ### Changed
 - **Besu DB now created with all 17 mainnet Bonsai column families.**
   A fresh mainnet Besu init creates every `KeyValueSegmentIdentifier`

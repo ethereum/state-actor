@@ -1,13 +1,13 @@
 ---
 name: state-actor
-description: Use this skill when a user wants to generate, boot, verify, or extend a state-actor-produced Ethereum database. Covers --client, --spec, --target-size, per-client boot recipes (geth / reth / besu / nethermind / ethrex / erigon), and the canonical 33-entity spec fixture.
+description: Use this skill when a user wants to generate, boot, verify, or extend a state-actor-produced Ethereum database. Covers --client, --spec, --target-size, per-client boot recipes (geth / reth / besu / nethermind / ethrex / erigon / nimbus), and the canonical 33-entity spec fixture.
 ---
 
 # SKILL.md — how to use state-actor
 
 This is the canonical "how to use this lib" doc for agents. The root [`AGENTS.md`](../AGENTS.md) is a pointer that points here.
 
-state-actor generates client-ready Ethereum databases for geth, reth, besu, nethermind, ethrex, and erigon without going through each client's `init` path. You point it at a `--db` path, choose a `--client`, optionally pass a `--spec` declaring concrete entities, and it writes a database the client can boot against directly.
+state-actor generates client-ready Ethereum databases for geth, reth, besu, nethermind, ethrex, erigon, and nimbus without going through each client's `init` path. You point it at a `--db` path, choose a `--client`, optionally pass a `--spec` declaring concrete entities, and it writes a database the client can boot against directly.
 
 ## Read these first
 
@@ -15,14 +15,14 @@ Read these in this order. The first one is load-bearing — read it before you r
 
 1. [`examples/full-matrix-spec-feature.yaml`](../examples/full-matrix-spec-feature.yaml) — **the canonical syntax reference for `--spec`**. CI-pinned, 33 entities, every feature. Read this file before reading any other doc about specs; see the [Canonical spec reference](#canonical-spec-reference) section below for an intent → entity-# index.
 2. [`SPEC.md`](SPEC.md) — the schema reference (parser rules, validation errors, address-resolution algorithm, `approximate_size_bytes` semantics). Read alongside the fixture.
-3. [`RUNBOOK.md`](RUNBOOK.md) — per-client boot recipes (geth / reth / besu / nethermind / ethrex / erigon).
+3. [`RUNBOOK.md`](RUNBOOK.md) — per-client boot recipes (geth / reth / besu / nethermind / ethrex / erigon / nimbus).
 4. [`ARCHITECTURE.md`](ARCHITECTURE.md) — internal architecture; cross-client determinism; per-client writer differences.
 
 ## Three load-bearing flags
 
 | Flag | What it controls |
 |---|---|
-| `--client` | Which client format to write (`geth`, `reth`, `besu`, `nethermind`, `ethrex`, `erigon`) |
+| `--client` | Which client format to write (`geth`, `reth`, `besu`, `nethermind`, `ethrex`, `erigon`, `nimbus`) |
 | `--spec` | Path to a YAML file declaring concrete entities (EOAs, contracts, ERC-20s, EIP-7702 delegations) |
 | `--target-size` | Advisory budget that sizes the auto-fill of synthetic state. Not a hard on-disk cap — actual size may vary per client. |
 
@@ -36,7 +36,7 @@ The CI guarantees that hold this file as the canonical reference:
 
 - [`internal/specbuild/full_matrix_test.go`](../internal/specbuild/full_matrix_test.go) (`TestBuildFullMatrix`) pins the entity count at 33 and asserts the cross-client `PreAlloc` count equality. The unit-level drift gate — byte-identity is enforced downstream by the cross-client-genesis-root aggregator job.
 - [`internal/e2e_testing/spec_setup.go`](../internal/e2e_testing/spec_setup.go) (`LoadCISpec`) loads the fixture with `seed=0` + `sizecal.NewFixed(64)` so every client sees the same input.
-- Per-client `TestE2ESuite` (in [`client/geth/e2e_test.go`](../client/geth/e2e_test.go), [`client/besu/e2e_test.go`](../client/besu/e2e_test.go), [`client/nethermind/e2e_test.go`](../client/nethermind/e2e_test.go), [`client/reth/oracle_test.go`](../client/reth/oracle_test.go) for reth, [`client/ethrex/e2e_test.go`](../client/ethrex/e2e_test.go) for ethrex, and [`client/erigon/e2e_test.go`](../client/erigon/e2e_test.go) for erigon) boots a real client against state-actor's output, runs spamoor, and verifies every entity via the Go oracle.
+- Per-client `TestE2ESuite` (in [`client/geth/e2e_test.go`](../client/geth/e2e_test.go), [`client/besu/e2e_test.go`](../client/besu/e2e_test.go), [`client/nethermind/e2e_test.go`](../client/nethermind/e2e_test.go), [`client/reth/oracle_test.go`](../client/reth/oracle_test.go) for reth, [`client/ethrex/e2e_test.go`](../client/ethrex/e2e_test.go) for ethrex, [`client/erigon/e2e_test.go`](../client/erigon/e2e_test.go) for erigon, and [`client/nimbus/e2e_test.go`](../client/nimbus/e2e_test.go) for nimbus) boots a real client against state-actor's output, runs spamoor, and verifies every entity via the Go oracle.
 - The `cross-client · genesis state-root invariant` aggregator job in [`.github/workflows/ci.yml`](../.github/workflows/ci.yml) refuses to merge a PR whose four clients produce different genesis roots from this fixture.
 
 The fixture is organised into labelled sections; each one pins a feature cluster:
@@ -110,9 +110,10 @@ go run . --db=/tmp/sa-besu --client=besu --target-size=100MB        # single Roc
 go run . --db=/tmp/sa-neth --client=nethermind --target-size=100MB  # 7 RocksDB + flat column DB
 go run . --db=/tmp/sa-ethrex --client=ethrex --target-size=100MB   # single RocksDB, 22 CFs
 go run . --db=/tmp/sa-erigon --client=erigon --target-size=100MB   # Erigon v3 flat .kv snapshots + minimal MDBX
+go run . --db=/tmp/sa-nimbus --client=nimbus --target-size=100MB   # single RocksDB, Aristo trie + Kvt CFs
 ```
 
-`besu`, `nethermind`, `reth`, `ethrex`, and `erigon` require cgo (RocksDB / MDBX bindings). On macOS, build via Docker — the repo ships per-client Dockerfiles. The per-client on-disk layout and pinned upstream version live in [`client/reth/doc.go`](../client/reth/doc.go), [`client/besu/doc.go`](../client/besu/doc.go), [`client/nethermind/doc.go`](../client/nethermind/doc.go), [`client/ethrex/doc.go`](../client/ethrex/doc.go), [`client/erigon/doc.go`](../client/erigon/doc.go).
+`besu`, `nethermind`, `reth`, `ethrex`, `erigon`, and `nimbus` require cgo (RocksDB / MDBX bindings). On macOS, build via Docker — the repo ships per-client Dockerfiles. The per-client on-disk layout and pinned upstream version live in [`client/reth/doc.go`](../client/reth/doc.go), [`client/besu/doc.go`](../client/besu/doc.go), [`client/nethermind/doc.go`](../client/nethermind/doc.go), [`client/ethrex/doc.go`](../client/ethrex/doc.go), [`client/erigon/doc.go`](../client/erigon/doc.go), [`client/nimbus/doc.go`](../client/nimbus/doc.go).
 
 ### Boot a generated DB on a client
 
@@ -148,7 +149,7 @@ It replays the manifest's resolved flags (reading any spec from the sidecar — 
 
 ### Reproduce a CI failure locally
 
-CI loads `examples/full-matrix-spec-feature.yaml` on top of `--seed=42 --target-size=100MB` (mirrored across all five `TestE2ESuite` constants). The auto-fill (mainnet-shaped 20 / 10 / 70 split) emits synthetic state to fill the headroom between the spec's projected cost and `--target-size` — the spec entities are written first, the auto-fill fills the gap. Re-run:
+CI loads `examples/full-matrix-spec-feature.yaml` on top of `--seed=42 --target-size=100MB` (mirrored across all seven `TestE2ESuite` constants). The auto-fill (mainnet-shaped 20 / 10 / 70 split) emits synthetic state to fill the headroom between the spec's projected cost and `--target-size` — the spec entities are written first, the auto-fill fills the gap. Re-run:
 
 ```bash
 go test -run TestE2ESuite ./client/<client>/... -v
@@ -156,17 +157,18 @@ go test -run TestE2ESuite ./client/<client>/... -v
 
 ### Diagnose "wrong state root"
 
-The cross-client genesis-root invariant says: same `--seed`, same spec, same client-policy → identical state root across all six MPT clients. If it diverges, see [`ARCHITECTURE.md#cross-client-determinism`](ARCHITECTURE.md#cross-client-determinism) for the full check-list (per-client calibration in [`internal/sizecal/doc.go`](../internal/sizecal/doc.go); canonical syscontract preamble; CI keystone job).
+The cross-client genesis-root invariant says: same `--seed`, same spec, same client-policy → identical state root across all seven MPT clients. If it diverges, see [`ARCHITECTURE.md#cross-client-determinism`](ARCHITECTURE.md#cross-client-determinism) for the full check-list (per-client calibration in [`internal/sizecal/doc.go`](../internal/sizecal/doc.go); canonical syscontract preamble; CI keystone job).
 
 ## Constraints & gotchas
 
-- **Besu / reth / nethermind / ethrex / erigon require Docker** for the writer side (cgo dependencies; no native build on macOS). Only geth has a pure-Go writer.
+- **Besu / reth / nethermind / ethrex / erigon / nimbus require Docker** for the writer side (cgo dependencies; no native build on macOS). Only geth has a pure-Go writer.
 - **`--seed=0` is a footgun**: `main.go` rewrites it to `time.Now().UnixNano()`, i.e. randomises. For determinism use any non-zero seed. Bench convention is `--seed=42`.
 - **`--target-size` is required when `--spec` is not set**: drives the mainnet-shaped auto-fill (20 % account-trie / 10 % bytecode / 70 % storage) over the whole budget. With `--spec`, spec entities count first; the auto-fill fills the headroom on top. If the spec alone exceeds the budget, `internal/specbuild` truncates the entity list to the longest prefix that fits and emits a `--target-size … truncated spec at entity[N]` warning to stderr; no auto-fill runs in that case.
-- **`--archive` is geth/reth only**: rejected for besu, nethermind, and ethrex; accepted but a no-op for erigon.
+- **`--archive` is geth/reth only**: rejected for besu, nethermind, ethrex, and nimbus; accepted but a no-op for erigon.
 - **`--binary-trie` is geth-only** (EIP-7864).
 - **When using `--spec` alone, omit `--target-size`** — that way no auto-fill runs on top and random EOAs can't collide with spec-derived addresses. Set both only when you want the auto-fill to pad the headroom.
 - **Nethermind boot needs a JSON `boot.cfg`** pointing at the chainspec + datadir (see `client/nethermind/e2e_test.go`'s `nethermindE2EConfigTemplate`). The other clients accept boot flags directly.
+- **Nimbus boot needs `--debug-rewrite-datadir-id`** (the sidecar ships an empty alloc; the flag skips nimbus's rebuild-genesis-and-compare check, like ethrex's `--skip-genesis-validation`) and the pinned master image `statusim/nimbus-eth1:master-2f0ae87` — the Aristo format changed at that commit and no release reads it. See [`RUNBOOK.md#nimbus`](RUNBOOK.md#nimbus).
 
 ## Testing
 
@@ -188,6 +190,6 @@ The entry points cluster by the kind of extension:
 | Change how spec entities resolve | [`internal/specbuild/doc.go`](../internal/specbuild/doc.go) | This is the seam between the YAML schema (parsed by `internal/spec`) and the writer-facing `[]PreAllocEntity` slice. Address modes live in `derive.go`. |
 | Touch the YAML schema | [`internal/spec/doc.go`](../internal/spec/doc.go) | Pure data + parse + schema-time validation. Keep import-cycle-free with `internal/templates`. |
 | Touch sizing / calibration | [`internal/sizecal/doc.go`](../internal/sizecal/doc.go) | One global `bytesPerSlot` constant per client; the CI invariance gate uses `NewFixed(64)` so test sizing can't mask a `Default()` drift. |
-| Add or modify a client target | [`client/geth/doc.go`](../client/geth/doc.go) (template), [`client/reth/doc.go`](../client/reth/doc.go), [`client/besu/doc.go`](../client/besu/doc.go), [`client/nethermind/doc.go`](../client/nethermind/doc.go), [`client/ethrex/doc.go`](../client/ethrex/doc.go), [`client/erigon/doc.go`](../client/erigon/doc.go) | Add `client/<name>/` with a `Run` (or `RunCgo`) entry point, a `doc.go` documenting on-disk layout + pinned upstream version, and a `TestE2ESuite` driving Docker boot + the shared `e2e.RunSuitePhases` oracle. Wire into `internal/clientpolicy/policy.go`. |
+| Add or modify a client target | [`client/geth/doc.go`](../client/geth/doc.go) (template), [`client/reth/doc.go`](../client/reth/doc.go), [`client/besu/doc.go`](../client/besu/doc.go), [`client/nethermind/doc.go`](../client/nethermind/doc.go), [`client/ethrex/doc.go`](../client/ethrex/doc.go), [`client/erigon/doc.go`](../client/erigon/doc.go), [`client/nimbus/doc.go`](../client/nimbus/doc.go) | Add `client/<name>/` with a `Run` (or `RunCgo`) entry point, a `doc.go` documenting on-disk layout + pinned upstream version, and a `TestE2ESuite` driving Docker boot + the shared `e2e.RunSuitePhases` oracle. Wire into `internal/clientpolicy/policy.go`. |
 | Work on the reth codec | [`internal/reth/doc.go`](../internal/reth/doc.go) | Byte-exact mirror of reth's MDBX schema + Compact codec. Pinned to a specific reth commit; updating requires regenerating `testdata/fixtures.json`. |
 | Add a CLI flag | `main.go` + [`ARCHITECTURE.md`](ARCHITECTURE.md) | Declare in `main.go`, document in `--help` text, refresh the compact flag table in [`README.md`](../README.md). |

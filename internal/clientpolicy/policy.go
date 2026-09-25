@@ -39,10 +39,10 @@ type FlagValues struct {
 //     by every client.
 func ValidateForClient(client string, fv FlagValues) error {
 	switch client {
-	case "geth", "nethermind", "besu", "reth", "erigon", "ethrex":
+	case "geth", "nethermind", "besu", "reth", "erigon", "ethrex", "nimbus":
 		// recognized; per-flag checks below
 	default:
-		return fmt.Errorf("--client=%s is not recognized; valid values: geth, nethermind, besu, reth, erigon, ethrex", client)
+		return fmt.Errorf("--client=%s is not recognized; valid values: geth, nethermind, besu, reth, erigon, ethrex, nimbus", client)
 	}
 
 	// EIP-7864 binary trie — geth-only.
@@ -58,6 +58,8 @@ func ValidateForClient(client string, fv FlagValues) error {
 			return fmt.Errorf("--binary-trie is not supported with --client=erigon (Erigon does not implement EIP-7864)")
 		case "ethrex":
 			return fmt.Errorf("--binary-trie is not supported with --client=ethrex (ethrex does not implement EIP-7864)")
+		case "nimbus":
+			return fmt.Errorf("--binary-trie is not supported with --client=nimbus (Nimbus does not implement EIP-7864)")
 		}
 	}
 
