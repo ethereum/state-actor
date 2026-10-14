@@ -7,7 +7,6 @@ import (
 	"context"
 	"fmt"
 	"runtime"
-	"sort"
 	"sync"
 
 	"github.com/erigontech/mdbx-go/mdbx"
@@ -19,6 +18,7 @@ import (
 	"github.com/ethereum/state-actor/internal/progress"
 	iReth "github.com/ethereum/state-actor/internal/reth"
 	"github.com/ethereum/state-actor/internal/streamingtrie"
+	"github.com/ethereum/state-actor/internal/streamsort"
 )
 
 // maxStreamSpecStorageWorkers caps drain-and-compute parallelism; each worker
@@ -48,12 +48,10 @@ type slotPrepared struct {
 // preparedEntity carries everything the consumer needs to commit one
 // entity's storage. The worker fills chunkCh in keccak-ascending order,
 // then sends the computed root via rootCh and closes chunkCh. errCh
-// carries any IterateRoot failure surfacing on the worker side. trieRows
-// are pre-encoded StoragesTrie DupSort values (each entry = packed
-// SubKey(33 bytes) || BranchNodeCompact bytes), sorted bytewise by the
-// worker (HashBuilder's emission order is post-order, not a global sort —
-// see its "Path emission order" doc); the consumer writes them under the
-// DupSort main key ent.addrHash after the per-slot rows land.
+// carries any IterateRoot failure surfacing on the worker side.
+// StoragesTrie rows are spilled straight into the shared trieRows sorter
+// (see storagesTrieEmitter) as the worker's HashBuilder emits them, not
+// buffered here; drainStoragesTrie writes them after RunCgo's last writer.
 type preparedEntity struct {
 	idx      int
 	addr     common.Address
@@ -62,12 +60,13 @@ type preparedEntity struct {
 	chunkCh  chan []slotPrepared
 	rootCh   chan common.Hash
 	errCh    chan error
-	trieRows [][]byte
 }
 
 // streamSpecStorage writes each PreAlloc entity's Storage into reth's
 // four storage tables, computes the storage MPT root, and splices it
-// into cfg.GenesisAccounts[addr].Root for the alloc handler.
+// into cfg.GenesisAccounts[addr].Root for the alloc handler. StoragesTrie
+// rows are spilled into trieRows (shared with WriteContracts); the caller
+// drains it after every writer, including this one, has finished.
 //
 // Architecture: N parallel workers each (a) drain their entity's iter
 // into a per-call streamsort.Store, (b) walk the sorted store driving
@@ -81,7 +80,7 @@ type preparedEntity struct {
 // linearly. MDBX enforces single-writer-per-env so the commits run
 // serially anyway; the win is offloading every cycle of CPU work to
 // the workers so the consumer is pure I/O.
-func streamSpecStorage(ctx context.Context, envs *Envs, cfg *generator.Config, stats *generator.Stats) error {
+func streamSpecStorage(ctx context.Context, envs *Envs, trieRows *streamsort.Store, cfg *generator.Config, stats *generator.Stats) error {
 	if len(cfg.PreAlloc) == 0 {
 		return nil
 	}
@@ -132,7 +131,7 @@ func streamSpecStorage(ctx context.Context, envs *Envs, cfg *generator.Config, s
 				if drainCtx.Err() != nil {
 					return
 				}
-				if err := drainAndEncodeEntity(drainCtx, cfg, i, preparedCh, slotW); err != nil {
+				if err := drainAndEncodeEntity(drainCtx, cfg, trieRows, i, preparedCh, slotW); err != nil {
 					cancelDrain(err)
 					return
 				}
@@ -205,10 +204,13 @@ func streamSpecStorage(ctx context.Context, envs *Envs, cfg *generator.Config, s
 // drainAndEncodeEntity runs on a worker goroutine. It drains the
 // entity's storage iter into a streamsort, then walks the sorted store
 // driving the HashBuilder AND pre-encoding the per-slot byte buffers
-// into chunks sent to the consumer via ent.chunkCh.
+// into chunks sent to the consumer via ent.chunkCh. HashBuilder's
+// StoragesTrie emissions go straight into trieRows (shared across workers,
+// serialized under its own putMu — see storagesTrieEmitter).
 func drainAndEncodeEntity(
 	drainCtx context.Context,
 	cfg *generator.Config,
+	trieRows *streamsort.Store,
 	idx int,
 	preparedCh chan<- *preparedEntity,
 	slotW *progress.SlotWorker,
@@ -249,27 +251,7 @@ func drainAndEncodeEntity(
 
 	archive := cfg.Archive
 
-	// Per-entity trie emissions: HashBuilder emits in post-order as it
-	// walks the sorted slots (see HashBuilder's "Path emission order" doc —
-	// not a global sort). Worker pre-encodes each emission as a packed
-	// StorageTrieEntry value (33-byte SubKey || BNC; v2 format), accumulates
-	// into trieRows, then sorts it bytewise before handing it to the
-	// consumer, which drains it into StoragesTrie within the same
-	// per-entity Mdbx.Update txn AFTER the slot rows land.
-	// Memory per entity: O(trie nodes) ≈ small multiple of slot count.
-	trieRows := make([][]byte, 0, 64)
-	emit := func(path iReth.StoredNibbles, node iReth.BranchNodeCompact) error {
-		if path.Length == 0 {
-			// Skip root branch — see TestNoRootCacheRows.
-			return nil
-		}
-		var valBuf bytes.Buffer
-		entry := iReth.StorageTrieEntry{SubKey: path, Node: node}
-		entry.EncodePackedCompact(&valBuf)
-		trieRows = append(trieRows, valBuf.Bytes())
-		return nil
-	}
-	hb := newRethStorageHashBuilder(emit)
+	hb := newRethStorageHashBuilder(storagesTrieEmitter(trieRows, addrHash))
 	pending := make([]slotPrepared, 0, chunkSlots)
 
 	flushPending := func() error {
@@ -324,13 +306,6 @@ func drainAndEncodeEntity(
 		close(ent.chunkCh)
 		return nil
 	}
-	// Sort trie rows bytewise (HashBuilder's post-order emission is not
-	// key-ascending) before stashing them, sequenced before close(ent.chunkCh)
-	// so the consumer's AFTER-drain read is race-free.
-	sort.Slice(trieRows, func(i, j int) bool {
-		return bytes.Compare(trieRows[i], trieRows[j]) < 0
-	})
-	ent.trieRows = trieRows
 	close(ent.chunkCh)
 	ent.rootCh <- root
 	return nil
@@ -375,21 +350,6 @@ func consumeEntity(
 					if err := envs.HistorySink().PutStorageHistory(ent.addr, prep.rawKey, 0); err != nil {
 						return fmt.Errorf("StoragesHistory %s: %w", ent.addr.Hex(), err)
 					}
-				}
-			}
-		}
-		// Drain pre-encoded trie rows (already sorted bytewise by the
-		// worker) into StoragesTrie keyed by keccak(address).
-		// Plain Put (not AppendDup): entities are processed in PreAlloc
-		// index order (not addrHash-sorted), so AppendDup would trip
-		// MDBX_EKEYMISMATCH on cross-entity boundaries.
-		if len(ent.trieRows) > 0 {
-			if err := envs.useFill("StoragesTrie"); err != nil {
-				return fmt.Errorf("useFill(StoragesTrie): %w", err)
-			}
-			for _, row := range ent.trieRows {
-				if err := txn.Put(envs.MdbxDBIs["StoragesTrie"], ent.addrHash[:], row, 0); err != nil {
-					return fmt.Errorf("StoragesTrie %s: %w", ent.addr.Hex(), err)
 				}
 			}
 		}

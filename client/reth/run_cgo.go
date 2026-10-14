@@ -90,6 +90,18 @@ func RunCgo(ctx context.Context, cfg generator.Config, opts Options) (*generator
 	}
 	defer sorter.Close()
 
+	// trieSorter spills StoragesTrie rows (addrHash || packed SubKey || BNC,
+	// see storagesTrieEmitter) so contracts and PreAlloc storage entities can
+	// write in generation order while drainStoragesTrie appends them to the
+	// table addrHash-sorted. Shared by WriteContracts and streamSpecStorage;
+	// the latter's workers Put concurrently, serialized under the store's
+	// putMu (see streamsort package doc).
+	trieSorter, err := streamsort.New(cfg.DBPath)
+	if err != nil {
+		return nil, fmt.Errorf("RunCgo: streamsort.New(trie): %w", err)
+	}
+	defer trieSorter.Close()
+
 	// putAccountRLP sorter-keys each account by AddrHash with a framed value:
 	// [1-byte len(compact)] [compact HashedAccounts row] [account RLP], split
 	// again in phase 2. isContract must match the WriteEOAs/WriteContracts
@@ -113,7 +125,7 @@ func RunCgo(ctx context.Context, cfg generator.Config, opts Options) (*generator
 
 	const batchSize = defaultStreamBatchSize
 
-	if err := streamSpecStorage(ctx, envs, &cfg, stats); err != nil {
+	if err := streamSpecStorage(ctx, envs, trieSorter, &cfg, stats); err != nil {
 		return nil, fmt.Errorf("RunCgo: streamSpecStorage: %w", err)
 	}
 
@@ -136,7 +148,7 @@ func RunCgo(ctx context.Context, cfg generator.Config, opts Options) (*generator
 			}
 		}
 		if len(allocContracts) > 0 {
-			if err := WriteContracts(envs, allocContracts, 0, cfg.Archive, stats); err != nil {
+			if err := WriteContracts(envs, trieSorter, allocContracts, 0, cfg.Archive, stats); err != nil {
 				return nil, fmt.Errorf("RunCgo: WriteContracts(alloc): %w", err)
 			}
 		}
@@ -188,7 +200,7 @@ func RunCgo(ctx context.Context, cfg generator.Config, opts Options) (*generator
 				}
 			}
 			if len(codeEOAs) > 0 {
-				if err := WriteContracts(envs, codeEOAs, 0, cfg.Archive, stats); err != nil {
+				if err := WriteContracts(envs, trieSorter, codeEOAs, 0, cfg.Archive, stats); err != nil {
 					return nil, fmt.Errorf("RunCgo: WriteContracts(7702 EOA): %w", err)
 				}
 			}
@@ -221,7 +233,7 @@ func RunCgo(ctx context.Context, cfg generator.Config, opts Options) (*generator
 				// WriteContracts mutates each contract's StateAccount.Root
 				// + .CodeHash in place; putAccountRLP below captures the
 				// updated values.
-				if err := WriteContracts(envs, batch, 0, cfg.Archive, stats); err != nil {
+				if err := WriteContracts(envs, trieSorter, batch, 0, cfg.Archive, stats); err != nil {
 					return nil, fmt.Errorf("RunCgo: WriteContracts: %w", err)
 				}
 				for _, c := range batch {
@@ -234,6 +246,18 @@ func RunCgo(ctx context.Context, cfg generator.Config, opts Options) (*generator
 				cfg.Progress.Tick(int64(plan.NumContracts-remaining), int64(plan.NumContracts), "contracts")
 			}
 		}
+	}
+
+	// Drain StoragesTrie now that every contract and PreAlloc entity has
+	// written its rows (WriteContracts + streamSpecStorage, both above).
+	// Explicit Close (not just the defer) frees its temp files before the
+	// chainspec/static-files writes, mirroring the account sorter below.
+	cfg.Progress.Stage("reth: draining StoragesTrie")
+	if err := drainStoragesTrie(envs, trieSorter); err != nil {
+		return nil, fmt.Errorf("RunCgo: drainStoragesTrie: %w", err)
+	}
+	if err := trieSorter.Close(); err != nil {
+		return nil, fmt.Errorf("RunCgo: trieSorter.Close: %w", err)
 	}
 
 	if accountsCreated+contractsCreated > 0 {

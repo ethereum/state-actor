@@ -5,7 +5,6 @@ package reth
 import (
 	"bytes"
 	"fmt"
-	"sort"
 
 	"github.com/erigontech/mdbx-go/mdbx"
 	"github.com/ethereum/go-ethereum/common"
@@ -13,12 +12,76 @@ import (
 	"github.com/ethereum/state-actor/generator"
 	"github.com/ethereum/state-actor/internal/entitygen"
 	iReth "github.com/ethereum/state-actor/internal/reth"
+	"github.com/ethereum/state-actor/internal/streamsort"
 )
+
+// storagesTrieTxnRows caps one drainStoragesTrie transaction: a mainnet-size
+// StoragesTrie (tens of GB) in a single txn degrades MDBX's dirty-page
+// tracking the same way streamSpecStorage's per-entity txns avoid.
+const storagesTrieTxnRows = 1_000_000
+
+// storagesTrieEmitter spills addrHash's stored storage-trie branches into
+// trieRows for drainStoragesTrie. The whole row (addrHash || 33-byte packed
+// SubKey || BNC) is the sort key with an empty value, so the store yields
+// rows in exactly MDBX's (main key, dup value) order, and an identical row
+// collapses as it would in the DupSort table.
+func storagesTrieEmitter(trieRows *streamsort.Store, addrHash common.Hash) iReth.NodeEmitter {
+	return func(path iReth.StoredNibbles, node iReth.BranchNodeCompact) error {
+		if path.Length == 0 {
+			// Skip root branch — see TestNoRootCacheRows.
+			return nil
+		}
+		var buf bytes.Buffer
+		buf.Write(addrHash[:])
+		entry := iReth.StorageTrieEntry{SubKey: path, Node: node}
+		entry.EncodePackedCompact(&buf)
+		return trieRows.Put(buf.Bytes(), nil)
+	}
+}
+
+// drainStoragesTrie appends every spilled row to StoragesTrie. Writers run
+// in contract generation order, so a direct Put lands each contract's main
+// key at a random point in the table's top-level tree and leaves its pages
+// about half full; appending the globally sorted rows fills them densely.
+// Must run after the last StoragesTrie writer: Append rejects a key below
+// the table's current last key.
+func drainStoragesTrie(envs *Envs, trieRows *streamsort.Store) error {
+	it, err := trieRows.NewCursor()
+	if err != nil {
+		return err
+	}
+	defer it.Close()
+	for it.Valid() {
+		err := envs.Mdbx.Update(func(txn *mdbx.Txn) error {
+			if err := envs.useFill("StoragesTrie"); err != nil {
+				return fmt.Errorf("useFill(StoragesTrie): %w", err)
+			}
+			cur, err := txn.OpenCursor(envs.MdbxDBIs["StoragesTrie"])
+			if err != nil {
+				return fmt.Errorf("open StoragesTrie cursor: %w", err)
+			}
+			defer cur.Close()
+			for n := 0; n < storagesTrieTxnRows && it.Valid(); n++ {
+				row := it.Key()
+				if err := cur.Put(row[:common.HashLength], row[common.HashLength:], mdbx.Append|mdbx.AppendDup); err != nil {
+					return fmt.Errorf("StoragesTrie append %x: %w", row[:common.HashLength], err)
+				}
+				it.Next()
+			}
+			return it.Err()
+		})
+		if err != nil {
+			return err
+		}
+	}
+	return it.Err()
+}
 
 // WriteContracts writes the v2 contract tables: Bytecodes (deduped),
 // AccountChangeSets (archive), HashedStorages, StorageChangeSets (archive).
 // AccountsHistory + StoragesHistory rows (archive) are routed to the
-// RocksDB CFs via envs.HistorySink().
+// RocksDB CFs via envs.HistorySink(). StoragesTrie rows are spilled into
+// trieRows for drainStoragesTrie.
 //
 // HashedAccounts is written by RunCgo's phase 2, not here (see
 // hashedAccountValue in run_cgo.go).
@@ -32,7 +95,7 @@ import (
 // that actually got written) and StorageBytes (sum of HashedStorages
 // compact-encoded entries). Increments are applied only after the MDBX
 // transaction commits.
-func WriteContracts(envs *Envs, contracts []*entitygen.Account, blockNum uint64, archive bool, stats *generator.Stats) error {
+func WriteContracts(envs *Envs, trieRows *streamsort.Store, contracts []*entitygen.Account, blockNum uint64, archive bool, stats *generator.Stats) error {
 	var (
 		localStorageBytes uint64
 		localCodeBytes    uint64
@@ -50,43 +113,12 @@ func WriteContracts(envs *Envs, contracts []*entitygen.Account, blockNum uint64,
 
 			var storageRoot common.Hash
 			if len(contract.Storage) > 0 {
-				// Per-contract StoragesTrie emit: writes the intermediate-node
-				// cache reth's payload builder reads during state-root
-				// computation. DupSort main key = AddrHash; SubKey + BNC are
-				// co-encoded into the value via StorageTrieEntry. Rows are
-				// buffered and sorted bytewise before Put (HashBuilder's
-				// post-order emission is not key-ascending) so libmdbx packs
-				// the dup-sort subtree densely. Plain Put (not AppendDup) —
-				// contracts in this batch aren't addrHash-sorted, so
-				// AppendDup's monotonic-main-key precondition would fail on
-				// cross-contract boundaries.
-				var rows [][]byte
-				emit := func(path iReth.StoredNibbles, node iReth.BranchNodeCompact) error {
-					if path.Length == 0 {
-						// Skip root branch — see TestNoRootCacheRows.
-						return nil
-					}
-					var valBuf bytes.Buffer
-					entry := iReth.StorageTrieEntry{SubKey: path, Node: node}
-					// v2: 33-byte PackedStoredNibblesSubKey + BNC.
-					entry.EncodePackedCompact(&valBuf)
-					rows = append(rows, valBuf.Bytes())
-					return nil
-				}
+				// Per-contract StoragesTrie emit: the intermediate-node cache
+				// reth's payload builder reads during state-root computation.
 				var err error
-				storageRoot, err = computeStorageRoot(contract.Storage, emit)
+				storageRoot, err = computeStorageRoot(contract.Storage, storagesTrieEmitter(trieRows, contract.AddrHash))
 				if err != nil {
 					return fmt.Errorf("WriteContracts: computeStorageRoot %s: %w", contract.Address.Hex(), err)
-				}
-				sort.Slice(rows, func(i, j int) bool { return bytes.Compare(rows[i], rows[j]) < 0 })
-				if err := envs.useFill("StoragesTrie"); err != nil {
-					return fmt.Errorf("WriteContracts: useFill(StoragesTrie): %w", err)
-				}
-				for _, row := range rows {
-					// DupSort: main key = keccak(address); value = packed SubKey || BNC.
-					if err := txn.Put(envs.MdbxDBIs["StoragesTrie"], contract.AddrHash[:], row, 0); err != nil {
-						return fmt.Errorf("WriteContracts: StoragesTrie %s: %w", contract.Address.Hex(), err)
-					}
 				}
 			} else {
 				storageRoot = contract.StateAccount.Root

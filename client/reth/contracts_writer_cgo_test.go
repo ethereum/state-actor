@@ -15,6 +15,7 @@ import (
 
 	"github.com/ethereum/state-actor/generator"
 	"github.com/ethereum/state-actor/internal/entitygen"
+	"github.com/ethereum/state-actor/internal/streamsort"
 )
 
 func TestWriteContractsSmall(t *testing.T) {
@@ -28,12 +29,18 @@ func TestWriteContractsSmall(t *testing.T) {
 	rng := rand.New(rand.NewSource(0xdeadbeef))
 	const n = 5
 	contracts := make([]*entitygen.Account, n)
-	for i := 0; i < n; i++ {
+	for i := range n {
 		// GenerateContract(rng, codeSize, numSlots): 16-byte minimum code, 3 storage slots.
 		contracts[i] = entitygen.GenerateContract(rng, 16, 3)
 	}
 
-	if err := WriteContracts(envs, contracts, 0, false /* archive */, nil); err != nil {
+	trieRows, err := streamsort.New(tmp)
+	if err != nil {
+		t.Fatalf("streamsort.New: %v", err)
+	}
+	defer trieRows.Close()
+
+	if err := WriteContracts(envs, trieRows, contracts, 0, false /* archive */, nil); err != nil {
 		t.Fatalf("WriteContracts: %v", err)
 	}
 
@@ -84,14 +91,20 @@ func TestWriteContractsPopulatesStats(t *testing.T) {
 	rng := rand.New(rand.NewSource(0xc0de))
 	const n = 5
 	contracts := make([]*entitygen.Account, n)
-	for i := 0; i < n; i++ {
+	for i := range n {
 		// 32-byte code, 3 storage slots — large enough to make every byte
 		// counter strictly positive.
 		contracts[i] = entitygen.GenerateContract(rng, 32, 3)
 	}
 
+	trieRows, err := streamsort.New(tmp)
+	if err != nil {
+		t.Fatalf("streamsort.New: %v", err)
+	}
+	defer trieRows.Close()
+
 	var stats generator.Stats
-	if err := WriteContracts(envs, contracts, 0, false /* archive */, &stats); err != nil {
+	if err := WriteContracts(envs, trieRows, contracts, 0, false /* archive */, &stats); err != nil {
 		t.Fatalf("WriteContracts: %v", err)
 	}
 
@@ -123,8 +136,14 @@ func TestWriteContractsDedupesCodeBytes(t *testing.T) {
 	b.Code = a.Code
 	b.CodeHash = a.CodeHash
 
+	trieRows, err := streamsort.New(tmp)
+	if err != nil {
+		t.Fatalf("streamsort.New: %v", err)
+	}
+	defer trieRows.Close()
+
 	var stats generator.Stats
-	if err := WriteContracts(envs, []*entitygen.Account{a, b}, 0, false /* archive */, &stats); err != nil {
+	if err := WriteContracts(envs, trieRows, []*entitygen.Account{a, b}, 0, false /* archive */, &stats); err != nil {
 		t.Fatalf("WriteContracts: %v", err)
 	}
 
@@ -160,7 +179,13 @@ func TestWriteContractsRejectsZeroRoot(t *testing.T) {
 		Code:    nil,
 	}
 
-	err = WriteContracts(envs, []*entitygen.Account{bad}, 0, false /* archive */, nil)
+	trieRows, err := streamsort.New(tmp)
+	if err != nil {
+		t.Fatalf("streamsort.New: %v", err)
+	}
+	defer trieRows.Close()
+
+	err = WriteContracts(envs, trieRows, []*entitygen.Account{bad}, 0, false /* archive */, nil)
 	if err == nil {
 		t.Fatal("WriteContracts: expected error for empty Storage + zero Root, got nil")
 	}
