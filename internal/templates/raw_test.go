@@ -43,7 +43,7 @@ func TestRawTemplateBasic(t *testing.T) {
 	if string(pe.Account.CodeHash) != string(wantCH) {
 		t.Errorf("CodeHash mismatch")
 	}
-	if string(pe.Code) != string(code) {
+	if string(pe.CodeBytes()) != string(code) {
 		t.Errorf("Code not passed through")
 	}
 	if pe.Storage != nil {

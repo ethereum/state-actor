@@ -167,10 +167,10 @@ func TestCreate2DeploysUniqueJumpdestCodeSizeAddressesMatchEEST(t *testing.T) {
 		if out[i].Address != want[i] {
 			t.Errorf("salt=%d: got %s, want EEST-derived %s", i, out[i].Address.Hex(), want[i].Hex())
 		}
-		if len(out[i].Code) != 0x20000 {
-			t.Errorf("salt=%d: runtime length got %d, want 0x20000", i, len(out[i].Code))
+		if len(out[i].CodeBytes()) != 0x20000 {
+			t.Errorf("salt=%d: runtime length got %d, want 0x20000", i, len(out[i].CodeBytes()))
 		}
-		embedded := common.BytesToAddress(out[i].Code[0x2C:0x40])
+		embedded := common.BytesToAddress(out[i].CodeBytes()[0x2C:0x40])
 		if embedded != out[i].Address {
 			t.Errorf("salt=%d: embedded address %s != derived %s",
 				i, embedded.Hex(), out[i].Address.Hex())
@@ -312,29 +312,6 @@ func TestCodePatternRuntimeSizeUniqueJumpdest(t *testing.T) {
 	}
 	if got := CodePatternRuntimeSize(CodePatternUniqueJumpdest, 0x20000); got != 0x20000 {
 		t.Errorf("CodePatternRuntimeSize(unique_jumpdest, 0x20000) = %d, want 0x20000", got)
-	}
-}
-
-// TestPatternResidentCodeCapLargeCodeSize pins the 64 GiB residency cap
-// against the 16 MiB maximum code_size: 4096 × 16 MiB = 64 GiB exactly
-// (allowed, cap is exclusive), 4097 exceeds.
-func TestPatternResidentCodeCapLargeCodeSize(t *testing.T) {
-	c2 := &create2DeploysTemplate{}
-	base := map[string]any{
-		"code_pattern": CodePatternUniqueJumpdest,
-		"code_size":    0x1000000,
-	}
-	ok := map[string]any{"salt_count": 4096}
-	bad := map[string]any{"salt_count": 4097}
-	for k, v := range base {
-		ok[k] = v
-		bad[k] = v
-	}
-	if err := c2.ValidateParameters(ok); err != nil {
-		t.Errorf("salt_count=4096 at 16 MiB should pass the 64 GiB cap, got %v", err)
-	}
-	if err := c2.ValidateParameters(bad); err == nil {
-		t.Errorf("salt_count=4097 at 16 MiB should exceed the 64 GiB cap, got nil")
 	}
 }
 

@@ -15,6 +15,17 @@
   page-fill density. On a 1 GB store (20,972 contracts, 423,314
   StoragesTrie rows), leaf pages went from 27,987 to 25,258 and branch
   pages from 5,472 to 5,424.
+- **code_pattern runtimes are made on demand.** `create2_deploys` and
+  `create_preimage_deploys` kept every byte-unique runtime (`max_diff*`,
+  `unique_jumpdest*`) in memory for the whole build: 100 000 × 64 KiB is
+  6.1 GiB per entity. Expand now sets the code hash and a `LazyCode`, and
+  each writer makes the runtime when it writes that account, then drops it.
+  reth writes its alloc contracts in chunks of 10 000 for the same reason.
+  The state root and the written bytes are unchanged. On a spec with
+  4 × 20 000 unique runtimes (3.6 GiB of code), geth peak RSS went from
+  8.8 GB to 2.0 GB. The 64 GiB `salt_count`/`count` cap and the
+  resident-code warning are removed, because the runtimes are no longer
+  resident.
 - **reth: trie and storage rows are written key-ordered.** AccountsTrie rows
   arrive from the HashBuilder in post-order, not ascending key order; they
   are now buffered per 2-nibble prefix and Put sorted (at most 16 length-1

@@ -35,7 +35,7 @@ func TestCreatePreimageDeploysExpand(t *testing.T) {
 		if pe.Address != want {
 			t.Errorf("nonce=%d addr: got %s, want %s", 2+i, pe.Address.Hex(), want.Hex())
 		}
-		if !bytes.Equal(pe.Code, runtimeBytes) {
+		if !bytes.Equal(pe.CodeBytes(), runtimeBytes) {
 			t.Errorf("nonce=%d code mismatch", 2+i)
 		}
 		if !bytes.Equal(pe.Account.CodeHash, wantHash) {

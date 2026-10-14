@@ -109,30 +109,30 @@ func TestCreate2DeploysMaxAdjustableEIP7954AddressesMatchEEST(t *testing.T) {
 				t.Errorf("%s salt=%d: got %s, want EEST-derived %s",
 					c.pattern, i, out[i].Address.Hex(), c.want[i].Hex())
 			}
-			if len(out[i].Code) != codeSize {
+			if len(out[i].CodeBytes()) != codeSize {
 				t.Errorf("%s salt=%d: runtime length got %d, want %#x",
-					c.pattern, i, len(out[i].Code), codeSize)
+					c.pattern, i, len(out[i].CodeBytes()), codeSize)
 			}
-			if out[i].Code[0] != 0x00 {
+			if out[i].CodeBytes()[0] != 0x00 {
 				t.Errorf("%s salt=%d: byte 0 got 0x%02x, want STOP",
-					c.pattern, i, out[i].Code[0])
+					c.pattern, i, out[i].CodeBytes()[0])
 			}
 		}
 		switch c.pattern {
 		case CodePatternMaxSame:
 			// Shared runtime: both derived contracts alias identical bytes.
-			if !bytes.Equal(out[0].Code, out[1].Code) {
+			if !bytes.Equal(out[0].CodeBytes(), out[1].CodeBytes()) {
 				t.Errorf("max_same: derived runtimes differ (must be byte-identical)")
 			}
 		case CodePatternMaxDiff:
 			for i := range c.want {
-				embedded := common.BytesToAddress(out[i].Code[0x0C:0x20])
+				embedded := common.BytesToAddress(out[i].CodeBytes()[0x0C:0x20])
 				if embedded != out[i].Address {
 					t.Errorf("max_diff salt=%d: embedded address %s != derived %s",
 						i, embedded.Hex(), out[i].Address.Hex())
 				}
 			}
-			if bytes.Equal(out[0].Code, out[1].Code) {
+			if bytes.Equal(out[0].CodeBytes(), out[1].CodeBytes()) {
 				t.Errorf("max_diff: derived runtimes identical (must be byte-unique)")
 			}
 		}

@@ -209,7 +209,7 @@ func writeState(
 		if balance == nil {
 			balance = uint256.NewInt(0)
 		}
-		code := cfg.GenesisCode[addr]
+		code := cfg.CodeAt(addr)
 		var slots []entitySlot
 		if storage := cfg.GenesisStorage[addr]; len(storage) > 0 {
 			slots = make([]entitySlot, 0, len(storage))

@@ -26,7 +26,7 @@ func TestStoragePatternExpand(t *testing.T) {
 	if pe.Account.Nonce != 1 {
 		t.Errorf("nonce: got %d, want >= 1 (defaults to 1)", pe.Account.Nonce)
 	}
-	if pe.Code != nil {
+	if pe.CodeBytes() != nil {
 		t.Errorf("Code must be nil (storage_pattern leaves the address codeless)")
 	}
 	if string(pe.Account.CodeHash) != string(types.EmptyCodeHash[:]) {

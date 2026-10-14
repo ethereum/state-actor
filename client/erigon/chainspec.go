@@ -10,6 +10,7 @@ import (
 	"github.com/ethereum/go-ethereum/common/hexutil"
 
 	"github.com/ethereum/state-actor/genesis"
+	"github.com/ethereum/state-actor/internal/templates"
 )
 
 // writeGenesisJSON emits an Erigon-compatible genesis.json at outPath
@@ -59,8 +60,8 @@ func writeGenesisJSON(
 		if a.Nonce != 0 {
 			entry["nonce"] = hexutil.EncodeUint64(a.Nonce)
 		}
-		if len(a.Code) > 0 {
-			entry["code"] = hexutil.Encode(a.Code)
+		if code := a.code(); len(code) > 0 {
+			entry["code"] = hexutil.Encode(code)
 		}
 		if len(a.Storage) > 0 {
 			storMap := make(map[string]string, len(a.Storage))
@@ -102,4 +103,21 @@ type allocAccount struct {
 	Nonce   uint64
 	Code    []byte
 	Storage map[common.Hash]common.Hash
+
+	// lazyCode, when set, makes the code on demand in place of Code.
+	lazyCode *templates.LazyCode
+}
+
+// code returns Code, or a new copy from lazyCode.
+func (a *allocAccount) code() []byte {
+	if a.lazyCode != nil {
+		return a.lazyCode.Make()
+	}
+	return a.Code
+}
+
+// hasCode reports whether the account has code, without a call to
+// lazyCode.Make.
+func (a *allocAccount) hasCode() bool {
+	return len(a.Code) > 0 || a.lazyCode != nil
 }

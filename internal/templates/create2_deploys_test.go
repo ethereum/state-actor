@@ -38,7 +38,7 @@ func TestCREATE2DeploysExpand(t *testing.T) {
 		if pe.Address != want {
 			t.Errorf("salt=%d addr: got %s, want %s", 7+i, pe.Address.Hex(), want.Hex())
 		}
-		if string(pe.Code) != string(runtimeBytes) {
+		if string(pe.CodeBytes()) != string(runtimeBytes) {
 			t.Errorf("salt=%d code mismatch", 7+i)
 		}
 		if pe.Account.Nonce != 1 {

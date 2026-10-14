@@ -68,7 +68,7 @@ func TestSequentialPkeyEOAs_Sequential(t *testing.T) {
 		if !pe.Account.Balance.Eq(uint256.NewInt(1_000_000_000_000_000_000)) {
 			t.Errorf("entry #%d: balance mismatch", i)
 		}
-		if pe.Code != nil {
+		if pe.CodeBytes() != nil {
 			t.Errorf("entry #%d: Code must be nil for plain EOA", i)
 		}
 		if pe.Account.Nonce != 0 {

@@ -34,7 +34,7 @@ func TestSequentialEOAsExpand(t *testing.T) {
 		if pe.Account.Balance.Uint64() != 1_000_000_000_000_000_000 {
 			t.Errorf("addr[%d] balance: got %s", i, pe.Account.Balance)
 		}
-		if pe.Code != nil {
+		if pe.CodeBytes() != nil {
 			t.Errorf("addr[%d]: Code must be nil for plain EOA", i)
 		}
 		if pe.Storage != nil {

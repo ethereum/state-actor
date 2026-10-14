@@ -100,7 +100,13 @@ func writeSyntheticAccounts(
 	// keccak(slotKey)-sorted slots driven through builder.AddStorageSlot,
 	// then FinalizeStorageRoot stamps account.Root.
 	for addr, acc := range genesisAccounts {
-		if code, ok := genesisCodes[addr]; ok && len(code) > 0 {
+		// Lazy code is made here and dropped after the put, so only one
+		// contract's runtime is in memory at a time.
+		code, ok := genesisCodes[addr]
+		if lazy := cfg.GenesisLazyCode[addr]; !ok && lazy != nil {
+			code = lazy.Make()
+		}
+		if len(code) > 0 {
 			ch := crypto.Keccak256Hash(code)
 			if err := codeSink.put(ch[:], code); err != nil {
 				return common.Hash{}, fmt.Errorf("write genesis code for %s: %w", addr.Hex(), err)

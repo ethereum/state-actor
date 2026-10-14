@@ -101,7 +101,7 @@ func TestCreate2DeploysMaxDiffAddressesMatchEEST(t *testing.T) {
 			t.Errorf("salt=%d: got %s, want EEST-derived %s", i, out[i].Address.Hex(), want[i].Hex())
 		}
 		// The derived contract must embed its own address in the runtime.
-		if !bytes.Equal(out[i].Code[0x0C:0x20], out[i].Address[:]) {
+		if !bytes.Equal(out[i].CodeBytes()[0x0C:0x20], out[i].Address[:]) {
 			t.Errorf("salt=%d: runtime does not embed derived address", i)
 		}
 	}

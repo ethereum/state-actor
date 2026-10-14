@@ -71,6 +71,12 @@ type Config struct {
 	GenesisStorage  map[common.Address]map[common.Hash]common.Hash
 	GenesisCode     map[common.Address][]byte
 
+	// GenesisLazyCode holds code that is made on demand, so the build does
+	// not keep it in memory. Writers read code through CodeAt, which
+	// checks GenesisCode first and then this map. An address is in one
+	// map at most.
+	GenesisLazyCode map[common.Address]*templates.LazyCode
+
 	// CommitInterval is the number of accounts between binary trie commits
 	// to disk. Only used in TrieModeBinary. 0 means no intermediate commits
 	// (entire trie stays in memory). When set, the trie is periodically
@@ -122,6 +128,14 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("Config: GenesisCode[%s] has no corresponding GenesisAccounts entry (orphan code)", a.Hex())
 		}
 	}
+	for a := range c.GenesisLazyCode {
+		if _, ok := c.GenesisAccounts[a]; !ok {
+			return fmt.Errorf("Config: GenesisLazyCode[%s] has no corresponding GenesisAccounts entry (orphan code)", a.Hex())
+		}
+		if _, dup := c.GenesisCode[a]; dup {
+			return fmt.Errorf("Config: %s is in both GenesisCode and GenesisLazyCode", a.Hex())
+		}
+	}
 	for a := range c.GenesisStorage {
 		if _, ok := c.GenesisAccounts[a]; !ok {
 			return fmt.Errorf("Config: GenesisStorage[%s] has no corresponding GenesisAccounts entry (orphan storage)", a.Hex())
@@ -164,11 +178,42 @@ func (c *Config) materializePreAlloc() error {
 			return fmt.Errorf("Config.PreAlloc[%d]: address %s already present in GenesisAccounts with a different *types.StateAccount pointer — either pass the same pointer (idempotent re-Validate is OK) or move the pre-existing entry into PreAlloc", i, pe.Address.Hex())
 		}
 		c.GenesisAccounts[pe.Address] = pe.Account
-		if len(pe.Code) > 0 {
+		switch {
+		case pe.LazyCode != nil:
+			if c.GenesisLazyCode == nil {
+				c.GenesisLazyCode = make(map[common.Address]*templates.LazyCode, len(c.PreAlloc))
+			}
+			c.GenesisLazyCode[pe.Address] = pe.LazyCode
+		case len(pe.Code) > 0:
 			c.GenesisCode[pe.Address] = pe.Code
 		}
 	}
 	return nil
+}
+
+// CodeAt returns the code of addr: the GenesisCode entry, or a new copy
+// made from the GenesisLazyCode entry. nil when addr has no code. Writers
+// must not keep the result longer than they need it, or the lazy code
+// stays in memory after all.
+func (c *Config) CodeAt(addr common.Address) []byte {
+	if code, ok := c.GenesisCode[addr]; ok {
+		return code
+	}
+	if lazy, ok := c.GenesisLazyCode[addr]; ok {
+		return lazy.Make()
+	}
+	return nil
+}
+
+// CodeSizeAt returns len(CodeAt(addr)) without a call to LazyCode.Make.
+func (c *Config) CodeSizeAt(addr common.Address) int {
+	if code, ok := c.GenesisCode[addr]; ok {
+		return len(code)
+	}
+	if lazy, ok := c.GenesisLazyCode[addr]; ok {
+		return lazy.Size
+	}
+	return 0
 }
 
 // Stats holds statistics about the generation process.

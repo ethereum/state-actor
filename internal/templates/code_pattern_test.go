@@ -2,7 +2,6 @@ package templates
 
 import (
 	"bytes"
-	"strings"
 	"testing"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -218,17 +217,17 @@ func TestCreate2DeploysCodePattern(t *testing.T) {
 		t.Fatalf("count: got %d, want 3", len(out))
 	}
 	for i, pe := range out {
-		if len(pe.Code) != 0x6000 {
-			t.Errorf("derived[%d]: runtime length got %d, want 0x6000", i, len(pe.Code))
+		if len(pe.CodeBytes()) != 0x6000 {
+			t.Errorf("derived[%d]: runtime length got %d, want 0x6000", i, len(pe.CodeBytes()))
 		}
 		// Embedded address must equal the derived address.
-		embedded := common.BytesToAddress(pe.Code[0x2C:0x40])
+		embedded := common.BytesToAddress(pe.CodeBytes()[0x2C:0x40])
 		if embedded != pe.Address {
 			t.Errorf("derived[%d]: embedded address %s != derived %s",
 				i, embedded.Hex(), pe.Address.Hex())
 		}
 		// codeHash must equal keccak256(runtime).
-		want := crypto.Keccak256Hash(pe.Code).Bytes()
+		want := crypto.Keccak256Hash(pe.CodeBytes()).Bytes()
 		if !bytes.Equal(pe.Account.CodeHash, want) {
 			t.Errorf("derived[%d]: code-hash mismatch", i)
 		}
@@ -286,10 +285,10 @@ func TestCreatePreimageDeploysCodePattern(t *testing.T) {
 		t.Fatalf("count: got %d, want 3", len(out))
 	}
 	for i, pe := range out {
-		if len(pe.Code) != 0x6000 {
-			t.Errorf("derived[%d]: runtime length got %d, want 0x6000", i, len(pe.Code))
+		if len(pe.CodeBytes()) != 0x6000 {
+			t.Errorf("derived[%d]: runtime length got %d, want 0x6000", i, len(pe.CodeBytes()))
 		}
-		embedded := common.BytesToAddress(pe.Code[0x2C:0x40])
+		embedded := common.BytesToAddress(pe.CodeBytes()[0x2C:0x40])
 		if embedded != pe.Address {
 			t.Errorf("derived[%d]: embedded address %s != derived %s",
 				i, embedded.Hex(), pe.Address.Hex())
@@ -297,49 +296,33 @@ func TestCreatePreimageDeploysCodePattern(t *testing.T) {
 	}
 }
 
-// TestPatternResidentCodeCap pins the I5 hard cap: pattern-mode
-// runtimes are byte-unique per derived address and stay resident for
-// the whole run (~24.6 KB measured per contract), so a single entity
-// above 64 GiB estimated residency is rejected at validate time.
-// Production scale (1.5M ≈ 34.3 GiB) must pass. Validation-only — the
-// counts here are never expanded.
-func TestPatternResidentCodeCap(t *testing.T) {
+// TestPatternCodeCountNotCapped pins that pattern counts have no
+// memory-based cap: pattern runtimes are made on demand (LazyCode), so
+// a count whose runtimes would not fit in memory still validates.
+// Validation-only — the counts here are never expanded.
+func TestPatternCodeCountNotCapped(t *testing.T) {
 	if got := CodePatternRuntimeSize(CodePatternUniqueJumpdestPreAmsterdam, 0); got != 24576 {
 		t.Fatalf("CodePatternRuntimeSize(pattern) = %d, want 24576", got)
 	}
 	if got := CodePatternRuntimeSize("bogus", 0); got != 0 {
 		t.Fatalf("CodePatternRuntimeSize(bogus) = %d, want 0", got)
 	}
-	// floor(64 GiB / 24576) = 2_796_202 fits; +1 exceeds.
-	cases := []struct {
-		count   uint64
-		wantErr bool
-	}{
-		{1_500_000, false},
-		{2_796_202, false},
-		{2_796_203, true},
-	}
+	// 2_796_203 × 24576 B is just over 64 GiB, the old cap.
+	const count = 2_796_203
 	c2 := &create2DeploysTemplate{}
+	if err := c2.ValidateParameters(map[string]any{
+		"code_pattern": CodePatternUniqueJumpdestPreAmsterdam,
+		"salt_count":   count,
+	}); err != nil {
+		t.Errorf("create2_deploys salt_count=%d: %v", count, err)
+	}
 	cp := &createPreimageDeploysTemplate{}
-	for _, c := range cases {
-		err := c2.ValidateParameters(map[string]any{
-			"code_pattern": CodePatternUniqueJumpdestPreAmsterdam,
-			"salt_count":   c.count,
-		})
-		if (err != nil) != c.wantErr {
-			t.Errorf("create2_deploys salt_count=%d: err=%v, wantErr=%v", c.count, err, c.wantErr)
-		}
-		if c.wantErr && err != nil && !strings.Contains(err.Error(), "GiB") {
-			t.Errorf("create2_deploys salt_count=%d: error should quote GiB estimate, got %v", c.count, err)
-		}
-		err = cp.ValidateParameters(map[string]any{
-			"code_pattern": CodePatternUniqueJumpdestPreAmsterdam,
-			"sender":       bittrexAddrHex,
-			"count":        c.count,
-		})
-		if (err != nil) != c.wantErr {
-			t.Errorf("create_preimage_deploys count=%d: err=%v, wantErr=%v", c.count, err, c.wantErr)
-		}
+	if err := cp.ValidateParameters(map[string]any{
+		"code_pattern": CodePatternUniqueJumpdestPreAmsterdam,
+		"sender":       bittrexAddrHex,
+		"count":        count,
+	}); err != nil {
+		t.Errorf("create_preimage_deploys count=%d: %v", count, err)
 	}
 }
 

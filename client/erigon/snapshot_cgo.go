@@ -859,9 +859,10 @@ func encodeEntity(
 	// Hash the code ONCE here (for the snapshot CodeHash) and reuse it for the
 	// commitment Update below — EncodeAccountUpdate would otherwise keccak the
 	// same bytes a second time (commitment.go). nil = no code.
+	code := ew.entry.code()
 	var codeHash *common.Hash
-	if len(ew.entry.Code) > 0 {
-		h := crypto.Keccak256Hash(ew.entry.Code)
+	if len(code) > 0 {
+		h := crypto.Keccak256Hash(code)
 		copy(acct.CodeHash[:], h[:])
 		codeHash = &h
 	}
@@ -871,8 +872,8 @@ func encodeEntity(
 	atomic.AddUint64(&counts.accounts, 1)
 
 	// Code snapshot value: raw bytecode keyed by addr.
-	if len(ew.entry.Code) > 0 {
-		if err := out.code.send(domainWrite{key: addrKey, value: ew.entry.Code}); err != nil {
+	if len(code) > 0 {
+		if err := out.code.send(domainWrite{key: addrKey, value: code}); err != nil {
 			return err
 		}
 		atomic.AddUint64(&counts.code, 1)

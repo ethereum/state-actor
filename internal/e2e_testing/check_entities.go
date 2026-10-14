@@ -75,7 +75,8 @@ func CheckEntities(t *testing.T, rpcURL string, eoas, contracts []*entitygen.Acc
 //
 //   - every GenesisAccounts entry with a non-zero Balance matches via
 //     eth_getBalance.
-//   - every GenesisCode entry's bytecode matches via eth_getCode.
+//   - every GenesisCode and GenesisLazyCode entry's bytecode matches via
+//     eth_getCode.
 //   - every GenesisStorage entry's slots match via eth_getStorageAt,
 //     sampled to bound RPC round-trip cost (see sampleStorageSlots).
 //
@@ -129,7 +130,15 @@ func CheckInjections(t *testing.T, rpcURL string, cfg *generator.Config, blockTa
 			}
 		}
 	}
-	for addr, wantCode := range cfg.GenesisCode {
+	codeAddrs := make([]common.Address, 0, len(cfg.GenesisCode)+len(cfg.GenesisLazyCode))
+	for addr := range cfg.GenesisCode {
+		codeAddrs = append(codeAddrs, addr)
+	}
+	for addr := range cfg.GenesisLazyCode {
+		codeAddrs = append(codeAddrs, addr)
+	}
+	for _, addr := range codeAddrs {
+		wantCode := cfg.CodeAt(addr)
 		gotCode, err := rpcprobe.EthGetCode(rpcURL, addr, blockTag)
 		if err != nil {
 			t.Errorf("[%s] alloc eth_getCode %s: %v", blockTag, addr.Hex(), err)

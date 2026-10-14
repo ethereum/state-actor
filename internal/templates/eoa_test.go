@@ -28,8 +28,8 @@ func TestEOATemplatePlainEOA(t *testing.T) {
 	if !pe.Account.Balance.Eq(bal.V) {
 		t.Errorf("balance: got %s, want %s", pe.Account.Balance, bal.V)
 	}
-	if pe.Code != nil {
-		t.Errorf("Code should be nil for plain EOA, got %x", pe.Code)
+	if pe.CodeBytes() != nil {
+		t.Errorf("Code should be nil for plain EOA, got %x", pe.CodeBytes())
 	}
 	if string(pe.Account.CodeHash) != string(types.EmptyCodeHash[:]) {
 		t.Errorf("CodeHash should be EmptyCodeHash for plain EOA")
@@ -53,8 +53,8 @@ func TestEOATemplate7702Delegation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Expand: %v", err)
 	}
-	if len(out[0].Code) != 23 {
-		t.Errorf("7702 code length: got %d, want 23", len(out[0].Code))
+	if len(out[0].CodeBytes()) != 23 {
+		t.Errorf("7702 code length: got %d, want 23", len(out[0].CodeBytes()))
 	}
 	if string(out[0].Account.CodeHash) == string(types.EmptyCodeHash[:]) {
 		t.Errorf("CodeHash should reflect 7702 marker, not be EmptyCodeHash")

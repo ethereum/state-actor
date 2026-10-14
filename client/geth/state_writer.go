@@ -95,10 +95,7 @@ func writeStateAndCollectRoot(
 		genesisAddrs[addr] = struct{}{}
 		addrHash := crypto.Keccak256Hash(addr[:])
 
-		var code []byte
-		if c, ok := cfg.GenesisCode[addr]; ok {
-			code = c
-		}
+		code := cfg.CodeAt(addr)
 		var slots []entityBlobSlot
 		if storage, ok := cfg.GenesisStorage[addr]; ok {
 			slots = make([]entityBlobSlot, 0, len(storage))

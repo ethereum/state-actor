@@ -25,12 +25,38 @@ type PreAllocEntity struct {
 
 	// Code is the deployed bytecode. nil for plain EOAs; can be a
 	// 23-byte EIP-7702 0xef0100<addr> delegation marker for EOAs.
+	// nil when LazyCode is set.
 	Code []byte
+
+	// LazyCode, when non-nil, makes the bytecode on demand in place of
+	// Code. Byte-unique code_pattern runtimes use it, so a build does
+	// not keep every runtime in memory for the whole run. Account.CodeHash
+	// is still set at expansion time.
+	LazyCode *LazyCode
 
 	// Storage yields (key, value) pairs. nil when the entity has no
 	// storage. Iteration order is not keccak-sorted; the consumer sorts.
 	// Pure-function iterators are re-iterable.
 	Storage iter.Seq2[common.Hash, common.Hash]
+}
+
+// CodeBytes returns the entity's bytecode: Code, or a new copy from
+// LazyCode. nil for plain EOAs.
+func (pe *PreAllocEntity) CodeBytes() []byte {
+	if pe.LazyCode != nil {
+		return pe.LazyCode.Make()
+	}
+	return pe.Code
+}
+
+// LazyCode makes the bytecode of one contract on demand.
+type LazyCode struct {
+	// Size is len(Make()), known without a call to Make.
+	Size int
+
+	// Make returns a new copy of the bytecode. It is a pure function,
+	// so every call returns the same bytes and concurrent calls are safe.
+	Make func() []byte
 }
 
 // Context carries the inputs a Template needs to deterministically

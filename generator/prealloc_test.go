@@ -136,3 +136,77 @@ func storageMap(m map[common.Hash]common.Hash) iter.Seq2[common.Hash, common.Has
 		}
 	}
 }
+
+// TestPreAllocLazyCode verifies Validate() routes LazyCode to
+// GenesisLazyCode (not GenesisCode), and CodeAt / CodeSizeAt read both.
+func TestPreAllocLazyCode(t *testing.T) {
+	eager := common.HexToAddress("0x000000000000000000000000000000000000cc01")
+	lazy := common.HexToAddress("0x000000000000000000000000000000000000cc02")
+	none := common.HexToAddress("0x000000000000000000000000000000000000cc03")
+	lazyBytes := []byte{0x5b, 0x5b, 0x00}
+	calls := 0
+	acct := func() *types.StateAccount {
+		return &types.StateAccount{Nonce: 1, Balance: uint256.NewInt(0), Root: types.EmptyRootHash}
+	}
+
+	cfg := &Config{
+		PreAlloc: []templates.PreAllocEntity{
+			{Address: eager, Account: acct(), Code: []byte{0x60, 0x80}},
+			{Address: lazy, Account: acct(), LazyCode: &templates.LazyCode{
+				Size: len(lazyBytes),
+				Make: func() []byte { calls++; return append([]byte(nil), lazyBytes...) },
+			}},
+			{Address: none, Account: acct()},
+		},
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate: %v", err)
+	}
+	if calls != 0 {
+		t.Errorf("Validate must not make lazy code; Make called %d times", calls)
+	}
+	if _, ok := cfg.GenesisCode[lazy]; ok {
+		t.Error("lazy code must not be copied into GenesisCode")
+	}
+	if cfg.GenesisLazyCode[lazy] == nil {
+		t.Fatal("lazy code missing from GenesisLazyCode")
+	}
+
+	cases := []struct {
+		addr common.Address
+		want []byte
+	}{
+		{eager, []byte{0x60, 0x80}},
+		{lazy, lazyBytes},
+		{none, nil},
+	}
+	for _, c := range cases {
+		if got := cfg.CodeSizeAt(c.addr); got != len(c.want) {
+			t.Errorf("CodeSizeAt(%s) = %d, want %d", c.addr.Hex(), got, len(c.want))
+		}
+		if got := cfg.CodeAt(c.addr); string(got) != string(c.want) {
+			t.Errorf("CodeAt(%s) = %x, want %x", c.addr.Hex(), got, c.want)
+		}
+	}
+	if calls != 1 {
+		t.Errorf("CodeSizeAt must not make lazy code; Make called %d times, want 1", calls)
+	}
+}
+
+// TestValidateRejectsCodeInBothMaps verifies an address cannot have both
+// eager and lazy code.
+func TestValidateRejectsCodeInBothMaps(t *testing.T) {
+	addr := common.HexToAddress("0x000000000000000000000000000000000000cc04")
+	cfg := &Config{
+		GenesisAccounts: map[common.Address]*types.StateAccount{
+			addr: {Nonce: 1, Balance: uint256.NewInt(0), Root: types.EmptyRootHash},
+		},
+		GenesisCode: map[common.Address][]byte{addr: {0x00}},
+		GenesisLazyCode: map[common.Address]*templates.LazyCode{
+			addr: {Size: 1, Make: func() []byte { return []byte{0x00} }},
+		},
+	}
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("Validate must reject an address in both GenesisCode and GenesisLazyCode")
+	}
+}

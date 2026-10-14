@@ -227,6 +227,10 @@ func buildAllocMap(cfg generator.Config) (*FoundationalAlloc, *generator.Stats, 
 		if code := cfg.GenesisCode[addr]; len(code) > 0 {
 			entry.Code = code
 			stats.CodeBytes += uint64(len(code))
+		} else if lazy := cfg.GenesisLazyCode[addr]; lazy != nil {
+			// Made per account on the encode workers, not held here.
+			entry.lazyCode = lazy
+			stats.CodeBytes += uint64(lazy.Size)
 		}
 		if stor := cfg.GenesisStorage[addr]; len(stor) > 0 {
 			entry.Storage = stor
@@ -234,7 +238,7 @@ func buildAllocMap(cfg generator.Config) (*FoundationalAlloc, *generator.Stats, 
 			stats.StorageBytes += uint64(len(stor)) * 64
 		}
 		foundational.Spec[addr] = entry
-		if len(entry.Code) > 0 {
+		if entry.hasCode() {
 			stats.ContractsCreated++
 		} else {
 			stats.AccountsCreated++

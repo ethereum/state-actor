@@ -116,7 +116,7 @@ func writeStateAndCollectRoot(
 		if balance == nil {
 			balance = uint256.NewInt(0)
 		}
-		code := cfg.GenesisCode[addr]
+		code := cfg.CodeAt(addr)
 		var blob []byte
 		if len(code) == 0 && len(cfg.GenesisStorage[addr]) == 0 {
 			blob = encodeEntityEOA(acc.Nonce, balance)

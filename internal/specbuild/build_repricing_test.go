@@ -73,7 +73,7 @@ func TestBuildFullMatrixRepricingTemplates(t *testing.T) {
 	// Entity 24 — create2_factory: canonical address + canonical runtime.
 	{
 		j := get("create2_factory", templates.CanonicalCREATE2FactoryAddress)
-		if !bytes.Equal(pre[j].Code, templates.CanonicalCREATE2FactoryCode) {
+		if !bytes.Equal(pre[j].CodeBytes(), templates.CanonicalCREATE2FactoryCode) {
 			t.Errorf("create2_factory Code: does not match canonical runtime")
 		}
 	}
@@ -91,8 +91,8 @@ func TestBuildFullMatrixRepricingTemplates(t *testing.T) {
 			salt[31] = byte(i)
 			addr := crypto.CreateAddress2(templates.CanonicalCREATE2FactoryAddress, salt, initHash)
 			j := get("create2_deploys[literal]", addr)
-			if !bytes.Equal(pre[j].Code, runtime) {
-				t.Errorf("create2_deploys[literal][%d] Code: got %x, want %x", i, pre[j].Code, runtime)
+			if !bytes.Equal(pre[j].CodeBytes(), runtime) {
+				t.Errorf("create2_deploys[literal][%d] Code: got %x, want %x", i, pre[j].CodeBytes(), runtime)
 			}
 		}
 	}
@@ -109,10 +109,10 @@ func TestBuildFullMatrixRepricingTemplates(t *testing.T) {
 			salt[31] = byte(i)
 			addr := crypto.CreateAddress2(templates.CanonicalCREATE2FactoryAddress, salt, initHash)
 			j := get("create2_deploys[pattern]", addr)
-			if len(pre[j].Code) != 0x6000 {
-				t.Errorf("create2_deploys[pattern][%d] runtime length: got %d, want 0x6000", i, len(pre[j].Code))
+			if len(pre[j].CodeBytes()) != 0x6000 {
+				t.Errorf("create2_deploys[pattern][%d] runtime length: got %d, want 0x6000", i, len(pre[j].CodeBytes()))
 			}
-			if embedded := common.BytesToAddress(pre[j].Code[0x2C:0x40]); embedded != addr {
+			if embedded := common.BytesToAddress(pre[j].CodeBytes()[0x2C:0x40]); embedded != addr {
 				t.Errorf("create2_deploys[pattern][%d] embedded address mismatch: got %s, want %s",
 					i, embedded.Hex(), addr.Hex())
 			}
@@ -133,8 +133,8 @@ func TestBuildFullMatrixRepricingTemplates(t *testing.T) {
 		for i := 0; i < 3; i++ {
 			addr := crypto.CreateAddress(sender, uint64(2+i))
 			j := get("create_preimage_deploys", addr)
-			if !bytes.Equal(pre[j].Code, runtime) {
-				t.Errorf("create_preimage_deploys[%d] Code: got %x, want %x", i, pre[j].Code, runtime)
+			if !bytes.Equal(pre[j].CodeBytes(), runtime) {
+				t.Errorf("create_preimage_deploys[%d] Code: got %x, want %x", i, pre[j].CodeBytes(), runtime)
 			}
 			slots := drainStorage(pre[j].Storage)
 			var s1 common.Hash
@@ -156,7 +156,7 @@ func TestBuildFullMatrixRepricingTemplates(t *testing.T) {
 		a[18] = 0x50
 		a[19] = byte(i)
 		j := get("sequential_eoas", a)
-		if pre[j].Code != nil {
+		if pre[j].CodeBytes() != nil {
 			t.Errorf("sequential_eoas[%d] Code: must be nil for plain EOA", i)
 		}
 		if pre[j].Account.Nonce != 0 {
@@ -183,7 +183,7 @@ func TestBuildFullMatrixRepricingTemplates(t *testing.T) {
 			t.Fatalf("sequential_pkey_eoas[%d] control derive: %v", i, err)
 		}
 		j := get("sequential_pkey_eoas", crypto.PubkeyToAddress(priv.PublicKey))
-		if pre[j].Code != nil {
+		if pre[j].CodeBytes() != nil {
 			t.Errorf("sequential_pkey_eoas[%d] Code: must be nil for plain EOA", i)
 		}
 		if pre[j].Account.Nonce != 0 {
@@ -236,7 +236,7 @@ func TestBuildFullMatrixDeterministic(t *testing.T) {
 		if !bytes.Equal(a[i].Account.CodeHash, b[i].Account.CodeHash) {
 			t.Errorf("entity[%d] CodeHash differs", i)
 		}
-		if !bytes.Equal(a[i].Code, b[i].Code) {
+		if !bytes.Equal(a[i].CodeBytes(), b[i].CodeBytes()) {
 			t.Errorf("entity[%d] Code bytes differ", i)
 		}
 		ma := drainStorage(a[i].Storage)

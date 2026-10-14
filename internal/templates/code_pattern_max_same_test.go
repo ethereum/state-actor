@@ -57,8 +57,8 @@ func TestCreate2DeploysMaxSameAddressesMatchEEST(t *testing.T) {
 		if out[i].Address != want[i] {
 			t.Errorf("salt=%d: got %s, want EEST-derived %s", i, out[i].Address.Hex(), want[i].Hex())
 		}
-		if len(out[i].Code) != 1 && out[i].Code[0] != 0x00 {
-			t.Errorf("salt=%d: runtime byte[0] = 0x%02x, want STOP", i, out[i].Code[0])
+		if len(out[i].CodeBytes()) != 1 && out[i].CodeBytes()[0] != 0x00 {
+			t.Errorf("salt=%d: runtime byte[0] = 0x%02x, want STOP", i, out[i].CodeBytes()[0])
 		}
 	}
 }
@@ -77,11 +77,11 @@ func TestMaxSameRuntimeSharedAndExempt(t *testing.T) {
 		t.Fatalf("Expand: %v", err)
 	}
 	// All three derived contracts must point at the same backing array.
-	if &out[0].Code[0] != &out[1].Code[0] || &out[1].Code[0] != &out[2].Code[0] {
+	if &out[0].CodeBytes()[0] != &out[1].CodeBytes()[0] || &out[1].CodeBytes()[0] != &out[2].CodeBytes()[0] {
 		t.Errorf("derived runtimes are not aliased: distinct backing arrays")
 	}
 	// And the bytes must be identical (sanity, not just aliased).
-	if !bytes.Equal(out[0].Code, out[1].Code) {
+	if !bytes.Equal(out[0].CodeBytes(), out[1].CodeBytes()) {
 		t.Errorf("derived runtimes differ in bytes")
 	}
 }

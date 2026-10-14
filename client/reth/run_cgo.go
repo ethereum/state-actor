@@ -26,6 +26,10 @@ import (
 
 const defaultStreamBatchSize = 100_000
 
+// allocContractChunk sets how many alloc contracts have their code in
+// memory at a time: 10 000 × 64 KiB ≈ 640 MiB at the largest pattern.
+const allocContractChunk = 10_000
+
 // contractStreamBatchSize sets the MDBX commit cadence for the contract
 // loop. Smaller than defaultStreamBatchSize because per-contract writes
 // (≈35 KiB mean storage under the 20/10/70 auto-fill split) are much
@@ -146,7 +150,7 @@ func RunCgo(ctx context.Context, cfg generator.Config, opts Options) (*generator
 		allocAccounts := buildAllocAccounts(cfg)
 		var allocEOAs, allocContracts []*entitygen.Account
 		for _, acc := range allocAccounts {
-			if len(acc.Code) == 0 && len(acc.Storage) == 0 {
+			if cfg.CodeSizeAt(acc.Address) == 0 && len(acc.Storage) == 0 {
 				allocEOAs = append(allocEOAs, acc)
 			} else {
 				allocContracts = append(allocContracts, acc)
@@ -157,9 +161,21 @@ func RunCgo(ctx context.Context, cfg generator.Config, opts Options) (*generator
 				return nil, fmt.Errorf("RunCgo: WriteEOAs(alloc): %w", err)
 			}
 		}
-		if len(allocContracts) > 0 {
-			if err := WriteContracts(envs, trieSorter, allocContracts, 0, cfg.Archive, stats); err != nil {
+		// buildAllocAccounts leaves lazy code out. Make it one chunk at a
+		// time and drop it after the chunk is written, so the runtimes of
+		// all alloc contracts are never in memory together.
+		for start := 0; start < len(allocContracts); start += allocContractChunk {
+			chunk := allocContracts[start:min(start+allocContractChunk, len(allocContracts))]
+			for _, acc := range chunk {
+				if acc.Code == nil {
+					acc.Code = cfg.CodeAt(acc.Address)
+				}
+			}
+			if err := WriteContracts(envs, trieSorter, chunk, 0, cfg.Archive, stats); err != nil {
 				return nil, fmt.Errorf("RunCgo: WriteContracts(alloc): %w", err)
+			}
+			for _, acc := range chunk {
+				acc.Code = nil
 			}
 		}
 		for _, acc := range allocEOAs {

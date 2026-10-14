@@ -8,6 +8,7 @@ import (
 	"sync"
 
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/crypto"
 )
 
 // Named runtime/initcode generators the create2_deploys and
@@ -96,10 +97,11 @@ func codePatternMinCodeSize(name string) uint64 {
 	return minStopJumpdestCodeSize
 }
 
-// CodePatternRuntimeSize returns the per-contract runtime size for
-// resident-memory estimation: 0 for shared or unknown patterns, since
-// their copies alias one slice. codeSize is the resolved `code_size:`,
-// or 0 when the parameter was omitted.
+// CodePatternRuntimeSize returns the size of a byte-unique per-contract
+// runtime: 0 for shared or unknown patterns, since their copies alias
+// one slice. codePatternCode uses it to decide which patterns are lazy.
+// codeSize is the resolved `code_size:`, or 0 when the parameter was
+// omitted.
 func CodePatternRuntimeSize(name string, codeSize uint64) uint64 {
 	switch name {
 	case CodePatternUniqueJumpdestPreAmsterdam:
@@ -146,13 +148,6 @@ func parseCodePatternCodeSize(params map[string]any, patternName string) (uint64
 	}
 	return cs, nil
 }
-
-// patternResidentCodeCapBytes caps one entity's estimated unique-runtime
-// residency. 64 GiB clears the 1.5M-contract scale (≈34.3 GiB) but
-// cannot fit beside streamsort/trie overheads on a 128 GB host. Until
-// per-entity code streaming lands, this turns an un-runnable build into
-// a validate-time error.
-const patternResidentCodeCapBytes = uint64(64) << 30 // 64 GiB
 
 // BuildUniqueJumpdestRuntimePreAmsterdam returns the 24576-byte runtime
 // for one derived contract under the unique-jumpdest pattern.
@@ -397,25 +392,51 @@ func pushImmediate(v uint64) []byte {
 	return out
 }
 
-// codePatternRuntimeFor returns the per-address runtime for a pattern.
-// codeSize is parseCodePatternCodeSize's output; fixed-size patterns
-// receive 0 and ignore it.
-func codePatternRuntimeFor(name string, codeSize uint64, addr common.Address) ([]byte, error) {
+// codePatternRuntimeBuilder returns the function that makes a pattern's
+// runtime from the derived address. codeSize is
+// parseCodePatternCodeSize's output; fixed-size patterns receive 0 and
+// ignore it. The shared-runtime patterns return the same slice for
+// every address.
+func codePatternRuntimeBuilder(name string, codeSize uint64) (func(common.Address) []byte, error) {
 	switch name {
 	case CodePatternUniqueJumpdestPreAmsterdam:
-		return BuildUniqueJumpdestRuntimePreAmsterdam(addr), nil
+		return BuildUniqueJumpdestRuntimePreAmsterdam, nil
 	case CodePatternMaxSamePreAmsterdam:
-		return maxSameRuntimePreAmsterdam, nil
+		return func(common.Address) []byte { return maxSameRuntimePreAmsterdam }, nil
 	case CodePatternMaxDiffPreAmsterdam:
-		return BuildMaxDiffRuntimePreAmsterdam(addr), nil
+		return BuildMaxDiffRuntimePreAmsterdam, nil
 	case CodePatternUniqueJumpdest:
-		return BuildUniqueJumpdestRuntime(addr, codeSize), nil
+		return func(addr common.Address) []byte {
+			return BuildUniqueJumpdestRuntime(addr, codeSize)
+		}, nil
 	case CodePatternMaxSame:
-		return maxSameRuntimeFor(codeSize), nil
+		shared := maxSameRuntimeFor(codeSize)
+		return func(common.Address) []byte { return shared }, nil
 	case CodePatternMaxDiff:
-		return BuildMaxDiffRuntime(addr, codeSize), nil
+		return func(addr common.Address) []byte {
+			return BuildMaxDiffRuntime(addr, codeSize)
+		}, nil
 	}
 	return nil, fmt.Errorf("unknown code_pattern %q", name)
+}
+
+// codePatternCode returns the code of the contract a pattern deploys at
+// addr, and its code hash. A shared-runtime pattern returns the shared
+// slice as code. A byte-unique pattern returns a LazyCode in its place,
+// so the runtime is made again only when a writer needs the bytes: one
+// entity can expand to 100 000+ contracts of up to 64 KiB each.
+func codePatternCode(
+	build func(common.Address) []byte, name string, codeSize uint64, addr common.Address,
+) ([]byte, *LazyCode, common.Hash) {
+	runtime := build(addr)
+	hash := crypto.Keccak256Hash(runtime)
+	if CodePatternRuntimeSize(name, codeSize) == 0 {
+		return runtime, nil, hash
+	}
+	return nil, &LazyCode{
+		Size: len(runtime),
+		Make: func() []byte { return build(addr) },
+	}, hash
 }
 
 // codePatternInitcodeFor returns the initcode CREATE2 derivation hashes.

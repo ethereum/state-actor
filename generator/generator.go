@@ -292,7 +292,7 @@ func (g *Generator) generateStreamingBinary() (retStats *Stats, retErr error) {
 			ad.storage = mapToSortedSlots(storageMap)
 			stats.StorageSlotsCreated += len(ad.storage)
 		}
-		if code, ok := g.config.GenesisCode[addr]; ok {
+		if code := g.config.CodeAt(addr); code != nil {
 			ad.code = code
 			ad.codeHash = codeHash
 		}

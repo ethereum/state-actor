@@ -139,16 +139,6 @@ func parseCreatePreimageDeploysParams(params map[string]any) (createPreimageDepl
 		return pp, fmt.Errorf("create_preimage_deploys: count=%d exceeds practical limit (2^32)", count)
 	}
 	pp.count = count
-	// Pattern runtimes are byte-unique per derived address and stay
-	// resident for the whole run; cap the estimate at a size no build
-	// host survives. (count <= 2^32 and runtime sizes are small, so the
-	// product cannot overflow uint64.)
-	if pp.patternName != "" {
-		if est := count * CodePatternRuntimeSize(pp.patternName, pp.codeSize); est > patternResidentCodeCapBytes {
-			return pp, fmt.Errorf("create_preimage_deploys: code_pattern %q with count=%d would materialize ≈%.0f GiB of unique runtime code in memory (cap %d GiB); split into multiple entities or reduce count",
-				pp.patternName, count, float64(est)/float64(1<<30), patternResidentCodeCapBytes>>30)
-		}
-	}
 	if v, has := params["start_nonce"]; has {
 		n, err := ParseUint64Param(v, "start_nonce")
 		if err != nil {
@@ -174,15 +164,19 @@ func (createPreimageDeploysTemplate) Expand(ctx Context, e spec.Entity) ([]PreAl
 	if err != nil {
 		return nil, err
 	}
+	var build func(common.Address) []byte
+	if pp.patternName != "" {
+		if build, err = codePatternRuntimeBuilder(pp.patternName, pp.codeSize); err != nil {
+			return nil, fmt.Errorf("create_preimage_deploys: %w", err)
+		}
+	}
+	literalHash := crypto.Keccak256Hash(pp.runtime)
 	out := make([]PreAllocEntity, 0, pp.count)
 	for i := uint64(0); i < pp.count; i++ {
 		derived := crypto.CreateAddress(pp.sender, pp.startNonce+i)
-		runtime := pp.runtime
-		if pp.patternName != "" {
-			runtime, err = codePatternRuntimeFor(pp.patternName, pp.codeSize, derived)
-			if err != nil {
-				return nil, fmt.Errorf("create_preimage_deploys: nonce=%d: %w", pp.startNonce+i, err)
-			}
+		code, lazy, codeHash := pp.runtime, (*LazyCode)(nil), literalHash
+		if build != nil {
+			code, lazy, codeHash = codePatternCode(build, pp.patternName, pp.codeSize, derived)
 		}
 		out = append(out, PreAllocEntity{
 			Address: derived,
@@ -190,10 +184,11 @@ func (createPreimageDeploysTemplate) Expand(ctx Context, e spec.Entity) ([]PreAl
 				Nonce:    1,
 				Balance:  uint256.NewInt(0),
 				Root:     types.EmptyRootHash,
-				CodeHash: crypto.Keccak256Hash(runtime).Bytes(),
+				CodeHash: codeHash.Bytes(),
 			},
-			Code:    runtime,
-			Storage: MapToSeq(pp.storageInit),
+			Code:     code,
+			LazyCode: lazy,
+			Storage:  MapToSeq(pp.storageInit),
 		})
 	}
 	return out, nil

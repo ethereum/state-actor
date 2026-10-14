@@ -44,7 +44,7 @@ func TestSequentialPkeyDelegationsMatchesEELS(t *testing.T) {
 		if out[i].Address != common.HexToAddress(w.authority) {
 			t.Errorf("i=%d authority: got %s want EELS %s", i, out[i].Address.Hex(), w.authority)
 		}
-		gotCode := "0x" + common.Bytes2Hex(out[i].Code)
+		gotCode := "0x" + common.Bytes2Hex(out[i].CodeBytes())
 		if !strings.EqualFold(gotCode, w.code) {
 			t.Errorf("i=%d code: got %s want %s", i, gotCode, w.code)
 		}
@@ -72,7 +72,7 @@ func TestSequentialPkeyDelegationsLiteralInitcode(t *testing.T) {
 	}
 	// Target salt 0 for the minimal initcode (matches create2-minimal salt 0).
 	wantTarget := common.HexToAddress("0x794a5Ba51C916E51aD4f45C85e67D9A07e8D0967")
-	gotTarget := common.BytesToAddress(out[0].Code[3:]) // strip 0xef0100
+	gotTarget := common.BytesToAddress(out[0].CodeBytes()[3:]) // strip 0xef0100
 	if gotTarget != wantTarget {
 		t.Errorf("delegation target: got %s want %s", gotTarget.Hex(), wantTarget.Hex())
 	}

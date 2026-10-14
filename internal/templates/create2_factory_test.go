@@ -24,7 +24,7 @@ func TestCREATE2FactoryExpand(t *testing.T) {
 	if pe.Address != CanonicalCREATE2FactoryAddress {
 		t.Errorf("address: got %s, want %s", pe.Address.Hex(), CanonicalCREATE2FactoryAddress.Hex())
 	}
-	if !bytes.Equal(pe.Code, CanonicalCREATE2FactoryCode) {
+	if !bytes.Equal(pe.CodeBytes(), CanonicalCREATE2FactoryCode) {
 		t.Errorf("Code mismatch with canonical factory runtime")
 	}
 	want := crypto.Keccak256Hash(CanonicalCREATE2FactoryCode).Bytes()
@@ -76,7 +76,7 @@ func TestCREATE2FactoryExplicitNonArachnidAddress(t *testing.T) {
 	if out[0].Address != custom {
 		t.Errorf("address: got %s, want %s (explicit)", out[0].Address.Hex(), custom.Hex())
 	}
-	if !bytes.Equal(out[0].Code, CanonicalCREATE2FactoryCode) {
+	if !bytes.Equal(out[0].CodeBytes(), CanonicalCREATE2FactoryCode) {
 		t.Errorf("Code should still be the canonical Arachnid runtime regardless of address")
 	}
 }

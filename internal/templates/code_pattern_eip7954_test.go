@@ -45,19 +45,19 @@ func TestUniqueJumpdestEIP7954AddressesMatchEEST(t *testing.T) {
 			t.Errorf("salt=%d: got %s, want EEST-derived %s",
 				i, out[i].Address.Hex(), want[i].Hex())
 		}
-		if len(out[i].Code) != eip7954MaxCodeSize {
+		if len(out[i].CodeBytes()) != eip7954MaxCodeSize {
 			t.Errorf("salt=%d: runtime length got %d, want %#x",
-				i, len(out[i].Code), eip7954MaxCodeSize)
+				i, len(out[i].CodeBytes()), eip7954MaxCodeSize)
 		}
 		// 0xFFFF is the largest target that still fits a PUSH2.
 		entry := []byte{0x61, 0xFF, 0xFF, 0x56}
 		for j, b := range entry {
-			if out[i].Code[j] != b {
+			if out[i].CodeBytes()[j] != b {
 				t.Errorf("salt=%d: entry byte %d got 0x%02x, want 0x%02x",
-					i, j, out[i].Code[j], b)
+					i, j, out[i].CodeBytes()[j], b)
 			}
 		}
-		embedded := common.BytesToAddress(out[i].Code[0x2C:0x40])
+		embedded := common.BytesToAddress(out[i].CodeBytes()[0x2C:0x40])
 		if embedded != out[i].Address {
 			t.Errorf("salt=%d: embedded address %s != derived %s",
 				i, embedded.Hex(), out[i].Address.Hex())

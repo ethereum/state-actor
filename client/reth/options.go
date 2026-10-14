@@ -28,6 +28,8 @@ type Options struct {
 
 // buildAllocAccounts converts cfg.GenesisAccounts/Code/Storage into a
 // slice of *entitygen.Account suitable for reth's WriteContracts path.
+// Code comes from cfg.GenesisCode only: lazy code stays out, so the
+// caller makes it with cfg.CodeAt one batch at a time.
 // WriteContracts mutates each Account's StateAccount.Root + .CodeHash
 // from the supplied Storage + Code, so the per-account RLP captures the
 // correct global-state-trie values.
