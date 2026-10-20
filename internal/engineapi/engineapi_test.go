@@ -83,6 +83,7 @@ func (m *mockEngineEL) handle(w http.ResponseWriter, r *http.Request) {
 		head := map[string]any{
 			"hash":      m.initialHash,
 			"timestamp": "0x0",
+			"gasLimit":  "0x3938700",
 		}
 		if m.headSlotNumber != "" {
 			head["slotNumber"] = m.headSlotNumber
@@ -226,6 +227,8 @@ func TestEngineDriver_Step_AmsterdamUsesFcuV4GetV6NewV5(t *testing.T) {
 		EthRPCURL: mock.server.URL,
 		BlockTime: 50 * time.Millisecond,
 		Fork:      ForkAmsterdam,
+
+		TargetGasLimit: 60_000_000,
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
@@ -249,8 +252,8 @@ func TestEngineDriver_Step_AmsterdamUsesFcuV4GetV6NewV5(t *testing.T) {
 		}
 	}
 	attrs := mock.seenAttrs()
-	if len(attrs) != 1 || attrs[0]["slotNumber"] != "0x7" {
-		t.Errorf("payloadAttributes = %v, want slotNumber 0x7", attrs)
+	if len(attrs) != 1 || attrs[0]["slotNumber"] != "0x7" || attrs[0]["targetGasLimit"] != "0x3938700" {
+		t.Errorf("payloadAttributes = %v, want slotNumber 0x7 and targetGasLimit 0x3938700", attrs)
 	}
 }
 
@@ -285,6 +288,10 @@ func TestEngineDriver_DriveLoop_AmsterdamSlotFollowsHead(t *testing.T) {
 		if attrs[i]["slotNumber"] != want {
 			t.Errorf("block %d slotNumber = %v, want %s", i, attrs[i]["slotNumber"], want)
 		}
+		// targetGasLimit comes from the head's gasLimit (60M).
+		if attrs[i]["targetGasLimit"] != "0x3938700" {
+			t.Errorf("block %d targetGasLimit = %v, want 0x3938700", i, attrs[i]["targetGasLimit"])
+		}
 	}
 }
 
@@ -302,8 +309,10 @@ func TestEngineDriver_Step_OsakaSendsNoSlotNumber(t *testing.T) {
 		t.Fatalf("Step: %v", err)
 	}
 	for _, a := range mock.seenAttrs() {
-		if _, ok := a["slotNumber"]; ok {
-			t.Errorf("Osaka payloadAttributes carry slotNumber: %v", a)
+		for _, k := range []string{"slotNumber", "targetGasLimit"} {
+			if _, ok := a[k]; ok {
+				t.Errorf("Osaka payloadAttributes carry %s: %v", k, a)
+			}
 		}
 	}
 }

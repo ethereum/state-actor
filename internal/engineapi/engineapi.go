@@ -45,7 +45,9 @@ import (
 //	        getPayloadV5 covers [Osaka, Amsterdam) — V4 stops at Osaka.
 //	amsterdam: fcUpdatedV4 + getPayloadV6 + newPayloadV5 — per
 //	        go-ethereum v1.17.6 (eth/catalyst). fcUpdatedV4 requires
-//	        slotNumber (EIP-7843) in payloadAttributes. The block access
+//	        slotNumber (EIP-7843) in payloadAttributes, and ethrex
+//	        v20+ also requires targetGasLimit (execution-apis#796;
+//	        geth reads it as the gas ceiling). The block access
 //	        list (EIP-7928) rides inside executionPayload, so the driver
 //	        passes getPayload's payload to newPayload unchanged.
 //
@@ -82,6 +84,10 @@ type EngineDriver struct {
 	// Authorization: Bearer. Empty disables JWT for ELs that boot with
 	// --engine-jwt-disabled (besu, nethermind).
 	JWTSecret []byte
+
+	// TargetGasLimit is the Amsterdam payloadAttributes.targetGasLimit.
+	// Zero makes DriveLoop use the head block's gasLimit.
+	TargetGasLimit uint64
 
 	// httpClient is lazily created with a 30s timeout on first call.
 	httpClient *http.Client
@@ -124,6 +130,11 @@ func (d *EngineDriver) DriveLoop(ctx context.Context) error {
 	headHash := head.Hash
 	blockTS := head.Time
 	slot := head.SlotNumber
+	if d.TargetGasLimit == 0 {
+		// Keep the gas limit at the head's value, as pre-Amsterdam
+		// clients do without a CL target.
+		d.TargetGasLimit = head.GasLimit
+	}
 
 	// Permanent-rejection guard: if Step fails this many times in a row
 	// (no recovery in between), surface the latest error instead of
@@ -188,7 +199,11 @@ func (d *EngineDriver) Step(ctx context.Context, headHash common.Hash, ts, slot 
 		"parentBeaconBlockRoot": zeroHash32,
 	}
 	if d.isAmsterdam() {
+		if d.TargetGasLimit == 0 {
+			return common.Hash{}, fmt.Errorf("amsterdam payloadAttributes need TargetGasLimit (DriveLoop sets it from the head)")
+		}
 		attrs["slotNumber"] = fmt.Sprintf("0x%x", slot)
+		attrs["targetGasLimit"] = fmt.Sprintf("0x%x", d.TargetGasLimit)
 	}
 	fcParams := []any{
 		map[string]string{
@@ -432,6 +447,7 @@ type engineHeadInfo struct {
 	Hash       common.Hash
 	Time       uint64
 	SlotNumber uint64
+	GasLimit   uint64
 }
 
 // fetchLatestBlock reads the current head's hash + timestamp from
@@ -460,6 +476,7 @@ func (d *EngineDriver) fetchLatestBlock(ctx context.Context) (engineHeadInfo, er
 			Hash       string `json:"hash"`
 			Timestamp  string `json:"timestamp"`
 			SlotNumber string `json:"slotNumber"`
+			GasLimit   string `json:"gasLimit"`
 		} `json:"result"`
 	}
 	if err := json.Unmarshal(body, &parsed); err != nil {
@@ -477,10 +494,15 @@ func (d *EngineDriver) fetchLatestBlock(ctx context.Context) (engineHeadInfo, er
 	if err != nil {
 		return engineHeadInfo{}, fmt.Errorf("parse slotNumber %q: %w", parsed.Result.SlotNumber, err)
 	}
+	gasLimit, err := parseHexUint64(parsed.Result.GasLimit)
+	if err != nil {
+		return engineHeadInfo{}, fmt.Errorf("parse gasLimit %q: %w", parsed.Result.GasLimit, err)
+	}
 	return engineHeadInfo{
 		Hash:       common.HexToHash(parsed.Result.Hash),
 		Time:       ts,
 		SlotNumber: slot,
+		GasLimit:   gasLimit,
 	}, nil
 }
 
