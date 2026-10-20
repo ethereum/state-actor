@@ -23,14 +23,25 @@ import (
 	"github.com/ethereum/state-actor/internal/syscontracts"
 )
 
-// pinnedNethImage is the upstream Nethermind Docker tag the e2e suite
-// pins against. Override with NETH_IMAGE=nethermind/nethermind:vX.Y.Z to
-// test a pre-release version.
+// pinnedNethImage is the upstream Nethermind Docker tag the Osaka e2e
+// suite pins against. Override with NETH_IMAGE=nethermind/nethermind:vX.Y.Z
+// to test a pre-release version.
 const pinnedNethImage = "nethermind/nethermind:1.39.0"
 
-func nethImageRef() string {
+// pinnedNethAmsterdamImage is the tag TestE2ESuiteAmsterdam pins against.
+// 2.1.0 is the Nethermind release for the Sepolia Amsterdam activation
+// (2026-10-06). Its Chains/sepolia.json sets the Amsterdam EIP keys at
+// 0x6ac4fd60 (1791294816), the go-ethereum v1.17.6 Sepolia AmsterdamTime.
+// 1.39.x has no Amsterdam support.
+const pinnedNethAmsterdamImage = "nethermind/nethermind:2.1.0"
+
+// nethImageRef returns the image for the fork. NETH_IMAGE overrides both.
+func nethImageRef(fork string) string {
 	if v := os.Getenv("NETH_IMAGE"); v != "" {
 		return v
+	}
+	if stategenesis.ForkAtLeast(fork, "amsterdam") {
+		return pinnedNethAmsterdamImage
 	}
 	return pinnedNethImage
 }
@@ -94,6 +105,25 @@ const nethermindE2EConfigTemplate = `{
 //     block production via the EngineDriver mock CL (mirrors besu).
 //   - SlotDuration=250ms in Phase 5 (matches smoke-nethermind-spamoor pacing)
 func TestE2ESuite(t *testing.T) {
+	runE2ESuite(t, "osaka")
+}
+
+// TestE2ESuiteAmsterdam runs the same suite on an Amsterdam genesis
+// (Sepolia spec) against pinnedNethAmsterdamImage. On top of the Osaka
+// suite it proves that Nethermind accepts the Amsterdam chainspec keys,
+// the Amsterdam header fields (blockAccessListHash, slotNumber) and the
+// Amsterdam system contracts. The mock CL then builds Amsterdam blocks
+// with engine_forkchoiceUpdatedV4, getPayloadV6 and newPayloadV5.
+func TestE2ESuiteAmsterdam(t *testing.T) {
+	// The cross-client aggregator compares nethermind-result.json with the
+	// Osaka roots of the other clients. The Amsterdam system contracts
+	// change the root, so this run must not write that file (CI's
+	// `-run TestE2ESuite` filter matches both tests).
+	t.Setenv("RESULT_PATH", "")
+	runE2ESuite(t, "amsterdam")
+}
+
+func runE2ESuite(t *testing.T, fork string) {
 	if testing.Short() {
 		t.Skip("e2e suite skipped in short mode")
 	}
@@ -105,10 +135,8 @@ func TestE2ESuite(t *testing.T) {
 		e2eBudget uint64 = 100 << 20
 	)
 
-	// All 4 clients pin --fork=osaka after the writer migration to internal/genesisheader.Build. state-actor's
-	// MaxForkForClient(c)=="osaka" for every client; pre-Prague forks
-	// are EOL and rejected at parse. 60M gas tracks current mainnet.
-	g, err := stategenesis.BuildSynthetic("osaka", big.NewInt(1337), 60_000_000,
+	// 60M gas tracks current mainnet.
+	g, err := stategenesis.BuildSynthetic(fork, big.NewInt(1337), 60_000_000,
 		1_700_000_000, []byte{0xde, 0xad, 0xbe, 0xef})
 	if err != nil {
 		t.Fatalf("BuildSynthetic: %v", err)
@@ -138,6 +166,9 @@ func TestE2ESuite(t *testing.T) {
 	// Deploy EIP-4788/2935/7002/7251 system contracts at their canonical
 	// addresses — required for the cross-client genesis-root invariant.
 	syscontracts.AddCanonicalSystemContracts(&cfg)
+	if stategenesis.ForkAtLeast(fork, "amsterdam") {
+		syscontracts.AddAmsterdamSystemContracts(&cfg)
+	}
 
 	if _, err := Run(context.Background(), cfg, Options{}); err != nil {
 		t.Fatalf("Run: %v", err)
@@ -159,8 +190,14 @@ func TestE2ESuite(t *testing.T) {
 		AutoFill: plan,
 	})
 
-	imageRef := nethImageRef()
-	containerName := "state-actor-neth-boot-" + e2e.RandSuffix(8)
+	imageRef := nethImageRef(fork)
+	containerPrefix := "state-actor-neth-boot-"
+	engineFork := engineapi.ForkOsaka
+	if stategenesis.ForkAtLeast(fork, "amsterdam") {
+		containerPrefix = "neth-am-boot-"
+		engineFork = engineapi.ForkAmsterdam
+	}
+	containerName := containerPrefix + e2e.RandSuffix(8)
 	containerCfgPath := dd.ContainerDatadir + "/boot.cfg"
 	runArgs := append([]string{"run", "-d"}, e2e.DockerPlatformArgs("NETH_DOCKER_PLATFORM")...)
 	runArgs = append(runArgs,
@@ -208,7 +245,7 @@ func TestE2ESuite(t *testing.T) {
 	// Ethash chainspec with Merge.Enabled + TTD=0 the engine API is the
 	// only path that produces blocks. Goroutine runs for the rest of
 	// the test so spamoor's txs (Phase 5) get included in blocks.
-	e2e.StartEngineDriver(t, containerIP, rpcURL, engineapi.ForkOsaka)
+	e2e.StartEngineDriver(t, containerIP, rpcURL, engineFork)
 
 	// Phases 3-7: shared via internal/e2e.RunSuitePhases.
 	e2e.RunSuitePhases(t, e2e.SuitePhasesCfg{

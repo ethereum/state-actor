@@ -53,4 +53,9 @@
 // nethermind/nethermind:1.39.0. The boot contract Nethermind enforces
 // (WasProcessed=true gate, key formats, 8-byte blockNumbers values, and the
 // flat CurrentState marker) is what the smoke/oracle/e2e targets drive against.
+//
+// An Amsterdam genesis (--fork=amsterdam, Sepolia spec) needs
+// nethermind/nethermind:2.1.0 or later; TestE2ESuiteAmsterdam boots it. The
+// same flat layout and block-tree rows boot on 2.1.0 without change. Only
+// the chainspec gets the Amsterdam EIP keys (see amsterdamParamKeys).
 package nethermind

@@ -279,6 +279,16 @@ missing flag logs `State backend: patricia (existing patricia state detected).`
 
 Like besu, Nethermind has no native post-Merge dev mode in our setup — `Merge.Enabled=true` + `TerminalTotalDifficulty=0` + the Ethash-from-genesis chainspec hand block production to MergePlugin via the Engine API. Drive blocks from an external CL mock (the state-actor repo's `internal/engineapi/`).
 
+**Amsterdam (`--fork=amsterdam`, Sepolia spec).** Boot an Amsterdam genesis on `nethermind/nethermind:2.1.0` or later. Nethermind 1.39.x has no Amsterdam support. The boot command and `boot.cfg` do not change. The written chainspec sets these keys to `0x0`, as Nethermind's Sepolia chainspec does at the Amsterdam timestamp:
+
+- `eip2780TransitionTimestamp`, `eip7708TransitionTimestamp`, `eip7778TransitionTimestamp`
+- `eip7843TransitionTimestamp` (header `slotNumber`) and `eip7928TransitionTimestamp` (header `blockAccessListHash`)
+- `eip7954TransitionTimestamp`, `eip7976TransitionTimestamp`, `eip7981TransitionTimestamp`
+- `eip8024TransitionTimestamp`, `eip8037TransitionTimestamp`, `eip8038TransitionTimestamp`
+- `eip8246TransitionTimestamp`, `eip8282TransitionTimestamp`
+
+Nethermind builds its own genesis header from these keys and compares its hash with the stored header. Thus the keys and the stored header must agree. Drive Amsterdam blocks with `engineapi.ForkAmsterdam` (`engine_forkchoiceUpdatedV4`, `engine_getPayloadV6`, `engine_newPayloadV5`). `TestE2ESuiteAmsterdam` in `client/nethermind/e2e_test.go` is the reference.
+
 **Verify.**
 
 ```bash

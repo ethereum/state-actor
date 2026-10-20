@@ -12,8 +12,12 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/hexutil"
+	"github.com/ethereum/go-ethereum/core/types"
+	"github.com/ethereum/go-ethereum/crypto"
 
 	"github.com/ethereum/state-actor/genesis"
+	"github.com/ethereum/state-actor/internal/genesisheader"
+	nethrlp "github.com/ethereum/state-actor/internal/neth/rlp"
 )
 
 func readWrittenSpec(t *testing.T, fork string) map[string]any {
@@ -283,5 +287,122 @@ func TestWriteChainSpec_GenesisBlockFromG(t *testing.T) {
 	}
 	if got := gen["stateUnavailable"]; got != true {
 		t.Errorf("stateUnavailable = %v (%T); want bool true", got, got)
+	}
+}
+
+// TestWriteChainSpec_AmsterdamGating drives the Amsterdam gate: every key in
+// amsterdamParamKeys must be present (at 0x0) when --fork=amsterdam and
+// absent below Amsterdam. Amsterdam keeps the Osaka keys.
+func TestWriteChainSpec_AmsterdamGating(t *testing.T) {
+	cases := []struct {
+		fork    string
+		present bool
+	}{
+		{"amsterdam", true},
+		{"osaka", false},
+		{"prague", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.fork, func(t *testing.T) {
+			params := paramsBlock(t, readWrittenSpec(t, tc.fork))
+			for _, k := range amsterdamParamKeys {
+				v, ok := params[k]
+				if ok != tc.present {
+					t.Errorf("--fork=%s: key %q present=%v; want %v", tc.fork, k, ok, tc.present)
+				}
+				if ok && v != "0x0" {
+					t.Errorf("--fork=%s: %s = %v; want 0x0", tc.fork, k, v)
+				}
+			}
+			if tc.fork != "amsterdam" {
+				return
+			}
+			for _, k := range osakaParamKeys {
+				if _, ok := params[k]; !ok {
+					t.Errorf("--fork=amsterdam spec missing osaka key %q", k)
+				}
+			}
+		})
+	}
+}
+
+// TestWriteChainSpec_AmsterdamKeysMatchNethermindSepolia pins the Amsterdam
+// key set to the Sepolia chainspec of Nethermind 2.1.0. If a key is missing,
+// Nethermind turns off that Amsterdam EIP at boot and gives no error.
+func TestWriteChainSpec_AmsterdamKeysMatchNethermindSepolia(t *testing.T) {
+	want := []string{
+		"eip2780TransitionTimestamp", "eip7708TransitionTimestamp",
+		"eip7778TransitionTimestamp", "eip7843TransitionTimestamp",
+		"eip7928TransitionTimestamp", "eip7954TransitionTimestamp",
+		"eip7976TransitionTimestamp", "eip7981TransitionTimestamp",
+		"eip8024TransitionTimestamp", "eip8037TransitionTimestamp",
+		"eip8038TransitionTimestamp", "eip8246TransitionTimestamp",
+		"eip8282TransitionTimestamp",
+	}
+	if strings.Join(amsterdamParamKeys, ",") != strings.Join(want, ",") {
+		t.Errorf("amsterdamParamKeys = %v; want %v", amsterdamParamKeys, want)
+	}
+}
+
+// TestWriteChainSpec_HeaderFieldsMatchKeys mirrors Nethermind's
+// ChainSpecLoader.LoadGenesis. Nethermind builds its own genesis header
+// from the chainspec and compares its hash with the stored header. It sets
+// blockAccessListHash only if eip7928TransitionTimestamp is set, and
+// slotNumber only if eip7843TransitionTimestamp is set. The on-disk header
+// from internal/genesisheader.Build must carry the same fields.
+func TestWriteChainSpec_HeaderFieldsMatchKeys(t *testing.T) {
+	for _, fork := range []string{"prague", "osaka", "amsterdam"} {
+		t.Run(fork, func(t *testing.T) {
+			g, err := genesis.BuildSynthetic(fork, big.NewInt(1337), 30_000_000, 0, nil)
+			if err != nil {
+				t.Fatalf("BuildSynthetic: %v", err)
+			}
+			params := paramsBlock(t, readWrittenSpec(t, fork))
+			header := genesisheader.Build(g, 0, common.Hash{}, types.EmptyRootHash)
+
+			_, hasBAL := params["eip7928TransitionTimestamp"]
+			if hasBAL != (header.BlockAccessListHash != nil) {
+				t.Errorf("eip7928 key present=%v, header.BlockAccessListHash set=%v",
+					hasBAL, header.BlockAccessListHash != nil)
+			}
+			_, hasSlot := params["eip7843TransitionTimestamp"]
+			if hasSlot != (header.SlotNumber != nil) {
+				t.Errorf("eip7843 key present=%v, header.SlotNumber set=%v",
+					hasSlot, header.SlotNumber != nil)
+			}
+		})
+	}
+}
+
+// TestGenesisHeaderHash_MatchesGeth pins the genesis hash of the header
+// bytes that the writer stores in headers/ (nethrlp.EncodeHeader) for an
+// empty state. The want values are `geth init` output from go-ethereum
+// v1.17.6. Nethermind must compute the same hash from the chainspec, or it
+// refuses the DB at boot ("Supplied genesis block does not match chain data
+// stored").
+func TestGenesisHeaderHash_MatchesGeth(t *testing.T) {
+	cases := []struct {
+		fork string
+		want string
+	}{
+		{"osaka", "0xcb47a1d8b28059a38b6a6d1bc93fa9e53e3f3534571339fe6c63205a1d97cf7f"},
+		{"amsterdam", "0xf2ca3be956811381db0b48028135ddde3053f592125d041acd67d19f832b9645"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.fork, func(t *testing.T) {
+			g, err := genesis.BuildSynthetic(tc.fork, big.NewInt(1337), 60_000_000,
+				1_700_000_000, []byte{0xde, 0xad, 0xbe, 0xef})
+			if err != nil {
+				t.Fatalf("BuildSynthetic: %v", err)
+			}
+			header := genesisheader.Build(g, 0, common.Hash{}, types.EmptyRootHash)
+			enc, err := nethrlp.EncodeHeader(header)
+			if err != nil {
+				t.Fatalf("EncodeHeader: %v", err)
+			}
+			if got := crypto.Keccak256Hash(enc); got != common.HexToHash(tc.want) {
+				t.Errorf("genesis hash = %s; want %s", got.Hex(), tc.want)
+			}
+		})
 	}
 }
