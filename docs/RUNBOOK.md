@@ -400,9 +400,9 @@ docker run --rm \
 **Boot path.** Nimbus rebuilds genesis from `--network`'s alloc on every start and refuses a datadir whose block-0 hash differs (`preventLoadingDataDirForTheWrongNetwork`). The sidecar's alloc is empty — the state lives in `AriVtx` and the real root is in the stored header — so boot with the hidden `--debug-rewrite-datadir-id` flag, which skips that check: the analogue of ethrex's `--skip-genesis-validation`. With block 0 present nimbus never rewrites genesis, `initializeDb` sees the canonical-head row and skips, and ForkedChain loads base = block 0 (a "Cannot find previous FC state" warning at boot is expected). Every branch ships with its Merkle key, so boot does not walk the state (no `Writing computeKey cache` line). Required boot flags (validated by the e2e suite):
 
 ```bash
-docker run -d --name nimbus \
+docker run -d --name nimbus --user 0:0 \
   -v /tmp/sa-nimbus:/data \
-  statusim/nimbus-eth1:master-2f0ae87 \
+  statusim/nimbus-eth1:v0.4.3 \
   executionClient \
   --data-dir=/data \
   --network=/data/nimbus-genesis.json \
@@ -414,9 +414,11 @@ docker run -d --name nimbus \
   --max-peers=0 --discv5=false --nat=none
 ```
 
-`executionClient` selects the EL inside the combined `nimbus` binary (without it the image runs CL + EL). `--rpc-api` accepts only `eth`, `debug`, `admin` (`web3_*` / `net_*` are always served). Nimbus has no dev / self-mining mode, so the chain is engine-driven like besu / nethermind, and the engine API mandates a JWT: write 32 random bytes as bare hex to `/data/jwt.hex` before booting and sign engine calls with it (`internal/e2e_testing.StartEngineDriverWithJWT`). Nimbus chmods the data dir to 0700 at startup; the container runs as root, so a bind mount works.
+`executionClient` selects the EL inside the combined `nimbus` binary (without it the image runs CL + EL). `--rpc-api` accepts only `eth`, `debug`, `admin` (`web3_*` / `net_*` are always served). Nimbus has no dev / self-mining mode, so the chain is engine-driven like besu / nethermind, and the engine API mandates a JWT: write 32 random bytes as bare hex to `/data/jwt.hex` before booting and sign engine calls with it (`internal/e2e_testing.StartEngineDriverWithJWT`). Nimbus chmods the data dir to 0700 at startup. The release images run as an unprivileged `user`, but state-actor writes the datadir and `jwt.hex` as root, so run nimbus with `--user 0:0`. Without it nimbus stops at boot with `jwt-secret=... File not accessible`.
 
-**Image pin.** `statusim/nimbus-eth1:master-2f0ae87` (commit `2f0ae87cd`, "Storage trie static vids"). A master build, not a release: that commit changed the Aristo on-disk format (static storage-trie vertex IDs, the AccLeaf `stoHint` byte, the `0x7e` SavedState trailer) and no tagged release reads it. `NIMBUS_IMAGE` overrides the pin in `TestE2ESuite` / `make test-nimbus-suite`; `internal/nimbus/testdata/gen/README.md` explains how to regenerate the golden fixture when the pin moves.
+**Image pin.** `statusim/nimbus-eth1:v0.4.3` (commit `6e4d83c1`). Use v0.4.2 or later: commit `2f0ae87cd` ("Storage trie static vids") changed the Aristo on-disk format (static storage-trie vertex IDs, the AccLeaf `stoHint` byte, the `0x7e` SavedState trailer), and v0.4.1 and earlier cannot read it. v0.4.3 has the same format as `2f0ae87cd`, the source of the codec and the golden fixture. `NIMBUS_IMAGE` overrides the pin in `TestE2ESuite` / `TestE2ESuiteAmsterdam` / `make test-nimbus-suite`. `internal/nimbus/testdata/gen/README.md` tells how to regenerate the golden fixture when the format changes.
+
+**Amsterdam variant.** Add `--fork=amsterdam` to the generate command (Sepolia spec). Boot as above with nimbus-eth1 v0.4.2 or later (v0.4.2 scheduled the Sepolia Amsterdam activation). The sidecar then sets `amsterdamTime: 0` and a `blobSchedule.amsterdam` entry with the Prague values. The stored header carries `blockAccessListHash` (the empty-list hash) and `slotNumber = 0`, the same header nimbus builds from the sidecar. The engine driver must use `engine_forkchoiceUpdatedV4` (with `slotNumber`), `engine_getPayloadV6` and `engine_newPayloadV5`. Reference: `TestE2ESuiteAmsterdam`.
 
 **Verify.**
 

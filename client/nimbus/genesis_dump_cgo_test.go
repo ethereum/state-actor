@@ -129,8 +129,11 @@ func diffRows(t *testing.T, cf string, got, want []cfRow) {
 	}
 }
 
-func TestGenesisDumpGolden(t *testing.T) {
-	g, err := genesis.BuildSynthetic("prague", big.NewInt(1337), 0x17d7840, 0, nil)
+// fixtureConfig is the 3-account fixture of testdata/gen/genesis.json, on a
+// genesis for the given fork.
+func fixtureConfig(t *testing.T, fork, dbPath string) generator.Config {
+	t.Helper()
+	g, err := genesis.BuildSynthetic(fork, big.NewInt(1337), 0x17d7840, 0, nil)
 	if err != nil {
 		t.Fatalf("BuildSynthetic: %v", err)
 	}
@@ -140,8 +143,7 @@ func TestGenesisDumpGolden(t *testing.T) {
 	bal1, _ := new(big.Int).SetString("3635c9adc5dea00000", 16)
 	bal1u, _ := uint256.FromBig(bal1)
 
-	dbPath := t.TempDir()
-	cfg := generator.Config{
+	return generator.Config{
 		DBPath:  dbPath,
 		Seed:    1,
 		Genesis: g,
@@ -162,6 +164,11 @@ func TestGenesisDumpGolden(t *testing.T) {
 			},
 		},
 	}
+}
+
+func TestGenesisDumpGolden(t *testing.T) {
+	dbPath := t.TempDir()
+	cfg := fixtureConfig(t, "prague", dbPath)
 	stats, err := clientnimbus.Run(context.Background(), cfg, clientnimbus.Options{})
 	if err != nil {
 		t.Fatalf("nimbus.Run: %v", err)
@@ -207,5 +214,89 @@ func TestGenesisDumpGolden(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(dbPath, clientnimbus.GenesisFileName)); err != nil {
 		t.Fatalf("genesis sidecar: %v", err)
+	}
+}
+
+// TestGenesisDumpGoldenAmsterdam writes the same fixture on an Amsterdam genesis.
+// The fork does not touch the state, so the AriVtx and code rows must equal
+// the Prague fixture. The header row must carry the Amsterdam fields, in the
+// order nimbus's Header has them (blockAccessListHash, then slotNumber), and
+// every block-0 row must point at the hash of that header.
+func TestGenesisDumpGoldenAmsterdam(t *testing.T) {
+	dbPath := t.TempDir()
+	cfg := fixtureConfig(t, "amsterdam", dbPath)
+	stats, err := clientnimbus.Run(context.Background(), cfg, clientnimbus.Options{})
+	if err != nil {
+		t.Fatalf("nimbus.Run: %v", err)
+	}
+
+	want := loadDump(t, fixtureDumpPath)
+	got := readAllCFs(t, clientnimbus.StoreDir(dbPath))
+	diffRows(t, nimbusinternal.CFAriVtx,
+		normaliseStoHint(t, got[nimbusinternal.CFAriVtx]),
+		normaliseStoHint(t, want[nimbusinternal.CFAriVtx]))
+
+	codeRows := func(rows []cfRow) []cfRow {
+		var out []cfRow
+		for _, r := range rows {
+			if len(r.key) == 33 && r.key[0] == 0x06 {
+				out = append(out, r)
+			}
+		}
+		return out
+	}
+	diffRows(t, nimbusinternal.CFKvtGen, codeRows(got[nimbusinternal.CFKvtGen]), codeRows(want[nimbusinternal.CFKvtGen]))
+
+	var (
+		header    types.Header
+		headerKey []byte
+		rows      = make(map[string][]byte, len(got[nimbusinternal.CFKvtGen]))
+	)
+	for _, r := range got[nimbusinternal.CFKvtGen] {
+		rows[string(r.key)] = r.value
+		if len(r.key) == 33 && r.key[0] == 0x00 {
+			if headerKey != nil {
+				t.Fatal("more than one header row")
+			}
+			headerKey = r.key
+			if err := gethrlp.DecodeBytes(r.value, &header); err != nil {
+				t.Fatalf("decode header row: %v", err)
+			}
+		}
+	}
+	if headerKey == nil {
+		t.Fatal("no header row")
+	}
+	hash := header.Hash()
+	if !bytes.Equal(headerKey, nimbusinternal.KeyHeader(hash)) {
+		t.Fatalf("header row key %x, header hash %s", headerKey, hash.Hex())
+	}
+	if header.Root != stats.StateRoot {
+		t.Fatalf("header root %s, writer root %s", header.Root.Hex(), stats.StateRoot.Hex())
+	}
+	if header.BlockAccessListHash == nil || *header.BlockAccessListHash != types.EmptyBlockAccessListHash {
+		t.Fatalf("blockAccessListHash %v, want %s", header.BlockAccessListHash, types.EmptyBlockAccessListHash.Hex())
+	}
+	if header.SlotNumber == nil || *header.SlotNumber != 0 {
+		t.Fatalf("slotNumber %v, want 0", header.SlotNumber)
+	}
+	if header.RequestsHash == nil || *header.RequestsHash != types.EmptyRequestsHash {
+		t.Fatalf("requestsHash %v, want %s", header.RequestsHash, types.EmptyRequestsHash.Hex())
+	}
+
+	pointers := []struct {
+		name string
+		key  []byte
+		want []byte
+	}{
+		{"block-number → hash", nimbusinternal.KeyBlockNumToHash(0), nimbusinternal.RLPHash(hash)},
+		{"canonical head", nimbusinternal.KeyCanonicalHead, nimbusinternal.RLPHash(hash)},
+		{"fcuHead", nimbusinternal.KeyFcu(nimbusinternal.FcuHead), nimbusinternal.FcuValue(0, hash)},
+		{"score", nimbusinternal.KeyScore(hash), nimbusinternal.RLPZeroScore},
+	}
+	for _, p := range pointers {
+		if v, ok := rows[string(p.key)]; !ok || !bytes.Equal(v, p.want) {
+			t.Errorf("%s row %x = %x, want %x", p.name, p.key, v, p.want)
+		}
 	}
 }
