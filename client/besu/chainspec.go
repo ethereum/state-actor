@@ -5,6 +5,9 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
+
+	"github.com/ethereum/go-ethereum/params"
 
 	"github.com/ethereum/state-actor/genesis"
 )
@@ -21,7 +24,8 @@ const ChainSpecFileName = "besu-chainspec.json"
 // state-actor only emits post-Prague chains (genesis.BuildChainConfigForFork
 // rejects pre-Prague), so the chainspec is unconditionally post-Merge:
 // terminalTotalDifficulty=0 + shanghaiTime/cancunTime/pragueTime active at
-// genesis (osakaTime when --fork=osaka). Block production at boot goes
+// genesis (osakaTime when --fork=osaka, osakaTime and amsterdamTime when
+// --fork=amsterdam). Block production at boot goes
 // through the engine API — besu has no native post-Merge dev consensus
 // (clique is broken post-Shanghai per hyperledger/besu#8532 and removed
 // in besu 26.4.0); a mock-CL helper drives engine_forkchoiceUpdated +
@@ -93,6 +97,19 @@ func writeChainSpec(dbPath string, g *genesis.Genesis) (string, error) {
 	if g.Config.OsakaTime != nil {
 		cfg["osakaTime"] = *g.Config.OsakaTime
 	}
+	if g.Config.AmsterdamTime != nil {
+		// Sepolia Amsterdam spec (besu 26.9.0+). Once amsterdamTime is
+		// active, besu's GenesisState rebuilds the genesis header with
+		// balHash = EMPTY_BAL_HASH and slotNumber = 0: the same two
+		// fields that internal/genesisheader.Build writes.
+		cfg["amsterdamTime"] = *g.Config.AmsterdamTime
+		// EIP-8282 request contracts. Without these keys besu uses the
+		// same spec-fixed addresses (RequestContractAddresses.fromGenesis).
+		// We write them so that the chainspec names the contracts that
+		// syscontracts.AddAmsterdamSystemContracts deploys.
+		cfg["builderDepositRequestContractAddress"] = strings.ToLower(params.BuilderDepositAddress.Hex())
+		cfg["builderExitRequestContractAddress"] = strings.ToLower(params.BuilderExitAddress.Hex())
+	}
 
 	// Cancun introduces blobs; besu requires a blobSchedule for any
 	// chain with cancunTime active. Mainnet activation params per
@@ -101,6 +118,11 @@ func writeChainSpec(dbPath string, g *genesis.Genesis) (string, error) {
 	// blob txs (spamoor's erc20_bloater is regular calldata), but
 	// besu refuses to boot a Cancun-active chainspec without a
 	// blobSchedule.
+	//
+	// Besu reads only the cancun, prague and bpo1..bpo5 keys
+	// (BlobScheduleOptions), so it ignores the osaka entry. Osaka and
+	// Amsterdam keep the Prague values, as in go-ethereum v1.17.6, so
+	// Amsterdam gets no entry of its own.
 	blobSchedule := map[string]any{
 		"cancun": map[string]any{
 			"target":                3,

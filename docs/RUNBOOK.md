@@ -192,6 +192,8 @@ Four besu-specific subtleties:
 
 The flags above match `host-allowlist=all` (literal `all`, not `*` — `*` would glob-expand against `/opt/besu/` in the image's entrypoint).
 
+**Amsterdam.** `--fork=amsterdam` follows the Sepolia Amsterdam spec. Boot it on `hyperledger/besu:26.9.0` or later, with the same flags. 26.9.0 is the first besu release with Amsterdam (Sepolia `amsterdamTime` 1791294816). 25.11.0 does not know the fork. The chainspec gets `amsterdamTime` and the EIP-8282 builder request contract addresses. Besu then rebuilds the genesis header with `balHash` and `slotNumber`, so the hash matches the stored genesis. Drive blocks with `engine_forkchoiceUpdatedV4` (with `slotNumber`), `engine_getPayloadV6` and `engine_newPayloadV5` (`engineapi.ForkAmsterdam`). `TestE2ESuiteAmsterdam` covers this path.
+
 **Verify.**
 
 ```bash
