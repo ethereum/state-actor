@@ -30,6 +30,12 @@
   `e2e_testing.GoldenGiantRoot`.
 
 ### Changed
+- **geth: L6 now has a bloom filter, as geth v1.17.6 does.** geth leaves
+  its L6 options empty, and pebble v2 makes an empty level inherit the L5
+  bloom filter. `gethLevelOptions` now sets the 10-bit filter on all seven
+  levels. The shipped datadir's bulk state (in L6 after the Close-time
+  compaction) now has bloom filters, like a real geth v1.17.6+ node.
+  Benchmark reads against older geth datadirs had no L6 filter.
 - **go-ethereum v1.17.2-pre → v1.17.6.** The geth writer now opens Pebble
   at `FormatFlushableIngest`, the minimum format pebble v2 opens. geth
   v1.17.6 opens new DBs with pebble v2, and an older format makes it fall
