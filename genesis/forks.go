@@ -166,9 +166,13 @@ func SortedForks() []string {
 //     chainspec (amsterdamTime plus the EIP-8282 contract addresses) and
 //     checks it against the stored hash; TestGenesisBlockHashPerFork pins
 //     it to geth's hash.
-//   - reth, nimbus: osaka. Header
+//   - reth: amsterdam. The static-files header codec writes reth's
+//     full HeaderExt (requestsHash, blockAccessListHash, slotNumber; the
+//     bytes are pinned against reth-codecs 0.8.1), and the chainspec
+//     carries slotNumber; reth v2.7.0 boots it.
+//   - nimbus: osaka. Header
 //     construction flows through internal/genesisheader.Build for
-//     reth/nimbus. Per-client chainspec writers
+//     nimbus. Per-client chainspec writers
 //     emit shanghaiTime/cancunTime/pragueTime/osakaTime/
 //     terminalTotalDifficulty/blobSchedule conditionally based on
 //     g.Config — same activation set the writer encodes.
@@ -182,9 +186,9 @@ func SortedForks() []string {
 // amsterdamTime and its e2e suite boots an Amsterdam genesis.
 func MaxForkForClient(client string) string {
 	switch client {
-	case "geth", "ethrex", "erigon", "nethermind", "besu":
+	case "geth", "ethrex", "erigon", "nethermind", "besu", "reth":
 		return "amsterdam"
-	case "reth", "nimbus":
+	case "nimbus":
 		return "osaka"
 	default:
 		return DefaultFork

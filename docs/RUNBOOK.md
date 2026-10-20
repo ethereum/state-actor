@@ -63,7 +63,7 @@ cast chain-id  --rpc-url http://127.0.0.1:8545   # → 0x539 (1337)
 cast block-number --rpc-url http://127.0.0.1:8545 # → 0x0 immediately, ticks up
 ```
 
-**Amsterdam variant.** Add `--fork=amsterdam` to the generate command (Sepolia spec; geth is the only client with this ceiling today). Boot with `ethereum/client-go:v1.17.6` or later, as above. Earlier geth releases do not know the Amsterdam header fields and reject the genesis. Reference: `TestE2ESuiteAmsterdam`.
+**Amsterdam variant.** Add `--fork=amsterdam` to the generate command (Sepolia spec). Boot with `ethereum/client-go:v1.17.6` or later, as above. Earlier geth releases do not know the Amsterdam header fields and reject the genesis. Reference: `TestE2ESuiteAmsterdam`.
 
 **Binary-trie variant.** If you generated with `--binary-trie=true` (EIP-7864, geth-only), boot geth with `--override.ubt=0` in addition to the flags above.
 

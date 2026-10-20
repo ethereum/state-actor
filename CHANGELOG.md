@@ -42,6 +42,15 @@
   Osaka suite stays on 25.11.0. `TestGenesisBlockHashPerFork` pins the
   stored genesis hash to geth's for Osaka and Amsterdam and joins the CI
   filter.
+- **`--fork=amsterdam` for `--client=reth`.** The static-files header
+  codec writes all three `HeaderExt` fields (requestsHash,
+  blockAccessListHash, slotNumber), pinned as golden bytes checked against
+  reth-codecs 0.8.1; the chainspec gets `slotNumber: "0x0"`. reth v2.7.0
+  added the `BlockAccessLists` and `BlockAccessListBlockNumbers` MDBX
+  tables; the writer now creates them empty (also for Osaka; no root
+  change), because v2.7.0 refuses to open a DB without them. All reth
+  tests move from the nightly pin to `ghcr.io/paradigmxyz/reth:v2.7.0`
+  (Sepolia Amsterdam); the Osaka root is unchanged.
 - **Engine driver: Amsterdam blocks** (`engineapi.ForkAmsterdam`):
   `forkchoiceUpdatedV4` with `slotNumber` and `targetGasLimit` (the head's
   gas limit; ethrex requires it per execution-apis#796), `getPayloadV6`,
