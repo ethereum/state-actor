@@ -162,9 +162,13 @@ func SortedForks() []string {
 //   - nethermind: amsterdam. The chainspec carries the 13 Amsterdam
 //     eipNNNN transition keys of Nethermind 2.1.0's sepolia.json;
 //     nethermind derives the genesis header from them.
-//   - reth, besu, nimbus: osaka. Header
+//   - besu: amsterdam. besu rebuilds the genesis header from the
+//     chainspec (amsterdamTime plus the EIP-8282 contract addresses) and
+//     checks it against the stored hash; TestGenesisBlockHashPerFork pins
+//     it to geth's hash.
+//   - reth, nimbus: osaka. Header
 //     construction flows through internal/genesisheader.Build for
-//     besu/reth/nimbus. Per-client chainspec writers
+//     reth/nimbus. Per-client chainspec writers
 //     emit shanghaiTime/cancunTime/pragueTime/osakaTime/
 //     terminalTotalDifficulty/blobSchedule conditionally based on
 //     g.Config — same activation set the writer encodes.
@@ -178,9 +182,9 @@ func SortedForks() []string {
 // amsterdamTime and its e2e suite boots an Amsterdam genesis.
 func MaxForkForClient(client string) string {
 	switch client {
-	case "geth", "ethrex", "erigon", "nethermind":
+	case "geth", "ethrex", "erigon", "nethermind", "besu":
 		return "amsterdam"
-	case "reth", "besu", "nimbus":
+	case "reth", "nimbus":
 		return "osaka"
 	default:
 		return DefaultFork

@@ -34,6 +34,14 @@
   from the eip7928/eip7843 keys and refuses a DB whose stored header
   disagrees. The header RLP needs no change. `TestE2ESuiteAmsterdam` runs
   on `nethermind/nethermind:2.1.0`; the Osaka suite stays on 1.39.0.
+- **`--fork=amsterdam` for `--client=besu`.** The chainspec gets
+  `amsterdamTime` and the EIP-8282 `builderDepositRequestContractAddress` /
+  `builderExitRequestContractAddress`; besu rebuilds the genesis header
+  from it. No header or RocksDB change. `TestE2ESuiteAmsterdam` runs on
+  `hyperledger/besu:26.9.0` (override with `BESU_AMSTERDAM_IMAGE`); the
+  Osaka suite stays on 25.11.0. `TestGenesisBlockHashPerFork` pins the
+  stored genesis hash to geth's for Osaka and Amsterdam and joins the CI
+  filter.
 - **Engine driver: Amsterdam blocks** (`engineapi.ForkAmsterdam`):
   `forkchoiceUpdatedV4` with `slotNumber` and `targetGasLimit` (the head's
   gas limit; ethrex requires it per execution-apis#796), `getPayloadV6`,
