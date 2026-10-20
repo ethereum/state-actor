@@ -25,7 +25,7 @@
 //     markers tell reth's read path "history pruned before block 1",
 //     routing historical-tag queries through HashedAccounts).
 //   - <datadir>/static_files/static_file_<segment>_0_499999 (no extension)
-//     + .conf + .off (+ .csoff for change-based segments) — block-0
+//     and .conf + .off (+ .csoff for change-based segments) — block-0
 //     nippy-jar segment files for headers, transactions, receipts,
 //     transaction-senders, account-change-sets, storage-change-sets. The
 //     two change-based segments are required as empty bootstrap shells so
@@ -60,8 +60,11 @@
 // instead of recomputing the genesis hash from chainspec.alloc.
 //
 // The `--debug.skip-genesis-validation` flag is an upstream paradigmxyz/reth
-// addition (digest-pinned via internal/reth/constants.go to a nightly
-// snapshot containing #23919). Without that flag, reth's
+// addition (#23919). internal/reth/constants.go digest-pins reth v2.7.0,
+// which has the flag and the Sepolia Amsterdam spec. For an Amsterdam
+// genesis the chainspec also carries config.amsterdamTime and
+// slotNumber, and the static-files header carries the Amsterdam
+// HeaderExt fields (see headerExtCompactBytes). Without that flag, reth's
 // init_genesis_with_settings rejects the boot with GenesisHashMismatch
 // because the alloc-derived genesis hash (empty MPT root) differs from
 // the DB-resident genesis hash.

@@ -13,6 +13,8 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
 	lz4 "github.com/pierrec/lz4/v4"
+
+	"github.com/ethereum/state-actor/genesis"
 )
 
 // makeGenesisHeader returns a Cancun-enabled genesis header suitable for
@@ -414,6 +416,90 @@ func TestHeaderCompactBytesPragueExtraFields(t *testing.T) {
 	}
 	if [32]byte(tail[2:]) != emptyReq {
 		t.Errorf("HeaderExt requests_hash bytes:\n got  %x\n want %x", tail[2:], emptyReq)
+	}
+}
+
+// amsterdamGenesisHeaderCompact is reth's Compact encoding of the
+// Amsterdam synthetic genesis header (chain 1337, gas limit 60M,
+// timestamp 1_700_000_000, extra data 0xdeadbeef, empty state). The
+// reth-codecs 0.8.1 crate (the version that reth v2.7.0 uses) decodes
+// these bytes, re-encodes them to the same bytes, and computes the hash
+// 0xf2ca3be9...9645, which is also the go-ethereum v1.17.6 genesis hash.
+const amsterdamGenesisHeaderCompact = "" +
+	"012020f8" + // bitfield
+	"0000000000000000000000000000000000000000000000000000000000000000" + // parent_hash
+	"1dcc4de8dec75d7aab85b567b6ccd41ad312451b948a7413f0a142fd40d49347" + // ommers_hash
+	"0000000000000000000000000000000000000000" + // beneficiary
+	"56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421" + // state_root
+	"56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421" + // transactions_root
+	"56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421" + // receipts_root
+	"56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421" + // withdrawals_root
+	"00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000" + // logs_bloom
+	"00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000" +
+	"00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000" +
+	"00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000" +
+	"039387006553f100" + // gas_limit, timestamp
+	"0000000000000000000000000000000000000000000000000000000000000000" + // mix_hash
+	"043b9aca000000" + // base_fee_per_gas, blob_gas_used, excess_blob_gas
+	"0000000000000000000000000000000000000000000000000000000000000000" + // parent_beacon_block_root
+	"4207" + // extra_fields: varuint(66), HeaderExt bitflag
+	"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855" + // requests_hash
+	"1dcc4de8dec75d7aab85b567b6ccd41ad312451b948a7413f0a142fd40d49347" + // block_access_list_hash
+	"00" + // slot_number = Some(0)
+	"deadbeef" // extra_data
+
+// TestHeaderCompactBytesAmsterdamExtraFields verifies the Option<HeaderExt>
+// form for an Amsterdam genesis. All three HeaderExt fields are Some:
+//
+//   - varuint(66) = 0x42
+//   - inner bitflag = 0x07 (requests_hash, block_access_list_hash,
+//     slot_number)
+//   - 32 bytes raw RequestsHash (specialized Option<B256>)
+//   - 32 bytes raw BlockAccessListHash (specialized Option<B256>)
+//   - varuint(0) = 0x00 for slot_number = Some(0) (Option<u64> keeps the
+//     length prefix, and the value 0 has no bytes)
+//
+// The extra_data bytes come last.
+func TestHeaderCompactBytesAmsterdamExtraFields(t *testing.T) {
+	g, err := genesis.BuildSynthetic("amsterdam", big.NewInt(1337), 60_000_000,
+		1_700_000_000, []byte{0xde, 0xad, 0xbe, 0xef})
+	if err != nil {
+		t.Fatalf("BuildSynthetic(amsterdam): %v", err)
+	}
+	h, err := buildBlock0Header(g)
+	if err != nil {
+		t.Fatalf("buildBlock0Header: %v", err)
+	}
+	got, err := headerCompactBytes(h)
+	if err != nil {
+		t.Fatalf("headerCompactBytes: %v", err)
+	}
+	if want := common.FromHex(amsterdamGenesisHeaderCompact); !equalBytes(got, want) {
+		t.Errorf("Amsterdam genesis header compact:\n got  %x\n want %x", got, want)
+	}
+
+	if got[3]&0x80 == 0 {
+		t.Errorf("bitfield byte 3 = %#x, want bit 7 (extra_fields presence) set", got[3])
+	}
+	const extLen = 1 + 1 + 32 + 32 + 1
+	tail := got[len(got)-extLen-len(h.Extra):]
+	if tail[0] != 0x42 {
+		t.Errorf("HeaderExt varuint length prefix = %#x, want 0x42 (varuint(66))", tail[0])
+	}
+	if tail[1] != 0x07 {
+		t.Errorf("HeaderExt inner bitflag = %#x, want 0x07 (all three fields Some)", tail[1])
+	}
+	if [32]byte(tail[2:34]) != types.EmptyRequestsHash {
+		t.Errorf("HeaderExt requests_hash = %x, want %x", tail[2:34], types.EmptyRequestsHash)
+	}
+	if [32]byte(tail[34:66]) != types.EmptyBlockAccessListHash {
+		t.Errorf("HeaderExt block_access_list_hash = %x, want %x", tail[34:66], types.EmptyBlockAccessListHash)
+	}
+	if tail[66] != 0x00 {
+		t.Errorf("HeaderExt slot_number varuint length = %#x, want 0x00 (Some(0))", tail[66])
+	}
+	if !equalBytes(tail[extLen:], h.Extra) {
+		t.Errorf("extra_data = %x, want %x", tail[extLen:], h.Extra)
 	}
 }
 

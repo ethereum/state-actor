@@ -443,9 +443,10 @@ func buildSegmentHeaderBytes(seg staticFileSegment, changesetOffsetsLen uint64) 
 //     lib.rs): `varuint(N) || HeaderExt_bytes`. HeaderExt is itself
 //     Compact-derived with three optional fields (requests_hash,
 //     block_access_list_hash, slot_number) prefixed by a 1-byte inner
-//     bitflag (bits 0/1/2 = presence). For Prague-active genesis only
-//     RequestsHash is set, so inner = 0x01 || 32-byte B256 (33 bytes),
-//     varuint(33) = 0x21 → 34 bytes appended.
+//     bitflag (bits 0/1/2 = presence). See headerExtCompactBytes.
+//     For Prague/Osaka genesis only RequestsHash is set, so inner =
+//     0x01 || 32-byte B256 (33 bytes), varuint(33) = 0x21 → 34 bytes
+//     appended. For Amsterdam genesis all three are set → 67 bytes.
 //
 // 13. extra_data (Bytes): written verbatim (last field, length = buf.len() - consumed).
 //
@@ -466,11 +467,11 @@ func headerCompactBytes(h *types.Header) ([]byte, error) {
 	hasBlobGasUsed := h.BlobGasUsed != nil
 	hasExcessBlobGas := h.ExcessBlobGas != nil
 	hasParentBeaconRoot := h.ParentBeaconRoot != nil
-	// extra_fields (Option<HeaderExt>) is Some iff RequestsHash is set —
-	// which genesisheader.Build does iff Prague is active. For a Prague-
-	// active genesis the inner HeaderExt.requests_hash is also Some
-	// (set to EmptyRequestsHash).
-	hasExtraFields := h.RequestsHash != nil
+	// extra_fields (Option<HeaderExt>) is Some iff any HeaderExt field is
+	// set, as in reth's HeaderExt::into_option. genesisheader.Build sets
+	// RequestsHash from Prague, and BlockAccessListHash + SlotNumber from
+	// Amsterdam.
+	hasExtraFields := h.RequestsHash != nil || h.BlockAccessListHash != nil || h.SlotNumber != nil
 
 	// Build the 4-byte bitfield LSB-first (matches modular_bitfield LSB packing).
 	var bits uint32
@@ -557,13 +558,11 @@ func headerCompactBytes(h *types.Header) ([]byte, error) {
 		out = append(out, h.ParentBeaconRoot.Bytes()...)
 	}
 
-	// 12. extra_fields = Some(HeaderExt{requests_hash: Some(B256)}) when
-	//     Prague is active. Non-specialized Option<T> form: varuint(len) ||
-	//     inner. See doc-comment header for the wire-format rationale.
+	// 12. extra_fields = Some(HeaderExt{...}) when Prague is active.
+	//     Non-specialized Option<T> form: varuint(len) || inner. See
+	//     doc-comment header for the wire-format rationale.
 	if hasExtraFields {
-		var inner []byte
-		inner = append(inner, 0x01) // bitflag: requests_hash = Some
-		inner = append(inner, h.RequestsHash.Bytes()...)
+		inner := headerExtCompactBytes(h)
 		out = appendVarUint(out, uint64(len(inner)))
 		out = append(out, inner...)
 	}
@@ -572,6 +571,48 @@ func headerCompactBytes(h *types.Header) ([]byte, error) {
 	out = append(out, h.Extra...)
 
 	return out, nil
+}
+
+// headerExtCompactBytes encodes reth's HeaderExt (reth-codecs 0.8.1,
+// src/alloy/header.rs) in its Compact-derived form:
+//
+//	bitflag (1 byte): bit 0 = requests_hash, bit 1 = block_access_list_hash,
+//	                  bit 2 = slot_number (1 = Some)
+//	requests_hash          (Option<B256>, specialized): 32 raw bytes if Some
+//	block_access_list_hash (Option<B256>, specialized): 32 raw bytes if Some
+//	slot_number            (Option<u64>, NOT specialized): varuint(len) ||
+//	                       min-bytes BE if Some
+//
+// The derive macro uses the specialized (no length prefix) form only for
+// Option<B256>, Option<Address> and a few other fixed-size types
+// (reth-codecs-derive should_use_alt_impl). Option<u64> keeps the varuint
+// length prefix, so the Amsterdam genesis slot_number = Some(0) encodes as
+// the single byte 0x00.
+func headerExtCompactBytes(h *types.Header) []byte {
+	var flags byte
+	if h.RequestsHash != nil {
+		flags |= 1 << 0
+	}
+	if h.BlockAccessListHash != nil {
+		flags |= 1 << 1
+	}
+	if h.SlotNumber != nil {
+		flags |= 1 << 2
+	}
+	out := make([]byte, 0, 1+32+32+9)
+	out = append(out, flags)
+	if h.RequestsHash != nil {
+		out = append(out, h.RequestsHash.Bytes()...)
+	}
+	if h.BlockAccessListHash != nil {
+		out = append(out, h.BlockAccessListHash.Bytes()...)
+	}
+	if h.SlotNumber != nil {
+		slot := u64CompactBE(*h.SlotNumber)
+		out = appendVarUint(out, uint64(len(slot)))
+		out = append(out, slot...)
+	}
+	return out
 }
 
 // tdCompactBytes encodes total_difficulty = 0 in reth's CompactU256 format.

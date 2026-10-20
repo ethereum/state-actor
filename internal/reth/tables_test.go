@@ -10,35 +10,37 @@ import (
 // If reth adds/renames/removes a table, this manifest update + table
 // registry update + golden hex regen are all required.
 var expectedTableManifest = map[string]bool{
-	"CanonicalHeaders":           false,
-	"HeaderTerminalDifficulties": false,
-	"HeaderNumbers":              false,
-	"Headers":                    false,
-	"BlockBodyIndices":           false,
-	"BlockOmmers":                false,
-	"BlockWithdrawals":           false,
-	"Transactions":               false,
-	"TransactionHashNumbers":     false,
-	"TransactionBlocks":          false,
-	"Receipts":                   false,
-	"Bytecodes":                  false,
-	"PlainAccountState":          false,
-	"PlainStorageState":          true, // DupSort
-	"AccountsHistory":            false,
-	"StoragesHistory":            false,
-	"AccountChangeSets":          true, // DupSort
-	"StorageChangeSets":          true, // DupSort
-	"HashedAccounts":             false,
-	"HashedStorages":             true, // DupSort
-	"AccountsTrie":               false,
-	"StoragesTrie":               true, // DupSort
-	"TransactionSenders":         false,
-	"StageCheckpoints":           false,
-	"StageCheckpointProgresses":  false,
-	"PruneCheckpoints":           false,
-	"VersionHistory":             false,
-	"ChainState":                 false,
-	"Metadata":                   false,
+	"CanonicalHeaders":            false,
+	"HeaderTerminalDifficulties":  false,
+	"HeaderNumbers":               false,
+	"Headers":                     false,
+	"BlockBodyIndices":            false,
+	"BlockOmmers":                 false,
+	"BlockWithdrawals":            false,
+	"BlockAccessLists":            false, // reth v2.7.0
+	"BlockAccessListBlockNumbers": false, // reth v2.7.0
+	"Transactions":                false,
+	"TransactionHashNumbers":      false,
+	"TransactionBlocks":           false,
+	"Receipts":                    false,
+	"Bytecodes":                   false,
+	"PlainAccountState":           false,
+	"PlainStorageState":           true, // DupSort
+	"AccountsHistory":             false,
+	"StoragesHistory":             false,
+	"AccountChangeSets":           true, // DupSort
+	"StorageChangeSets":           true, // DupSort
+	"HashedAccounts":              false,
+	"HashedStorages":              true, // DupSort
+	"AccountsTrie":                false,
+	"StoragesTrie":                true, // DupSort
+	"TransactionSenders":          false,
+	"StageCheckpoints":            false,
+	"StageCheckpointProgresses":   false,
+	"PruneCheckpoints":            false,
+	"VersionHistory":              false,
+	"ChainState":                  false,
+	"Metadata":                    false,
 }
 
 func TestTableManifestMatchesRegistry(t *testing.T) {

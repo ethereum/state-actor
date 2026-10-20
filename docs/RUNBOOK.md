@@ -73,8 +73,9 @@ Reference: `client/reth/oracle_test.go` (`TestE2ESuite`).
 
 > [!WARNING]
 > Pin the reth image to a digest. `--debug.skip-genesis-validation` only
-> landed in paradigmxyz/reth#23919 (2026-05-06); reth's `:nightly` tag
-> overwrites daily and is not safe. `internal/reth/constants.go`
+> landed in paradigmxyz/reth#23919 (2026-05-06), and the Sepolia Amsterdam
+> spec only in reth v2.7.0. A tag can move, so pin the digest too.
+> `internal/reth/constants.go`
 > (`PinnedRethImage` + `PinnedRethRelease`) is the source of truth — the
 > recipe below mirrors the current pin.
 
@@ -105,7 +106,7 @@ docker run --rm \
 docker run -d \
   --name state-actor-reth \
   -v /tmp/sa-reth:/data \
-  ghcr.io/paradigmxyz/reth:nightly@sha256:e528857e5e9ebc2c6cb99f28436e70ded38ca905629f00afc98d186e27d206e0 \
+  ghcr.io/paradigmxyz/reth:v2.7.0@sha256:a7f059d470878a5a59f3c575f3fc81b536d0d2d56d7a1cbed73e717a4f766336 \
   node --dev --dev.block-time=1s \
   --chain=/data/chainspec.json \
   --datadir=/data \
@@ -115,6 +116,8 @@ docker run -d \
 ```
 
 `--debug.skip-genesis-validation` is required because state-actor writes synthetic state directly into MDBX rather than reconstructing it from `chainspec.alloc`. `--dev --dev.block-time=1s` is reth's self-mining equivalent of geth's `--dev.period=1`.
+
+**Amsterdam variant.** Add `--fork=amsterdam` to the generate command (Sepolia spec). Boot with `ghcr.io/paradigmxyz/reth:v2.7.0` or later, as above. Earlier reth releases do not know the Sepolia Amsterdam spec. At boot, reth logs `Genesis hash mismatch with chainspec`. This warning is expected: the chainspec has an empty `alloc`, so its hash is the empty-state genesis hash, and `--debug.skip-genesis-validation` tells reth to use the DB header. Reference: `TestE2ESuiteAmsterdam` in `client/reth/oracle_test.go`.
 
 **Operational hygiene** (apply at every size — these are MDBX requirements, not scale-conditional advice):
 
