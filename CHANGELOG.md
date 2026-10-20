@@ -21,6 +21,12 @@
   format is unchanged, and the golden dump is regenerated at v30.0.0, so
   `account_codes` values are compared byte for byte again.
   `TestE2ESuiteAmsterdam` reports the same genesis root as geth.
+- **`--fork=amsterdam` for `--client=erigon`.** No writer change was
+  needed: `erigon init` builds the Amsterdam header, genesis.json already
+  carries `amsterdamTime`, and the state-root patch keeps both new fields.
+  New tests pin the `erigon init` header against `genesisheader.Build`.
+  `make test-erigon-suite` now uses CI's build tags (it lacked
+  `cgo_erigon_commitment`, so the writer fell back to a failing stub).
 - **Engine driver: Amsterdam blocks** (`engineapi.ForkAmsterdam`):
   `forkchoiceUpdatedV4` with `slotNumber` and `targetGasLimit` (the head's
   gas limit; ethrex requires it per execution-apis#796), `getPayloadV6`,

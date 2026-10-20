@@ -156,15 +156,15 @@ func SortedForks() []string {
 //     builds its header through internal/genesisheader.Build.
 //   - ethrex: amsterdam. ethrex v30.0.0 (Sepolia Amsterdam) encodes the
 //     header fields in the same order; TestE2ESuiteAmsterdam boots it.
-//   - reth, besu, nethermind, erigon, nimbus: osaka. Header
+//   - erigon: amsterdam. `erigon init` builds the Amsterdam header, and
+//     the state-root patch keeps both new fields (go-ethereum v1.17.6
+//     header type); TestE2ESuiteAmsterdam boots it.
+//   - reth, besu, nethermind, nimbus: osaka. Header
 //     construction flows through internal/genesisheader.Build for
 //     besu/reth/nethermind/nimbus. Per-client chainspec writers
 //     emit shanghaiTime/cancunTime/pragueTime/osakaTime/
 //     terminalTotalDifficulty/blobSchedule conditionally based on
 //     g.Config — same activation set the writer encodes.
-//   - erigon: osaka. Verified empirically on the bloatnet bench host
-//     2026-05-26: `erigon init` accepts a genesis.json with OsakaTime
-//     active and emits a valid chaindata.
 //
 // Osaka adds zero new genesis-block fields (Header struct unchanged from
 // Prague's RequestsHash; OsakaTime gates only consensus rules like
@@ -175,9 +175,9 @@ func SortedForks() []string {
 // amsterdamTime and its e2e suite boots an Amsterdam genesis.
 func MaxForkForClient(client string) string {
 	switch client {
-	case "geth", "ethrex":
+	case "geth", "ethrex", "erigon":
 		return "amsterdam"
-	case "reth", "besu", "nethermind", "erigon", "nimbus":
+	case "reth", "besu", "nethermind", "nimbus":
 		return "osaka"
 	default:
 		return DefaultFork
