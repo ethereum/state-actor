@@ -3,6 +3,17 @@
 ## Unreleased
 
 ### Added
+- **`--fork=amsterdam` for `--client=geth`** (Sepolia spec, go-ethereum
+  v1.17.6). The genesis header gets `blockAccessListHash` (EIP-7928, the
+  empty-list hash) and `slotNumber = 0` (EIP-7843); the hash is pinned
+  against `geth init` in `internal/genesisheader`. Amsterdam genesis state
+  also carries the EIP-8282 `BuilderDeposit`/`BuilderExit` request
+  contracts and the EIP-7997 deterministic factory
+  (`syscontracts.AddAmsterdamSystemContracts`), which a spec entity at the
+  factory address overrides. `TestE2ESuiteAmsterdam` boots geth v1.17.6 on
+  it and builds blocks with spamoor. The other clients keep their `osaka`
+  ceiling. An unset `--fork` still resolves to `osaka`
+  (`genesis.DefaultForkForClient`), the latest mainnet fork.
 - **New `--client=nimbus` target** (nimbus-eth1). Writes nimbus's single
   RocksDB (`<db>/ecdb`: `AriVtx` state-trie vertices in the Aristo format
   with static/dynamic vertex IDs and stored Merkle keys, `KvtGen` genesis
@@ -19,6 +30,14 @@
   `e2e_testing.GoldenGiantRoot`.
 
 ### Changed
+- **go-ethereum v1.17.2-pre → v1.17.6.** The geth writer now opens Pebble
+  at `FormatFlushableIngest`, the minimum format pebble v2 opens. geth
+  v1.17.6 opens new DBs with pebble v2, and an older format makes it fall
+  back to pebble v1 with an upgrade warning. `EnableVerkleAtGenesis` is
+  now `EnableUBTAtGenesis`, and geth's `--override.verkle` flag is now
+  `--override.ubt` (docs and integration scripts updated). The upstream
+  EIP-7864 key encoding changed, so binary-trie state roots change. The
+  e2e suite pins `ethereum/client-go:v1.17.6`.
 - **reth: StoragesTrie is written in addrHash order across contracts.** Rows
   were `Put` in contract generation order, so each contract's main key
   (keccak(address)) landed at a random point in the table's top-level

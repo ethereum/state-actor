@@ -22,7 +22,7 @@ const (
 	TrieModeMPT TrieMode = "mpt"
 
 	// TrieModeBinary uses the EIP-7864 binary trie.
-	// Compatible with geth's --override.verkle=0 flag (=0 is the activation block number).
+	// Compatible with geth's --override.ubt=0 flag (=0 is the activation block number).
 	TrieModeBinary TrieMode = "binary"
 )
 

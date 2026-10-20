@@ -15,9 +15,9 @@ additional_services:
   - dora
 
 # Binary trie mode (EIP-7864).
-# Note: --override.verkle=0 is a legacy geth flag name that enables EIP-7864 binary trie.
+# Note: --override.ubt=0 (geth ≥ v1.17.6; older geth names it --override.verkle) enables EIP-7864 binary trie.
 # To use binary trie state, generate with --binary-trie flag and add
-# --override.verkle=0 to el_extra_params for each participant:
+# --override.ubt=0 to el_extra_params for each participant:
 #
 # participants:
 #   - el_type: geth
@@ -26,4 +26,4 @@ additional_services:
 #     cl_image: sigp/lighthouse:latest
 #     count: 2
 #     el_extra_params:
-#       - "--override.verkle=0"
+#       - "--override.ubt=0"

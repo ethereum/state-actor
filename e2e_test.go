@@ -351,12 +351,12 @@ func TestEndToEndWithGenesisBinaryTrie(t *testing.T) {
 		t.Errorf("SnapshotRoot mismatch: got %x, want %s", snapshotRoot, stats.StateRoot.Hex())
 	}
 
-	// Verify chain config has EnableVerkleAtGenesis
+	// Verify chain config has EnableUBTAtGenesis
 	chainConfig := rawdb.ReadChainConfig(db, block.Hash())
 	if chainConfig == nil {
 		t.Error("Chain config not found")
-	} else if !chainConfig.EnableVerkleAtGenesis {
-		t.Error("Chain config should have EnableVerkleAtGenesis=true for binary trie mode")
+	} else if !chainConfig.EnableUBTAtGenesis {
+		t.Error("Chain config should have EnableUBTAtGenesis=true for binary trie mode")
 	}
 
 	// Verify expected counts: 1 genesis EOA + plan EOAs, 1 genesis contract + plan contracts.

@@ -12,8 +12,8 @@ import (
 // DefaultFork is the conservative cross-client fallback fork, used where no
 // client context is available: BuildChainConfigForFork("")/LatestForkName and
 // the engine-API default. It is intentionally NOT the genesis default — the CLI
-// resolves an unset --fork to MaxForkForClient(client), which returns "osaka"
-// for every supported client (see MaxForkForClient). "prague" stays the
+// resolves an unset --fork to DefaultForkForClient(client), which returns
+// "osaka" for every supported client. "prague" stays the
 // context-free fallback because it is the last fork all writers populate
 // structurally complete without per-client conditionals.
 const DefaultFork = "prague"
@@ -61,12 +61,18 @@ var forks = []forkSpec{
 		// go-ethereum v1.17.2+ requires BlobScheduleConfig once Cancun
 		// is active, otherwise core.SetupGenesisBlock fails with
 		// "missing entry for fork \"cancun\" in blobSchedule". Default
-		// schedule covers Cancun + Prague + Osaka with mainnet-current
-		// target/max/updateFraction values.
+		// schedule covers Cancun + Prague with mainnet-current
+		// target/max/updateFraction values. Since go-ethereum v1.17.6,
+		// later named forks (Osaka, Amsterdam) inherit the Prague entry.
 		c.BlobScheduleConfig = params.DefaultBlobSchedule
 	}},
 	{"prague", true, func(c *params.ChainConfig) { c.PragueTime = newUint64Ptr(0) }},
 	{"osaka", true, func(c *params.ChainConfig) { c.OsakaTime = newUint64Ptr(0) }},
+	// Amsterdam follows the Sepolia spec that go-ethereum v1.17.6 ships
+	// (Sepolia activation 2026-10-06). It adds the blockAccessListHash
+	// (EIP-7928) and slotNumber (EIP-7843) header fields; see
+	// internal/genesisheader.Build.
+	{"amsterdam", true, func(c *params.ChainConfig) { c.AmsterdamTime = newUint64Ptr(0) }},
 }
 
 // BuildChainConfigForFork synthesizes a *params.ChainConfig with the named
@@ -74,7 +80,7 @@ var forks = []forkSpec{
 // historical order are also activated at 0, so every IsX(0) predicate
 // returns true up to and including the chosen fork.
 //
-// User-selectable forks: prague, osaka. Pre-Prague forks are rejected
+// User-selectable forks: prague, osaka, amsterdam. Pre-Prague forks are rejected
 // at parse time — state-actor only supports current/future mainnet
 // configs (PoW + pre-Pectra are EOL). Pre-Prague entries in the forks
 // slice stay as cascade-only steps (they apply when a post-Prague fork
@@ -144,35 +150,50 @@ func SortedForks() []string {
 // ceiling should be rejected at parse time so the resulting DB doesn't
 // boot with a "wrong genesis hash" mismatch.
 //
-// Today's ceilings (all clients on Osaka after the writer migration to internal/genesisheader.Build):
-//   - geth, reth, besu, nethermind, ethrex, nimbus: osaka. Header construction flows
-//     through internal/genesisheader.Build for besu/reth/nethermind/ethrex/nimbus
-//     (geth uses go-ethereum's native genesis builder, which handles
-//     every fork through Osaka identically). Per-client chainspec
-//     writers emit shanghaiTime/cancunTime/pragueTime/osakaTime/
+// Today's ceilings:
+//   - geth: amsterdam. go-ethereum v1.17.6 (the Sepolia Amsterdam
+//     release) carries the Amsterdam header fields, and the geth writer
+//     builds its header through internal/genesisheader.Build.
+//   - reth, besu, nethermind, erigon, ethrex, nimbus: osaka. Header
+//     construction flows through internal/genesisheader.Build for
+//     besu/reth/nethermind/ethrex/nimbus. Per-client chainspec writers
+//     emit shanghaiTime/cancunTime/pragueTime/osakaTime/
 //     terminalTotalDifficulty/blobSchedule conditionally based on
 //     g.Config — same activation set the writer encodes.
 //   - erigon: osaka. Verified empirically on the bloatnet bench host
 //     2026-05-26: `erigon init` accepts a genesis.json with OsakaTime
-//     active and emits a valid chaindata. The earlier prague-floor was
-//     a Verifier A conservative guess that empirical testing retired.
-//     Tracked in /Users/random_anon/.claude/plans/so-i-have-a-declarative-owl.md
-//     Part 5+6 Task 67.
+//     active and emits a valid chaindata.
 //
-// Osaka adds zero new genesis-block fields per go-ethereum v1.17.2
-// (Header struct unchanged from Prague's RequestsHash; OsakaTime gates
-// only consensus rules like EIP-7691 BPO + EIP-7825 per-tx gas cap).
-// Verified by internal/genesisheader/osaka_smoke_test.go.
+// Osaka adds zero new genesis-block fields (Header struct unchanged from
+// Prague's RequestsHash; OsakaTime gates only consensus rules like
+// EIP-7691 BPO + EIP-7825 per-tx gas cap). Verified by
+// internal/genesisheader/osaka_smoke_test.go.
 //
-// Bump beyond Osaka (e.g. Amsterdam) once each writer adds the
-// corresponding header fields.
+// Raise a client to amsterdam once its chainspec writer emits
+// amsterdamTime and its e2e suite boots an Amsterdam genesis.
 func MaxForkForClient(client string) string {
 	switch client {
-	case "geth", "reth", "besu", "nethermind", "erigon", "ethrex", "nimbus":
+	case "geth":
+		return "amsterdam"
+	case "reth", "besu", "nethermind", "erigon", "ethrex", "nimbus":
 		return "osaka"
 	default:
 		return DefaultFork
 	}
+}
+
+// DefaultForkForClient returns the fork an unset --fork resolves to: the
+// latest mainnet fork, capped at the client's writer ceiling. It stays
+// below MaxForkForClient while a fork is live only on testnets, so a
+// client that can write Amsterdam does not silently change the default
+// genesis away from mainnet.
+func DefaultForkForClient(client string) string {
+	const mainnetFork = "osaka"
+	ceiling := MaxForkForClient(client)
+	if ForkAtLeast(ceiling, mainnetFork) {
+		return mainnetFork
+	}
+	return ceiling
 }
 
 // ForkAtLeast reports whether `a` is the same as or later than `b` in the

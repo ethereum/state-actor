@@ -152,8 +152,13 @@ func gethLevelOptions() []pebble.LevelOptions {
 //     per-compactor RAM blowup NumCPU caused on the 96-core bench box.
 //   - WAL stays on for the post-import metadata writes (PathDB markers,
 //     genesis block) — those are tiny, no point disabling.
+//   - FormatMajorVersion = FormatFlushableIngest → the minimum format
+//     pebble v2 opens. geth v1.17.6+ opens new DBs with pebble v2; an
+//     older format makes geth fall back to pebble v1 and log an upgrade
+//     warning. Pebble v1 also reads this format, so older geth still works.
 func prodPebbleOptions() *pebble.Options {
 	return &pebble.Options{
+		FormatMajorVersion:          pebble.FormatFlushableIngest,
 		Levels:                      gethLevelOptions(),
 		MemTableSize:                256 * 1024 * 1024,
 		MemTableStopWritesThreshold: 2,

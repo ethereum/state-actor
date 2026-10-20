@@ -55,7 +55,7 @@ var (
 	storageModel    = flag.String("storage-model", "normal", "Auto-fill contract storage: 'normal' (default: every contract ~35 KiB of 32-byte random values) or 'mainnet' (slot counts and value lengths calibrated on a mainnet-derived reth store: most contracts hold 1-3 slots, values are compact, and contracts above 1M slots follow a power law with no cap; the contract count follows from the storage budget). Changes the state root; all clients must use the same value + --seed for cross-client state-root invariance. Not supported with --binary-trie.")
 	accountModel    = flag.String("account-model", "normal", "Auto-fill account shape: 'normal' (default) or 'mainnet' (class, nonce/balance size and storage-less contract code drawn from a mainnet-derived reth store's account census; storage accounts take its nonce/balance shape). Changes the state root; all clients must use the same value + --seed for cross-client state-root invariance. Not supported with --binary-trie.")
 
-	fork      = flag.String("fork", "", "Hard fork active at genesis. Empty (default) resolves to the latest fork the chosen --client can write. Use --list-forks to see all values.")
+	fork      = flag.String("fork", "", "Hard fork active at genesis. Empty (default) resolves to the latest mainnet fork (osaka), capped at what the chosen --client can write. --fork=amsterdam (Sepolia spec) is supported with --client=geth. Use --list-forks to see all values.")
 	listForks = flag.Bool("list-forks", false, "Print the list of accepted --fork values and exit.")
 	chainID   = flag.Int64("chain-id", 1337, "Chain ID embedded in the synthesized genesis chainspec (default 1337, the devnet convention).")
 
@@ -106,7 +106,7 @@ func main() {
 	}
 
 	if *listForks {
-		fmt.Println("Supported --fork values (default = latest):")
+		fmt.Println("Supported --fork values (default = osaka, the latest mainnet fork):")
 		for _, f := range genesis.SortedForks() {
 			fmt.Printf("  %s\n", f)
 		}
@@ -205,9 +205,6 @@ func generate(reproducedFrom string) *generator.Stats {
 		}
 	}
 
-	// ethrex shares the common fork ceiling (osaka per MaxForkForClient).
-	// The chosenFork resolution below handles this uniformly.
-
 	config := generator.Config{
 		DBPath:         *dbPath,
 		Seed:           *seed,
@@ -231,10 +228,11 @@ func generate(reproducedFrom string) *generator.Stats {
 		}
 		extraDataBytes = decoded
 	}
-	// Empty --fork resolves to the per-client ceiling.
+	// Empty --fork resolves to the per-client default (the latest mainnet
+	// fork, capped at the client's writer ceiling).
 	chosenFork := *fork
 	if chosenFork == "" {
-		chosenFork = genesis.MaxForkForClient(*client)
+		chosenFork = genesis.DefaultForkForClient(*client)
 	}
 	genesisConfig, err := genesis.BuildSynthetic(chosenFork, big.NewInt(*chainID), *gasLimit, *timestamp, extraDataBytes)
 	if err != nil {
@@ -316,6 +314,12 @@ func generate(reproducedFrom string) *generator.Stats {
 	// so this single call covers all 4 dispatch branches below. See
 	// internal/syscontracts/syscontracts.go for the contract list and rationale.
 	syscontracts.AddCanonicalSystemContracts(&config)
+	// Amsterdam adds the EIP-8282 builder request contracts and the
+	// EIP-7997 deterministic factory. Only Amsterdam+ genesis gets them,
+	// so pre-Amsterdam state roots stay unchanged.
+	if genesis.ForkAtLeast(chosenFork, "amsterdam") {
+		syscontracts.AddAmsterdamSystemContracts(&config)
+	}
 
 	if *verbose {
 		log.Printf("Configuration:")

@@ -26,7 +26,10 @@ import (
 // defaultGethImage is the upstream geth Docker tag the e2e suite pins
 // against. Override with GETH_IMAGE=ethereum/client-go:vX.Y.Z to test a
 // pre-release version or a fork.
-const defaultGethImage = "ethereum/client-go:v1.17.2"
+//
+// v1.17.6 is the Sepolia Amsterdam release, the first that boots an
+// Amsterdam genesis (see TestE2ESuiteAmsterdam).
+const defaultGethImage = "ethereum/client-go:v1.17.6"
 
 func gethImageRef() string {
 	if v := os.Getenv("GETH_IMAGE"); v != "" {
@@ -52,7 +55,7 @@ func freeTCPPort(t *testing.T) int {
 
 // TestE2ESuite — see client/besu/e2e_test.go for the full phase
 // description. geth-specific bits:
-//   - --fork=osaka (geth's MaxForkForClient ceiling, after the writer migration to internal/genesisheader.Build).
+//   - --fork=osaka (the latest mainnet fork; geth's default).
 //   - 60M gas matches mainnet-current.
 //   - geth runs in --dev mode (PoA + self-emulated CL); --dev.period=1
 //     for 1s blocks; --dev.gaslimit=60000000 to match the genesis
@@ -61,6 +64,24 @@ func freeTCPPort(t *testing.T) int {
 //   - No DinD; geth runs with -p host-port mapping (geth image is
 //     amd64+arm64 so no platform override needed for ubuntu CI).
 func TestE2ESuite(t *testing.T) {
+	runE2ESuite(t, "osaka")
+}
+
+// TestE2ESuiteAmsterdam runs the same suite on an Amsterdam genesis
+// (geth's MaxForkForClient ceiling, Sepolia spec). On top of the Osaka
+// suite it proves that geth accepts the Amsterdam header fields
+// (blockAccessListHash, slotNumber) and the Amsterdam system contracts,
+// then builds and imports Amsterdam blocks on top.
+func TestE2ESuiteAmsterdam(t *testing.T) {
+	// The cross-client aggregator compares geth-result.json with the
+	// Osaka roots of the other clients. The Amsterdam system contracts
+	// change the root, so this run must not write that file (CI's
+	// `-run TestE2ESuite` filter matches both tests).
+	t.Setenv("RESULT_PATH", "")
+	runE2ESuite(t, "amsterdam")
+}
+
+func runE2ESuite(t *testing.T, fork string) {
 	if testing.Short() {
 		t.Skip("e2e suite skipped in short mode")
 	}
@@ -72,9 +93,8 @@ func TestE2ESuite(t *testing.T) {
 		e2eBudget uint64 = 100 << 20
 	)
 
-	// Pin --fork=osaka (geth's MaxForkForClient ceiling). 60M gas matches
-	// mainnet-current.
-	g, err := stategenesis.BuildSynthetic("osaka", big.NewInt(1337), 60_000_000,
+	// 60M gas matches mainnet-current.
+	g, err := stategenesis.BuildSynthetic(fork, big.NewInt(1337), 60_000_000,
 		1_700_000_000, []byte{0xde, 0xad, 0xbe, 0xef})
 	if err != nil {
 		t.Fatalf("BuildSynthetic: %v", err)
@@ -111,6 +131,9 @@ func TestE2ESuite(t *testing.T) {
 	// (besu refuses to boot without them; geth/neth/reth tolerate but
 	// would compute a different state root than besu without them).
 	syscontracts.AddCanonicalSystemContracts(&cfg)
+	if stategenesis.ForkAtLeast(fork, "amsterdam") {
+		syscontracts.AddAmsterdamSystemContracts(&cfg)
+	}
 
 	if _, err := Populate(context.Background(), cfg, Options{}); err != nil {
 		t.Fatalf("Populate: %v", err)

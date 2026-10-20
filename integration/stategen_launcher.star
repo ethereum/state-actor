@@ -31,7 +31,7 @@ def generate_bloated_state(
         min_slots: Minimum storage slots per contract
         distribution: Storage distribution (power-law, uniform, exponential)
         seed: Random seed for reproducibility (0 = random)
-        binary_trie: Enable binary trie mode (EIP-7864, requires geth --override.verkle=0)
+        binary_trie: Enable binary trie mode (EIP-7864, requires geth --override.ubt=0)
         tolerations: Kubernetes tolerations
         node_selectors: Kubernetes node selectors
     
@@ -143,5 +143,5 @@ def get_binary_trie_params():
     Returns the geth extra params needed for binary trie mode.
     Add these to el_extra_params when using binary trie state.
     """
-    # Legacy geth flag name; --override.verkle=0 enables EIP-7864 binary trie mode
-    return ["--override.verkle=0"]
+    # geth ≥ v1.17.6 flag (older geth: --override.verkle); enables EIP-7864 binary trie mode
+    return ["--override.ubt=0"]

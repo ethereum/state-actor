@@ -84,7 +84,7 @@ func ValidateForClient(client string, fv FlagValues) error {
 	}
 
 	// Per-client fork ceiling. Empty means "auto"; the caller resolves
-	// to MaxForkForClient(client) so this branch never fires for the
+	// to DefaultForkForClient(client) so this branch never fires for the
 	// auto path.
 	if fv.Fork != "" {
 		ceiling := genesis.MaxForkForClient(client)

@@ -58,6 +58,58 @@ func TestBuildChainConfigForFork_OsakaActivatesOsaka(t *testing.T) {
 	}
 }
 
+func TestBuildChainConfigForFork_AmsterdamActivatesAmsterdam(t *testing.T) {
+	cfg, err := BuildChainConfigForFork("amsterdam", big.NewInt(1))
+	if err != nil {
+		t.Fatalf("BuildChainConfigForFork(amsterdam): %v", err)
+	}
+	zero := big.NewInt(0)
+	if !cfg.IsOsaka(zero, 0) {
+		t.Error("Osaka should still be active under amsterdam (earlier fork)")
+	}
+	if !cfg.IsAmsterdam(zero, 0) {
+		t.Error("Amsterdam should be active")
+	}
+
+	osaka, err := BuildChainConfigForFork("osaka", big.NewInt(1))
+	if err != nil {
+		t.Fatalf("BuildChainConfigForFork(osaka): %v", err)
+	}
+	if osaka.IsAmsterdam(zero, 0) {
+		t.Error("Amsterdam should NOT be active when --fork=osaka")
+	}
+}
+
+func TestDefaultForkForClient_StaysOnMainnetFork(t *testing.T) {
+	cases := []struct {
+		client string
+		want   string
+	}{
+		// geth can write amsterdam, but the default stays on osaka (the
+		// latest mainnet fork) until Amsterdam reaches mainnet.
+		{"geth", "osaka"},
+		{"reth", "osaka"},
+		{"besu", "osaka"},
+		{"nethermind", "osaka"},
+		{"erigon", "osaka"},
+		{"ethrex", "osaka"},
+		{"nimbus", "osaka"},
+		// Unknown client: MaxForkForClient falls back to DefaultFork.
+		{"unknown", DefaultFork},
+	}
+	for _, tc := range cases {
+		if got := DefaultForkForClient(tc.client); got != tc.want {
+			t.Errorf("DefaultForkForClient(%q) = %q, want %q", tc.client, got, tc.want)
+		}
+		if !ForkAtLeast(MaxForkForClient(tc.client), DefaultForkForClient(tc.client)) {
+			t.Errorf("DefaultForkForClient(%q) is past MaxForkForClient", tc.client)
+		}
+	}
+	if got := MaxForkForClient("geth"); got != "amsterdam" {
+		t.Errorf("MaxForkForClient(geth) = %q, want amsterdam", got)
+	}
+}
+
 func TestBuildChainConfigForFork_AliasesResolveToDefault(t *testing.T) {
 	for _, alias := range []string{"", "latest", "default", "LATEST", "  prague  "} {
 		cfg, err := BuildChainConfigForFork(alias, big.NewInt(1))
@@ -82,7 +134,7 @@ func TestBuildChainConfigForFork_UnknownReturnsError(t *testing.T) {
 func TestListForks_OnlyUserSelectable(t *testing.T) {
 	got := ListForks()
 	want := map[string]bool{
-		"prague": true, "osaka": true,
+		"prague": true, "osaka": true, "amsterdam": true,
 	}
 	rejected := map[string]bool{
 		"homestead": true, "london": true, "merge": true,

@@ -149,7 +149,7 @@ docker run --rm -v /tmp/sa-geth:/data ghcr.io/ethereum/state-actor-geth:main \
   --extra-data=0xdeadbeef
 ```
 
-Run `--list-forks` for accepted `--fork` values. The default fork is the latest one each `--client` supports (currently `osaka` across all seven).
+Run `--list-forks` for accepted `--fork` values. The default fork is `osaka`, the latest mainnet fork, for all seven clients. `--fork=amsterdam` (the Sepolia Amsterdam spec, go-ethereum v1.17.6) is available with `--client=geth` only. It adds the `blockAccessListHash` and `slotNumber` header fields and the EIP-8282 and EIP-7997 system contracts.
 
 ## Boot a client against the generated DB
 
@@ -193,7 +193,7 @@ Full schema: [`docs/SPEC.md`](docs/SPEC.md). Curated examples: [`examples/README
 | `--spec` | string | (none) | Path to a YAML state-spec file; see `docs/SPEC.md`. Required if `--target-size` is unset. |
 | `--target-size` | string | (none) | Upper bound on the whole DB (`5GB`, `500MB`, …). Required if `--spec` is unset. With `--spec`, auto-fill fills the headroom after the spec; without `--spec`, drives the whole DB. Auto-fill emits a fixed 20 % / 10 % / 70 % split across account-trie / bytecode / storage. |
 | `--seed` | int | 1 | Random seed; `--seed=0` randomises (footgun) |
-| `--fork` | string | (latest) | Hard fork active at genesis; `--list-forks` lists choices |
+| `--fork` | string | `osaka` | Hard fork active at genesis; `--list-forks` lists choices |
 | `--chain-id` | int | 1337 | Chain ID embedded in the synthesized chainspec |
 | `--gas-limit` | uint | 30000000 | Genesis block gas limit |
 | `--timestamp` | uint | 0 | Genesis block timestamp (unix seconds) |

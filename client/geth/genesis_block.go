@@ -79,8 +79,8 @@ func WritePathDBMetadata(w ethdb.KeyValueWriter, stateRoot common.Hash, binaryTr
 
 // WriteGenesisBlock writes the genesis block and associated metadata to the database.
 // This is called after state generation with the computed state root.
-// When binaryTrie is true, EnableVerkleAtGenesis is set in the chain config
-// (legacy field name — it actually enables binary trie mode per EIP-7864).
+// When binaryTrie is true, EnableUBTAtGenesis is set in the chain config
+// (it enables binary trie mode per EIP-7864).
 // The ancientDir is the path for the freezer/ancient database (e.g. "<chaindata>/ancient").
 //
 // This is geth-specific and lives in client/geth/. The genesis package retains
@@ -97,12 +97,12 @@ func WriteGenesisBlock(db ethdb.KeyValueStore, gen *genesis.Genesis, stateRoot c
 	}
 
 	// Determine the chain config to persist. When binaryTrie is true, we
-	// enable EIP-7864 binary trie mode (legacy field name: EnableVerkleAtGenesis).
+	// enable EIP-7864 binary trie mode (field name: EnableUBTAtGenesis).
 	// We work on a copy so the caller's *Genesis is never mutated.
 	chainCfg := gen.Config
 	if binaryTrie {
 		cfgCopy := *gen.Config
-		cfgCopy.EnableVerkleAtGenesis = true
+		cfgCopy.EnableUBTAtGenesis = true
 		chainCfg = &cfgCopy
 	}
 
