@@ -100,7 +100,7 @@ func TestValidateForClient_ForkCeiling(t *testing.T) {
 	// Pre-Prague forks are EOL and rejected globally by
 	// genesis.BuildChainConfigForFork, so clientpolicy never sees them
 	// in practice. The per-client ceiling check matters for forks past
-	// osaka: nimbus does not write amsterdam yet.
+	// osaka: every client writes amsterdam.
 	cases := []struct {
 		client   string
 		fork     string
@@ -129,7 +129,7 @@ func TestValidateForClient_ForkCeiling(t *testing.T) {
 		{"ethrex", "amsterdam", true},
 		{"nimbus", "prague", true},
 		{"nimbus", "osaka", true},
-		{"nimbus", "amsterdam", false},
+		{"nimbus", "amsterdam", true},
 	}
 	for _, tc := range cases {
 		err := ValidateForClient(tc.client, FlagValues{Fork: tc.fork})

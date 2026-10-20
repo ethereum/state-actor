@@ -409,7 +409,8 @@ Today's client adapters:
   Aristo vertex codec, vertex-ID scheme and Kvt keys in `internal/nimbus/`
   (verified byte-for-byte against a dump from nimbus's own genesis path,
   and structurally by `internal/nimbus.VerifyState`). Pinned to the
-  `master-2f0ae87` image because that commit changed the on-disk format.
+  `v0.4.3` release (Sepolia Amsterdam), which reads the on-disk format
+  that commit `2f0ae87` introduced.
   Behind the `cgo_nimbus` build tag.
 
 The Nethermind adapter takes a different route from the others: instead of

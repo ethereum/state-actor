@@ -170,26 +170,26 @@ func SortedForks() []string {
 //     full HeaderExt (requestsHash, blockAccessListHash, slotNumber; the
 //     bytes are pinned against reth-codecs 0.8.1), and the chainspec
 //     carries slotNumber; reth v2.7.0 boots it.
-//   - nimbus: osaka. Header
-//     construction flows through internal/genesisheader.Build for
-//     nimbus. Per-client chainspec writers
-//     emit shanghaiTime/cancunTime/pragueTime/osakaTime/
-//     terminalTotalDifficulty/blobSchedule conditionally based on
-//     g.Config — same activation set the writer encodes.
+//   - nimbus: amsterdam. The sidecar gets amsterdamTime and an explicit
+//     blobSchedule.amsterdam entry; nimbus v0.4.3 rebuilds the same
+//     Amsterdam header from it.
+//
+// Every per-client chainspec writer emits the fork times
+// (shanghaiTime … amsterdamTime) conditionally on g.Config, the same
+// activation set the writer encodes. Each client's TestE2ESuiteAmsterdam
+// boots an Amsterdam genesis and reports the same state root as geth.
 //
 // Osaka adds zero new genesis-block fields (Header struct unchanged from
 // Prague's RequestsHash; OsakaTime gates only consensus rules like
 // EIP-7691 BPO + EIP-7825 per-tx gas cap). Verified by
 // internal/genesisheader/osaka_smoke_test.go.
 //
-// Raise a client to amsterdam once its chainspec writer emits
-// amsterdamTime and its e2e suite boots an Amsterdam genesis.
+// A fork past amsterdam needs a per-client entry here again, once that
+// client's writer and e2e suite support it.
 func MaxForkForClient(client string) string {
 	switch client {
-	case "geth", "ethrex", "erigon", "nethermind", "besu", "reth":
+	case "geth", "reth", "besu", "nethermind", "erigon", "ethrex", "nimbus":
 		return "amsterdam"
-	case "nimbus":
-		return "osaka"
 	default:
 		return DefaultFork
 	}

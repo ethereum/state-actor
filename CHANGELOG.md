@@ -51,6 +51,14 @@
   change), because v2.7.0 refuses to open a DB without them. All reth
   tests move from the nightly pin to `ghcr.io/paradigmxyz/reth:v2.7.0`
   (Sepolia Amsterdam); the Osaka root is unchanged.
+- **`--fork=amsterdam` for `--client=nimbus`.** The sidecar gets
+  `amsterdamTime` and an explicit `blobSchedule.amsterdam` entry (the
+  Prague 6/9 values geth inherits); nimbus's header already matches. The
+  e2e suites move from `master-2f0ae87` to the release
+  `statusim/nimbus-eth1:v0.4.3` (Sepolia Amsterdam; on-disk format
+  unchanged, the golden dump still passes byte-exact) and boot with
+  `--user 0:0`, because the release images run as an unprivileged user
+  that cannot read the root-owned JWT file.
 - **Engine driver: Amsterdam blocks** (`engineapi.ForkAmsterdam`):
   `forkchoiceUpdatedV4` with `slotNumber` and `targetGasLimit` (the head's
   gas limit; ethrex requires it per execution-apis#796), `getPayloadV6`,
