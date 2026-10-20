@@ -100,7 +100,7 @@ func TestValidateForClient_ForkCeiling(t *testing.T) {
 	// Pre-Prague forks are EOL and rejected globally by
 	// genesis.BuildChainConfigForFork, so clientpolicy never sees them
 	// in practice. The per-client ceiling check matters for forks past
-	// osaka: geth, ethrex and erigon write amsterdam.
+	// osaka: reth, besu and nimbus do not write amsterdam yet.
 	cases := []struct {
 		client   string
 		fork     string
@@ -117,7 +117,7 @@ func TestValidateForClient_ForkCeiling(t *testing.T) {
 		{"besu", "amsterdam", false},
 		{"nethermind", "prague", true},
 		{"nethermind", "osaka", true},
-		{"nethermind", "amsterdam", false},
+		{"nethermind", "amsterdam", true},
 		// Erigon's writer ceiling is osaka — verified empirically on the
 		// bloatnet bench host that `erigon init` accepts a genesis.json
 		// with OsakaTime active. Matches the other clients.

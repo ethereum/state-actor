@@ -27,6 +27,13 @@
   New tests pin the `erigon init` header against `genesisheader.Build`.
   `make test-erigon-suite` now uses CI's build tags (it lacked
   `cgo_erigon_commitment`, so the writer fell back to a failing stub).
+- **`--fork=amsterdam` for `--client=nethermind`.** The chainspec gets the
+  13 Amsterdam `eipNNNNTransitionTimestamp` keys of Nethermind 2.1.0's
+  `sepolia.json` (removed again for pre-Amsterdam forks, so Osaka/Prague
+  chainspecs stay byte-identical). Nethermind derives the genesis header
+  from the eip7928/eip7843 keys and refuses a DB whose stored header
+  disagrees. The header RLP needs no change. `TestE2ESuiteAmsterdam` runs
+  on `nethermind/nethermind:2.1.0`; the Osaka suite stays on 1.39.0.
 - **Engine driver: Amsterdam blocks** (`engineapi.ForkAmsterdam`):
   `forkchoiceUpdatedV4` with `slotNumber` and `targetGasLimit` (the head's
   gas limit; ethrex requires it per execution-apis#796), `getPayloadV6`,

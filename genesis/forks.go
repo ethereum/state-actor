@@ -159,9 +159,12 @@ func SortedForks() []string {
 //   - erigon: amsterdam. `erigon init` builds the Amsterdam header, and
 //     the state-root patch keeps both new fields (go-ethereum v1.17.6
 //     header type); TestE2ESuiteAmsterdam boots it.
-//   - reth, besu, nethermind, nimbus: osaka. Header
+//   - nethermind: amsterdam. The chainspec carries the 13 Amsterdam
+//     eipNNNN transition keys of Nethermind 2.1.0's sepolia.json;
+//     nethermind derives the genesis header from them.
+//   - reth, besu, nimbus: osaka. Header
 //     construction flows through internal/genesisheader.Build for
-//     besu/reth/nethermind/nimbus. Per-client chainspec writers
+//     besu/reth/nimbus. Per-client chainspec writers
 //     emit shanghaiTime/cancunTime/pragueTime/osakaTime/
 //     terminalTotalDifficulty/blobSchedule conditionally based on
 //     g.Config — same activation set the writer encodes.
@@ -175,9 +178,9 @@ func SortedForks() []string {
 // amsterdamTime and its e2e suite boots an Amsterdam genesis.
 func MaxForkForClient(client string) string {
 	switch client {
-	case "geth", "ethrex", "erigon":
+	case "geth", "ethrex", "erigon", "nethermind":
 		return "amsterdam"
-	case "reth", "besu", "nethermind", "nimbus":
+	case "reth", "besu", "nimbus":
 		return "osaka"
 	default:
 		return DefaultFork
