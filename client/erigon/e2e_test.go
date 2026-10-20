@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"math/big"
 	"os"
@@ -15,12 +16,17 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/common/hexutil"
+	"github.com/ethereum/go-ethereum/core/types"
+
 	"github.com/ethereum/state-actor/client/erigon"
 	"github.com/ethereum/state-actor/generator"
 	stategenesis "github.com/ethereum/state-actor/genesis"
 	"github.com/ethereum/state-actor/internal/autofill"
 	e2e "github.com/ethereum/state-actor/internal/e2e_testing"
 	"github.com/ethereum/state-actor/internal/engineapi"
+	"github.com/ethereum/state-actor/internal/genesisheader"
 	"github.com/ethereum/state-actor/internal/oracle"
 	"github.com/ethereum/state-actor/internal/rpcprobe"
 	"github.com/ethereum/state-actor/internal/syscontracts"
@@ -72,6 +78,24 @@ func writeErigonJWTSecret(datadir string) (string, error) {
 // markers + the fat-genesis MaxTxNum so block production advances past
 // block 2.
 func TestE2ESuite(t *testing.T) {
+	runE2ESuite(t, "osaka")
+}
+
+// TestE2ESuiteAmsterdam runs the same suite on an Amsterdam genesis
+// (Sepolia spec). On top of the Osaka suite it proves that `erigon init`
+// writes the Amsterdam header fields (blockAccessListHash, slotNumber),
+// that the stateRoot patch keeps them, and that erigon builds and imports
+// Amsterdam blocks on top of the Amsterdam system contracts.
+func TestE2ESuiteAmsterdam(t *testing.T) {
+	// The cross-client aggregator compares erigon-result.json with the
+	// Osaka roots of the other clients. The Amsterdam system contracts
+	// change the root, so this run must not write that file (CI's
+	// `-run TestE2ESuite` filter matches both tests).
+	t.Setenv("RESULT_PATH", "")
+	runE2ESuite(t, "amsterdam")
+}
+
+func runE2ESuite(t *testing.T, fork string) {
 	if testing.Short() {
 		t.Skip("e2e suite skipped in short mode")
 	}
@@ -81,7 +105,7 @@ func TestE2ESuite(t *testing.T) {
 		e2eBudget uint64 = 100 << 20 // ~100 MB synthetic trie state
 	)
 
-	g, err := stategenesis.BuildSynthetic("osaka", big.NewInt(1337), 60_000_000,
+	g, err := stategenesis.BuildSynthetic(fork, big.NewInt(1337), 60_000_000,
 		1_700_000_000, []byte{0xde, 0xad, 0xbe, 0xef})
 	if err != nil {
 		t.Fatalf("BuildSynthetic: %v", err)
@@ -107,6 +131,11 @@ func TestE2ESuite(t *testing.T) {
 	specDoc, preAlloc := e2e.LoadCISpec(t, "../../examples/full-matrix-spec-feature.yaml", "erigon")
 	cfg.PreAlloc = preAlloc
 	syscontracts.AddCanonicalSystemContracts(&cfg)
+	engineFork := engineapi.ForkOsaka
+	if stategenesis.ForkAtLeast(fork, "amsterdam") {
+		syscontracts.AddAmsterdamSystemContracts(&cfg)
+		engineFork = engineapi.ForkAmsterdam
+	}
 
 	if _, err := erigon.Run(context.Background(), cfg, erigon.Options{}); err != nil {
 		t.Fatalf("erigon.Run: %v", err)
@@ -174,8 +203,12 @@ func TestE2ESuite(t *testing.T) {
 		t.Fatalf("RPC never came up (logs captured in t.Cleanup): %v", err)
 	}
 
+	// erigon init builds the genesis header and the writer patches only
+	// its stateRoot, so check the header before the chain advances.
+	assertGenesisHeaderHash(t, rpcURL, g)
+
 	// Drive block production via the engine API with JWT-signed calls.
-	e2e.StartEngineDriverWithJWT(t, containerIP, rpcURL, engineapi.ForkOsaka, jwtPath)
+	e2e.StartEngineDriverWithJWT(t, containerIP, rpcURL, engineFork, jwtPath)
 
 	e2e.RunSuitePhases(t, e2e.SuitePhasesCfg{
 		ClientName:      "erigon",
@@ -186,4 +219,39 @@ func TestE2ESuite(t *testing.T) {
 		Spec:            specDoc,
 		SpecSeed:        e2e.CISpecSeed,
 	})
+}
+
+// assertGenesisHeaderHash checks that erigon's genesis block hash equals
+// the hash of genesisheader.Build for the same genesis and stateRoot.
+// genesisheader.Build is pinned to `geth init` output, so a match proves
+// that erigon serves the same genesis block as the other clients. For
+// Amsterdam it also checks the two header fields that the fork adds.
+func assertGenesisHeaderHash(t *testing.T, rpcURL string, g *stategenesis.Genesis) {
+	t.Helper()
+	raw, err := rpcprobe.Call(rpcURL, "eth_getBlockByNumber", []any{"0x0", false})
+	if err != nil {
+		t.Fatalf("eth_getBlockByNumber(0x0): %v", err)
+	}
+	var block struct {
+		Hash                common.Hash     `json:"hash"`
+		StateRoot           common.Hash     `json:"stateRoot"`
+		BlockAccessListHash *common.Hash    `json:"blockAccessListHash"`
+		SlotNumber          *hexutil.Uint64 `json:"slotNumber"`
+	}
+	if err := json.Unmarshal(raw, &block); err != nil {
+		t.Fatalf("decode genesis block: %v (raw: %s)", err, raw)
+	}
+	want := genesisheader.Build(g, 0, common.Hash{}, block.StateRoot).Hash()
+	if block.Hash != want {
+		t.Errorf("genesis hash = %s; want %s (genesisheader.Build)", block.Hash.Hex(), want.Hex())
+	}
+	if g.Config.AmsterdamTime == nil {
+		return
+	}
+	if block.BlockAccessListHash == nil || *block.BlockAccessListHash != types.EmptyBlockAccessListHash {
+		t.Errorf("genesis blockAccessListHash = %v; want %s", block.BlockAccessListHash, types.EmptyBlockAccessListHash.Hex())
+	}
+	if block.SlotNumber == nil || *block.SlotNumber != 0 {
+		t.Errorf("genesis slotNumber = %v; want 0x0", block.SlotNumber)
+	}
 }

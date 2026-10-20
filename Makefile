@@ -410,7 +410,7 @@ test-erigon-suite: image-erigon
 	  -e SPAMOOR=/usr/local/bin/spamoor \
 	  -e REQUIRE_SPAMOOR=1 \
 	  state-actor-erigon-builder:latest \
-	  go test -tags 'cgo_erigon oracle' ./client/erigon/ -v -timeout 3600s
+	  go test -tags 'cgo_erigon cgo_erigon_commitment gofuzz oracle' ./client/erigon/ -v -timeout 3600s
 	docker volume rm -f $(ERIGON_SUITE_VOL) >/dev/null 2>&1 || true
 
 ## image-nimbus: Build the cgo_nimbus Docker builder image for direct-write nimbus

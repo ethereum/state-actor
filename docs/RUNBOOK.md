@@ -357,6 +357,8 @@ docker run --rm \
 cast chain-id --rpc-url http://<container-ip>:8545   # → 0x539
 ```
 
+**Amsterdam variant.** Add `--fork=amsterdam` to the generate command (Sepolia spec). Boot the erigon binary that `Dockerfile.erigon` builds (the pinned commit `546790a6a7`, which ships the Sepolia `amsterdamTime`), with the flags above. The engine driver must use `engine_forkchoiceUpdatedV4` with `slotNumber` and `targetGasLimit` (erigon rejects V4 attributes without either, with -38003), `engine_getPayloadV6` and `engine_newPayloadV5`. `erigon init` writes the Amsterdam header fields (`blockAccessListHash` = the empty-list hash, `slotNumber` = 0); the stateRoot patch keeps them. Reference: `TestE2ESuiteAmsterdam`.
+
 ## Nimbus
 
 Reference: `client/nimbus/e2e_test.go` (`TestE2ESuite`).

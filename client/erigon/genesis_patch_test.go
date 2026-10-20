@@ -16,7 +16,9 @@ import (
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/rlp"
 
+	stategenesis "github.com/ethereum/state-actor/genesis"
 	internalerigon "github.com/ethereum/state-actor/internal/erigon"
+	"github.com/ethereum/state-actor/internal/genesisheader"
 )
 
 // TestPatchGenesisHeaderStateRoot_ReKeysAllTables is the regression
@@ -168,6 +170,83 @@ func TestPatchGenesisHeaderStateRoot_ReKeysAllTables(t *testing.T) {
 		expectedSequence := make([]byte, 8)
 		binary.BigEndian.PutUint64(expectedSequence, internalerigon.StepSize)
 		assertEqual(t, txn, bucketSequence, []byte(keyEthTxSequence), expectedSequence)
+	})
+}
+
+// TestPatchGenesisHeaderStateRoot_KeepsAmsterdamFields makes sure that
+// the stateRoot patch keeps the header fields that Amsterdam adds. The
+// patch decodes and encodes block 0 through go-ethereum's types.Header,
+// so a header type without blockAccessListHash or slotNumber would drop
+// them (or fail the decode). The fixture is the Amsterdam header from
+// internal/genesisheader.Build, which has the field order of the erigon
+// header (requestsHash, blockAccessListHash, slotNumber).
+func TestPatchGenesisHeaderStateRoot_KeepsAmsterdamFields(t *testing.T) {
+	dbPath := t.TempDir()
+
+	g, err := stategenesis.BuildSynthetic("amsterdam", big.NewInt(1337), 60_000_000,
+		1_700_000_000, []byte{0xde, 0xad, 0xbe, 0xef})
+	if err != nil {
+		t.Fatalf("BuildSynthetic(amsterdam): %v", err)
+	}
+	h := genesisheader.Build(g, 0, common.Hash{}, types.EmptyRootHash)
+	oldHash := h.Hash()
+	// Pinned to `geth init` (v1.17.6) for this genesis with an empty state.
+	if want := common.HexToHash("0xf2ca3be956811381db0b48028135ddde3053f592125d041acd67d19f832b9645"); oldHash != want {
+		t.Fatalf("fixture genesis hash = %s; want %s", oldHash.Hex(), want.Hex())
+	}
+
+	blockNumKey := make([]byte, 8)
+	binary.BigEndian.PutUint64(blockNumKey, 0)
+	oldHeadersKey := append(append(make([]byte, 0, 8+32), blockNumKey...), oldHash[:]...)
+	initMaxTxNum := make([]byte, 8)
+	binary.BigEndian.PutUint64(initMaxTxNum, 1)
+	initSequence := make([]byte, 8)
+	binary.BigEndian.PutUint64(initSequence, 2)
+	mustSetup(t, dbPath, func(txn *mdbx.Txn) error {
+		return setupFixtures(txn, []bucketRow{
+			{bucketHeaderCanonical, blockNumKey, oldHash[:]},
+			{bucketHeaders, oldHeadersKey, mustRLP(t, h)},
+			{bucketHeaderNumber, oldHash[:], blockNumKey},
+			{bucketHeaderTD, oldHeadersKey, mustRLP(t, new(big.Int))},
+			{bucketBlockBody, oldHeadersKey, common.FromHex("c48002c0c0")},
+			{bucketLastBlock, []byte(bucketLastBlock), oldHash[:]},
+			{bucketLastHeader, []byte(bucketLastHeader), oldHash[:]},
+			{bucketConfig, oldHash[:], []byte(`{}`)},
+			{bucketMaxTxNum, blockNumKey, initMaxTxNum},
+			{bucketSequence, []byte(keyEthTxSequence), initSequence},
+		})
+	})
+
+	newRoot := common.HexToHash("0xAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")
+	if err := patchGenesisHeaderStateRoot(dbPath, newRoot); err != nil {
+		t.Fatalf("patchGenesisHeaderStateRoot: %v", err)
+	}
+	want := genesisheader.Build(g, 0, common.Hash{}, newRoot)
+	newHash := want.Hash()
+	newHeadersKey := append(append(make([]byte, 0, 8+32), blockNumKey...), newHash[:]...)
+
+	mustVerify(t, dbPath, func(txn *mdbx.Txn) {
+		assertEqual(t, txn, bucketHeaderCanonical, blockNumKey, newHash[:])
+		assertEqual(t, txn, bucketHeaders, newHeadersKey, mustRLP(t, want))
+
+		dbi, err := txn.OpenDBI(bucketHeaders, 0, nil, nil)
+		if err != nil {
+			t.Fatalf("OpenDBI(%s): %v", bucketHeaders, err)
+		}
+		raw, err := txn.Get(dbi, newHeadersKey)
+		if err != nil {
+			t.Fatalf("Get(%s, BE(0)||newHash): %v", bucketHeaders, err)
+		}
+		var got types.Header
+		if err := rlp.DecodeBytes(raw, &got); err != nil {
+			t.Fatalf("RLP decode patched header: %v", err)
+		}
+		if got.BlockAccessListHash == nil || *got.BlockAccessListHash != types.EmptyBlockAccessListHash {
+			t.Errorf("patched blockAccessListHash = %v; want %s", got.BlockAccessListHash, types.EmptyBlockAccessListHash.Hex())
+		}
+		if got.SlotNumber == nil || *got.SlotNumber != 0 {
+			t.Errorf("patched slotNumber = %v; want 0", got.SlotNumber)
+		}
 	})
 }
 
