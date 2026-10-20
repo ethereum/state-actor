@@ -40,6 +40,13 @@ type mockEngineEL struct {
 
 	// payloadIDCounter feeds unique payloadIds to each fc call.
 	payloadIDCounter atomic.Int64
+
+	// headSlotNumber, when set, is the slotNumber that
+	// eth_getBlockByNumber("latest") reports (Amsterdam heads).
+	headSlotNumber string
+
+	// attrs records the payloadAttributes of every fc-with-attrs call.
+	attrs []map[string]any
 }
 
 func newMockEL(t *testing.T) *mockEngineEL {
@@ -73,20 +80,29 @@ func (m *mockEngineEL) handle(w http.ResponseWriter, r *http.Request) {
 
 	switch req.Method {
 	case "eth_getBlockByNumber":
+		head := map[string]any{
+			"hash":      m.initialHash,
+			"timestamp": "0x0",
+		}
+		if m.headSlotNumber != "" {
+			head["slotNumber"] = m.headSlotNumber
+		}
 		enc.Encode(map[string]any{
 			"jsonrpc": "2.0",
 			"id":      req.ID,
-			"result": map[string]any{
-				"hash":      m.initialHash,
-				"timestamp": "0x0",
-			},
+			"result":  head,
 		})
-	case "engine_forkchoiceUpdatedV3":
+	case "engine_forkchoiceUpdatedV3", "engine_forkchoiceUpdatedV4":
 		// Two flavours: with payloadAttributes (params[1] present) →
 		// returns payloadId; without → just OK (advance).
 		hasAttrs := len(req.Params) >= 2 && req.Params[1] != nil
 		var result map[string]any
 		if hasAttrs {
+			if a, ok := req.Params[1].(map[string]any); ok {
+				m.mu.Lock()
+				m.attrs = append(m.attrs, a)
+				m.mu.Unlock()
+			}
 			id := m.payloadIDCounter.Add(1)
 			result = map[string]any{
 				"payloadStatus": map[string]any{
@@ -110,7 +126,7 @@ func (m *mockEngineEL) handle(w http.ResponseWriter, r *http.Request) {
 			"id":      req.ID,
 			"result":  result,
 		})
-	case "engine_getPayloadV3", "engine_getPayloadV4", "engine_getPayloadV5":
+	case "engine_getPayloadV3", "engine_getPayloadV4", "engine_getPayloadV5", "engine_getPayloadV6":
 		enc.Encode(map[string]any{
 			"jsonrpc": "2.0",
 			"id":      req.ID,
@@ -137,6 +153,12 @@ func (m *mockEngineEL) handle(w http.ResponseWriter, r *http.Request) {
 	default:
 		http.Error(w, "unknown method "+req.Method, http.StatusBadRequest)
 	}
+}
+
+func (m *mockEngineEL) seenAttrs() []map[string]any {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return append([]map[string]any(nil), m.attrs...)
 }
 
 func (m *mockEngineEL) seen() []string {
@@ -172,7 +194,7 @@ func TestEngineDriver_Step_OsakaUsesV5GetV4New(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
-	newHash, err := d.Step(ctx, common.HexToHash(canonicalBlockHash), 1)
+	newHash, err := d.Step(ctx, common.HexToHash(canonicalBlockHash), 1, 1)
 	if err != nil {
 		t.Fatalf("Step: %v", err)
 	}
@@ -197,6 +219,95 @@ func TestEngineDriver_Step_OsakaUsesV5GetV4New(t *testing.T) {
 	}
 }
 
+func TestEngineDriver_Step_AmsterdamUsesFcuV4GetV6NewV5(t *testing.T) {
+	mock := newMockEL(t)
+	d := &EngineDriver{
+		EngineURL: mock.server.URL,
+		EthRPCURL: mock.server.URL,
+		BlockTime: 50 * time.Millisecond,
+		Fork:      ForkAmsterdam,
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	if _, err := d.Step(ctx, common.HexToHash(canonicalBlockHash), 1, 7); err != nil {
+		t.Fatalf("Step: %v", err)
+	}
+	want := []string{
+		"engine_forkchoiceUpdatedV4", // fc-with-attrs
+		"engine_getPayloadV6",
+		"engine_newPayloadV5",
+		"engine_forkchoiceUpdatedV4", // fc-advance
+	}
+	seen := mock.seen()
+	if len(seen) != len(want) {
+		t.Fatalf("methods seen = %v, want %v", seen, want)
+	}
+	for i, m := range want {
+		if seen[i] != m {
+			t.Errorf("method[%d] = %s, want %s (full: %v)", i, seen[i], m, seen)
+		}
+	}
+	attrs := mock.seenAttrs()
+	if len(attrs) != 1 || attrs[0]["slotNumber"] != "0x7" {
+		t.Errorf("payloadAttributes = %v, want slotNumber 0x7", attrs)
+	}
+}
+
+// TestEngineDriver_DriveLoop_AmsterdamSlotFollowsHead pins that DriveLoop
+// starts at the head's slotNumber + 1 and adds 1 per block.
+func TestEngineDriver_DriveLoop_AmsterdamSlotFollowsHead(t *testing.T) {
+	mock := newMockEL(t)
+	mock.headSlotNumber = "0x10"
+	d := &EngineDriver{
+		EngineURL: mock.server.URL,
+		EthRPCURL: mock.server.URL,
+		BlockTime: 20 * time.Millisecond,
+		Fork:      ForkAmsterdam,
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- d.DriveLoop(ctx) }()
+	deadline := time.After(2 * time.Second)
+	for mock.produced.Load() < 3 {
+		select {
+		case <-deadline:
+			cancel()
+			t.Fatalf("only %d blocks produced", mock.produced.Load())
+		case <-time.After(5 * time.Millisecond):
+		}
+	}
+	cancel()
+	<-done
+
+	attrs := mock.seenAttrs()
+	for i, want := range []string{"0x11", "0x12", "0x13"} {
+		if attrs[i]["slotNumber"] != want {
+			t.Errorf("block %d slotNumber = %v, want %s", i, attrs[i]["slotNumber"], want)
+		}
+	}
+}
+
+func TestEngineDriver_Step_OsakaSendsNoSlotNumber(t *testing.T) {
+	mock := newMockEL(t)
+	d := &EngineDriver{
+		EngineURL: mock.server.URL,
+		EthRPCURL: mock.server.URL,
+		BlockTime: 50 * time.Millisecond,
+		Fork:      ForkOsaka,
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if _, err := d.Step(ctx, common.HexToHash(canonicalBlockHash), 1, 1); err != nil {
+		t.Fatalf("Step: %v", err)
+	}
+	for _, a := range mock.seenAttrs() {
+		if _, ok := a["slotNumber"]; ok {
+			t.Errorf("Osaka payloadAttributes carry slotNumber: %v", a)
+		}
+	}
+}
+
 func TestEngineDriver_Step_PragueUsesV4(t *testing.T) {
 	mock := newMockEL(t)
 	d := &EngineDriver{
@@ -208,7 +319,7 @@ func TestEngineDriver_Step_PragueUsesV4(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
-	if _, err := d.Step(ctx, common.HexToHash(canonicalBlockHash), 1); err != nil {
+	if _, err := d.Step(ctx, common.HexToHash(canonicalBlockHash), 1, 1); err != nil {
 		t.Fatalf("Step: %v", err)
 	}
 	seen := mock.seen()
@@ -230,7 +341,7 @@ func TestEngineDriver_Step_CancunUsesV3(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
-	if _, err := d.Step(ctx, common.HexToHash(canonicalBlockHash), 1); err != nil {
+	if _, err := d.Step(ctx, common.HexToHash(canonicalBlockHash), 1, 1); err != nil {
 		t.Fatalf("Step: %v", err)
 	}
 	seen := mock.seen()
@@ -300,7 +411,7 @@ func TestEngineDriver_Step_RejectsNonVALIDStatus(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
 	defer cancel()
 
-	_, err := d.Step(ctx, common.HexToHash(canonicalBlockHash), 1)
+	_, err := d.Step(ctx, common.HexToHash(canonicalBlockHash), 1, 1)
 	if err == nil {
 		t.Fatal("Step should have returned an error for newPayload status=INVALID")
 	}

@@ -34,7 +34,7 @@ import (
 func main() {
 	engineURL := flag.String("engine", "http://127.0.0.1:8551", "engine API URL")
 	ethURL := flag.String("eth", "http://127.0.0.1:8545", "JSON-RPC URL")
-	fork := flag.String("fork", "osaka", "engine method version: cancun | prague | osaka")
+	fork := flag.String("fork", "osaka", "engine method version: cancun | prague | osaka | amsterdam")
 	blockTime := flag.Duration("block-time", time.Second, "slot duration")
 	jwtPath := flag.String("jwt", "", "path to JWT secret hex file (32 random bytes); empty disables JWT")
 	flag.Parse()
