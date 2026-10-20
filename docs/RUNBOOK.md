@@ -287,7 +287,7 @@ cast chain-id --rpc-url http://<container-ip>:8545   # → 0x539
 
 ## Ethrex
 
-Reference: `client/ethrex/e2e_test.go` (`TestE2ESuite`).
+Reference: `client/ethrex/e2e_test.go` (`TestE2ESuite`, `TestE2ESuiteAmsterdam`). Run both with `make test-ethrex-suite SPAMOOR=<path>`.
 
 **Generate.** ethrex uses cgo (RocksDB bindings via grocksdb) — build via Docker.
 
@@ -311,6 +311,10 @@ docker run --rm \
 - `/data/ethrex-genesis.json` — full genesis JSON; pass via `--network` when booting
 
 **Boot path.** ethrex's `add_initial_state` short-circuits when `canonical_block_hashes[0]` already resolves to a matching genesis header hash — state-actor writes that row, so ethrex skips state-trie recomputation at boot. Required boot flags (validated by the e2e suite, Phase 4): `--network <ethrex-genesis.json>`, `--datadir <dir>`, `--skip-genesis-validation` (trust the written stateRoot rather than recompute from the empty-alloc sidecar; needs lambdaclass/ethrex#6783, in releases ≥ v16.0.0), and `--syncmode full`. The `--syncmode full` flag is mandatory for engine-driven block production: in the default snap mode ethrex's fork-choice handler returns `SYNCING` with a null `payloadId` for every `engine_forkchoiceUpdated`, so the mock CL can never obtain a payload to build. The pattern follows the besu/nethermind Engine API approach: boot the node, then drive blocks via `engine_forkchoiceUpdated` (ethrex also mandates an authrpc JWT, signed by the driver).
+
+**Amsterdam.** With `--fork=amsterdam` the sidecar and `chain_data` carry `amsterdamTime: 0`, and the genesis header carries `blockAccessListHash` (EIP-7928) and `slotNumber = 0` (EIP-7843). Amsterdam gets no `blobSchedule` entry: ethrex uses the `osaka` entry (6/9), the same values that geth gives Amsterdam. To build blocks, send `engine_forkchoiceUpdatedV4`. Its payload attributes must include `slotNumber` and `targetGasLimit`. ethrex (≥ v20.0.0, execution-apis#796) rejects V4 attributes without `targetGasLimit` with `-38003 Invalid payload attributes`. geth accepts them without it.
+
+**Image pin.** `ghcr.io/lambdaclass/ethrex:30.0.0` (commit `80b774a`), the release that schedules Amsterdam on Sepolia (`1791294816`) and Hoodi. `ETHREX_IMAGE` overrides the pin. The on-disk format is the same as at the previous pin (`ethpandaops/ethrex:glamsterdam-devnet-7`, commit `80bcc71`): `schema_version` 4, the same 22 column families, and the JUMPDEST bitmap in `account_codes`. `internal/ethrex/testdata/gen/README.md` explains how to regenerate the golden fixture when the pin moves.
 
 **Memory at boot.** ethrex's shared RocksDB block cache defaults to 12 GiB and holds index + bloom-filter blocks. The cache fills lazily, but on a large DB a memory-capped container can be OOM-killed as it fills — cap it with `--rocksdb.block-cache-size <bytes>` on memory-constrained hosts. Boot-side knob only; no bearing on the bytes state-actor writes.
 

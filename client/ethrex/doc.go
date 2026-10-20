@@ -34,11 +34,19 @@
 // # Pin
 //
 // Golden test: byte-exact vs testdata/genesis_dump.json, regenerated at ethrex
-// commit 80bcc71 (the ethpandaops glamsterdam-devnet-7 build), which the e2e
-// boot test pins too. A pre-release commit rather than a tag: no release has
-// the account_codes JUMPDEST bitmap or schema_version 4 (both
-// lambdaclass/ethrex#7095), nor the state_history CF. --skip-genesis-validation, which the boot path requires,
-// landed in v16.0.0 (lambdaclass/ethrex#6783).
+// v30.0.0 (commit 80b774a), which the e2e boot test pins too. That release has
+// the account_codes JUMPDEST bitmap and schema_version 4 (both
+// lambdaclass/ethrex#7095), the state_history CF, and the Sepolia Amsterdam
+// schedule. --skip-genesis-validation, which the boot path requires, landed in
+// v16.0.0 (lambdaclass/ethrex#6783).
+//
+// # Forks
+//
+// The writer follows g.Config: the sidecar and chain_data carry each fork time
+// that the genesis sets, amsterdamTime included. An Amsterdam header gets
+// blockAccessListHash and slotNumber from genesisheader.Build. ethrex's
+// BlockHeader RLP puts them after requestsHash in that order, so the stored
+// header is the one ethrex builds itself (TestGenesisHeaderMatchesEthrex).
 //
 // # Build
 //

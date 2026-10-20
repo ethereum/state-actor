@@ -112,6 +112,58 @@ func TestChainConfigJSON(t *testing.T) {
 	}
 }
 
+// TestChainConfigJSONAmsterdam verifies that the chain config carries
+// amsterdamTime only when the genesis activates Amsterdam. ethrex reads the
+// fork schedule from this config, so an Amsterdam genesis without the key
+// would boot as Osaka and reject the Amsterdam header fields.
+func TestChainConfigJSONAmsterdam(t *testing.T) {
+	for _, tc := range []struct {
+		fork          string
+		wantAmsterdam bool
+	}{
+		{"osaka", false},
+		{"amsterdam", true},
+	} {
+		t.Run(tc.fork, func(t *testing.T) {
+			g, err := genesis.BuildSynthetic(tc.fork, big.NewInt(1337), 60_000_000, 0, nil)
+			if err != nil {
+				t.Fatalf("BuildSynthetic(%s): %v", tc.fork, err)
+			}
+			data, err := ethrex.ChainConfigJSON(g)
+			if err != nil {
+				t.Fatalf("ChainConfigJSON: %v", err)
+			}
+			var parsed map[string]any
+			if err := json.Unmarshal(data, &parsed); err != nil {
+				t.Fatalf("unmarshal ChainConfigJSON: %v", err)
+			}
+
+			got, ok := parsed["amsterdamTime"]
+			if ok != tc.wantAmsterdam {
+				t.Fatalf("amsterdamTime present = %v, want %v", ok, tc.wantAmsterdam)
+			}
+			if ok && got != float64(0) {
+				t.Errorf("amsterdamTime: got %v, want 0", got)
+			}
+			if _, ok := parsed["osakaTime"]; !ok {
+				t.Error("ChainConfigJSON missing osakaTime")
+			}
+
+			// Amsterdam has no blobSchedule entry of its own: ethrex falls
+			// back to the osaka entry, the same 6/9 values geth v1.17.6
+			// gives Amsterdam.
+			sched, _ := parsed["blobSchedule"].(map[string]any)
+			if _, ok := sched["amsterdam"]; ok {
+				t.Error("blobSchedule has an amsterdam entry, want none")
+			}
+			osaka, _ := sched["osaka"].(map[string]any)
+			if osaka["target"] != float64(6) || osaka["max"] != float64(9) {
+				t.Errorf("blobSchedule.osaka: got %v, want target 6, max 9", osaka)
+			}
+		})
+	}
+}
+
 // TestStoreDir locks the on-disk store path to ethrex's effective datadir
 // (<datadir>/chain-<chainid>). Boot correctness depends on this exactly
 // matching ethrex's compute_effective_datadir → datadir_suffix; a mismatch

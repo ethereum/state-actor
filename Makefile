@@ -453,6 +453,36 @@ test-nimbus-suite: image-nimbus
 	  go test -tags 'cgo_nimbus oracle' ./client/nimbus/ -v -timeout 3600s
 	docker volume rm -f $(NIMBUS_SUITE_VOL) >/dev/null 2>&1 || true
 
+.PHONY: image-ethrex test-ethrex-suite
+
+## image-ethrex: Build the cgo_ethrex Docker builder image for direct-write ethrex
+##   Used by test-ethrex-suite. CI builds the same target.
+image-ethrex:
+	docker build -f Dockerfile.ethrex --target builder -t state-actor-ethrex-builder:latest .
+
+## test-ethrex-suite: Run the ethrex end-to-end suite, Osaka and Amsterdam (db-gen → boot → spamoor → re-query)
+##   ETHREX_IMAGE overrides the pinned ethrex image. The -run filter is CI's.
+ETHREX_SUITE_VOL ?= ethrex-suite-datadir
+test-ethrex-suite: image-ethrex
+	mkdir -p $(RESULT_DIR)
+	docker volume rm -f $(ETHREX_SUITE_VOL) >/dev/null 2>&1 || true
+	docker volume create $(ETHREX_SUITE_VOL)
+	docker run --rm \
+	  -v $(ETHREX_SUITE_VOL):/oracle-data \
+	  -v $(RESULT_DIR):/result \
+	  -v $(shell command -v $(SPAMOOR) 2>/dev/null || echo /dev/null):/usr/local/bin/spamoor:ro \
+	  -v /var/run/docker.sock:/var/run/docker.sock \
+	  -e ETHREX_ORACLE_DATADIR=/oracle-data \
+	  -e ETHREX_ORACLE_VOL=$(ETHREX_SUITE_VOL) \
+	  -e ETHREX_DOCKER_PLATFORM \
+	  -e ETHREX_IMAGE \
+	  -e RESULT_PATH=/result/ethrex-result.json \
+	  -e SPAMOOR=/usr/local/bin/spamoor \
+	  -e REQUIRE_SPAMOOR=1 \
+	  state-actor-ethrex-builder:latest \
+	  go test -tags 'cgo_ethrex oracle' ./client/ethrex/ -run 'TestEthrexGoldenStateRoot|TestGenesisDumpGolden|TestE2ESuite' -v -timeout 3600s
+	docker volume rm -f $(ETHREX_SUITE_VOL) >/dev/null 2>&1 || true
+
 ## help: Show this help
 help:
 	@echo "State Actor - Ethereum State Generator"

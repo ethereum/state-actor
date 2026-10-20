@@ -57,7 +57,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libbz2-dev \
     zlib1g-dev \
     gnupg \
-    # docker-ce-cli is needed by `make test-ethrex-boot` — the boot test
+    # docker-ce-cli is needed by `make test-ethrex-suite` — the boot test
     # runs inside this builder image and spawns an ethrex container via DinD
     # (host docker socket mount). Without the docker CLI in PATH the
     # test fails at exec.Command("docker", …). Same setup as
