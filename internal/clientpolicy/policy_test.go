@@ -100,7 +100,7 @@ func TestValidateForClient_ForkCeiling(t *testing.T) {
 	// Pre-Prague forks are EOL and rejected globally by
 	// genesis.BuildChainConfigForFork, so clientpolicy never sees them
 	// in practice. The per-client ceiling check matters for forks past
-	// osaka: today only geth writes amsterdam.
+	// osaka: geth and ethrex write amsterdam.
 	cases := []struct {
 		client   string
 		fork     string
@@ -126,7 +126,7 @@ func TestValidateForClient_ForkCeiling(t *testing.T) {
 		{"erigon", "amsterdam", false},
 		{"ethrex", "prague", true},
 		{"ethrex", "osaka", true},
-		{"ethrex", "amsterdam", false},
+		{"ethrex", "amsterdam", true},
 		{"nimbus", "prague", true},
 		{"nimbus", "osaka", true},
 		{"nimbus", "amsterdam", false},

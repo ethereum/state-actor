@@ -12,7 +12,19 @@
   (`syscontracts.AddAmsterdamSystemContracts`), which a spec entity at the
   factory address overrides. `TestE2ESuiteAmsterdam` boots geth v1.17.6 on
   it and builds blocks with spamoor. The other clients keep their `osaka`
-  ceiling. An unset `--fork` still resolves to `osaka`
+  ceiling until their writers support Amsterdam.
+- **`--fork=amsterdam` for `--client=ethrex`.** The sidecar and
+  `chain_data` config get `amsterdamTime`; ethrex's header RLP already
+  matches `genesisheader.Build` (pinned in `TestGenesisHeaderMatchesEthrex`).
+  The e2e suites move from the `glamsterdam-devnet-7` pre-release to
+  `ghcr.io/lambdaclass/ethrex:30.0.0` (Sepolia Amsterdam); the on-disk
+  format is unchanged, and the golden dump is regenerated at v30.0.0, so
+  `account_codes` values are compared byte for byte again.
+  `TestE2ESuiteAmsterdam` reports the same genesis root as geth.
+- **Engine driver: Amsterdam blocks** (`engineapi.ForkAmsterdam`):
+  `forkchoiceUpdatedV4` with `slotNumber` and `targetGasLimit` (the head's
+  gas limit; ethrex requires it per execution-apis#796), `getPayloadV6`,
+  `newPayloadV5`. An unset `--fork` still resolves to `osaka`
   (`genesis.DefaultForkForClient`), the latest mainnet fork.
 - **New `--client=nimbus` target** (nimbus-eth1). Writes nimbus's single
   RocksDB (`<db>/ecdb`: `AriVtx` state-trie vertices in the Aristo format

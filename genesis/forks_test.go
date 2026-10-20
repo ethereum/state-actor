@@ -105,8 +105,10 @@ func TestDefaultForkForClient_StaysOnMainnetFork(t *testing.T) {
 			t.Errorf("DefaultForkForClient(%q) is past MaxForkForClient", tc.client)
 		}
 	}
-	if got := MaxForkForClient("geth"); got != "amsterdam" {
-		t.Errorf("MaxForkForClient(geth) = %q, want amsterdam", got)
+	for _, c := range []string{"geth", "ethrex"} {
+		if got := MaxForkForClient(c); got != "amsterdam" {
+			t.Errorf("MaxForkForClient(%s) = %q, want amsterdam", c, got)
+		}
 	}
 }
 

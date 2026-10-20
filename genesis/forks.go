@@ -154,9 +154,11 @@ func SortedForks() []string {
 //   - geth: amsterdam. go-ethereum v1.17.6 (the Sepolia Amsterdam
 //     release) carries the Amsterdam header fields, and the geth writer
 //     builds its header through internal/genesisheader.Build.
-//   - reth, besu, nethermind, erigon, ethrex, nimbus: osaka. Header
+//   - ethrex: amsterdam. ethrex v30.0.0 (Sepolia Amsterdam) encodes the
+//     header fields in the same order; TestE2ESuiteAmsterdam boots it.
+//   - reth, besu, nethermind, erigon, nimbus: osaka. Header
 //     construction flows through internal/genesisheader.Build for
-//     besu/reth/nethermind/ethrex/nimbus. Per-client chainspec writers
+//     besu/reth/nethermind/nimbus. Per-client chainspec writers
 //     emit shanghaiTime/cancunTime/pragueTime/osakaTime/
 //     terminalTotalDifficulty/blobSchedule conditionally based on
 //     g.Config — same activation set the writer encodes.
@@ -173,9 +175,9 @@ func SortedForks() []string {
 // amsterdamTime and its e2e suite boots an Amsterdam genesis.
 func MaxForkForClient(client string) string {
 	switch client {
-	case "geth":
+	case "geth", "ethrex":
 		return "amsterdam"
-	case "reth", "besu", "nethermind", "erigon", "ethrex", "nimbus":
+	case "reth", "besu", "nethermind", "erigon", "nimbus":
 		return "osaka"
 	default:
 		return DefaultFork

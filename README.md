@@ -149,7 +149,7 @@ docker run --rm -v /tmp/sa-geth:/data ghcr.io/ethereum/state-actor-geth:main \
   --extra-data=0xdeadbeef
 ```
 
-Run `--list-forks` for accepted `--fork` values. The default fork is `osaka`, the latest mainnet fork, for all seven clients. `--fork=amsterdam` (the Sepolia Amsterdam spec, go-ethereum v1.17.6) is available with `--client=geth` only. It adds the `blockAccessListHash` and `slotNumber` header fields and the EIP-8282 and EIP-7997 system contracts.
+Run `--list-forks` for accepted `--fork` values. The default fork is `osaka`, the latest mainnet fork, for all seven clients. `--fork=amsterdam` (the Sepolia Amsterdam spec, go-ethereum v1.17.6) is available with `--client=geth` and `--client=ethrex`; the other clients reject it. It adds the `blockAccessListHash` and `slotNumber` header fields and the EIP-8282 and EIP-7997 system contracts.
 
 ## Boot a client against the generated DB
 
