@@ -191,6 +191,14 @@ func buildChainConfigMap(g *genesis.Genesis) map[string]any {
 			"target":                6,
 		}
 	}
+	// Amsterdam gets no blobSchedule entry. ethrex resolves a named fork
+	// without one to the highest active entry before it (osaka here, as no
+	// bpoXTime is set), and geth v1.17.6 also gives Amsterdam the Prague
+	// values. Both clients thus see the same 6/9 schedule. The header
+	// fields (blockAccessListHash, slotNumber) come from genesisheader.Build.
+	if g.Config.AmsterdamTime != nil {
+		cfg["amsterdamTime"] = *g.Config.AmsterdamTime
+	}
 
 	cfg["blobSchedule"] = blobSchedule
 

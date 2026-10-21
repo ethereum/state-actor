@@ -32,6 +32,9 @@ import (
 //   - Shanghai: WithdrawalsHash = types.EmptyWithdrawalsHash
 //   - Cancun: ParentBeaconRoot, ExcessBlobGas, BlobGasUsed
 //   - Prague: RequestsHash = types.EmptyRequestsHash
+//   - Amsterdam: BlockAccessListHash = types.EmptyBlockAccessListHash
+//     (EIP-7928) and SlotNumber = 0 (EIP-7843), as go-ethereum's
+//     Genesis.toBlockWithRoot sets them
 //
 // g.Config must be non-nil and have ChainID set; the per-fork predicates
 // dispatch on it.
@@ -104,6 +107,11 @@ func Build(g *genesis.Genesis, number uint64, parentHash, stateRoot common.Hash)
 	if g.Config.IsPrague(num, ts) {
 		emptyRequestsHash := types.EmptyRequestsHash
 		header.RequestsHash = &emptyRequestsHash
+	}
+	if g.Config.IsAmsterdam(num, ts) {
+		emptyBlockAccessListHash := types.EmptyBlockAccessListHash
+		header.BlockAccessListHash = &emptyBlockAccessListHash
+		header.SlotNumber = new(uint64)
 	}
 	return header
 }

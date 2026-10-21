@@ -56,4 +56,14 @@
 // hyperledger/besu:25.11.0 — the boot contract Besu enforces (chainHeadHash
 // pointer, genesis block hash match, Bonsai trie path-keyed encoding) is
 // stable across the released line.
+//
+// # Amsterdam
+//
+// --fork=amsterdam follows the Sepolia Amsterdam spec. The first besu
+// release that ships it is 26.9.0 (Sepolia amsterdamTime 1791294816), so
+// TestE2ESuiteAmsterdam boots hyperledger/besu:26.9.0. The writer itself
+// has no Amsterdam branch: internal/genesisheader.Build adds the
+// blockAccessListHash and slotNumber header fields, and writeChainSpec
+// adds amsterdamTime. Besu stores no block access list for the genesis
+// block (DefaultBlockchain.setGenesis), so no other row changes.
 package besu

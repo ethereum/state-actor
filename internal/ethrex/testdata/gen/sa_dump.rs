@@ -14,7 +14,7 @@ use ethrex_common::types::Genesis;
 use ethrex_storage::api::tables::TABLES;
 use ethrex_storage::api::StorageBackend;
 use ethrex_storage::backend::rocksdb::RocksDBBackend;
-use ethrex_storage::{DEFAULT_ROCKSDB_BLOCK_CACHE_SIZE_BYTES, EngineType, Store};
+use ethrex_storage::{EngineType, default_rocksdb_block_cache_size, Store};
 
 fn hex(b: &[u8]) -> String {
     let mut s = String::with_capacity(2 + b.len() * 2);
@@ -49,7 +49,7 @@ async fn main() {
     std::thread::sleep(std::time::Duration::from_millis(200));
 
     // 2. Reopen read-only via the backend and dump every CF.
-    let backend = RocksDBBackend::open(datadir, DEFAULT_ROCKSDB_BLOCK_CACHE_SIZE_BYTES)
+    let backend = RocksDBBackend::open(datadir, default_rocksdb_block_cache_size())
         .expect("reopen backend");
     let read = backend.begin_read().expect("begin_read");
 

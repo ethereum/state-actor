@@ -40,10 +40,39 @@ var osakaParamKeys = []string{
 	"eip7951TransitionTimestamp",
 }
 
+// amsterdamParamKeys lists the Parity EIP-transition keys the writer strips
+// from the embedded template when --fork is below Amsterdam. The set is the
+// Amsterdam block of the Sepolia chainspec that Nethermind 2.1.0 ships
+// (src/Nethermind/Chains/sepolia.json, all at 0x6ac4fd60 = 1791294816, the
+// go-ethereum v1.17.6 Sepolia AmsterdamTime). It equals the EIPs that
+// Nethermind.Specs/Forks/25_Amsterdam.cs turns on.
+//
+// Nethermind has no address key for the EIP-8282 builder contracts: it
+// hard-codes them in Eip8282Constants, at the addresses that
+// syscontracts.AddAmsterdamSystemContracts plants. EIP-7954 raises
+// MaxCodeSize to 64 KiB by itself, so the template's maxCodeSize stays.
+// Nethermind 2.1.0 has no EIP-7997 key; the factory is plain genesis state.
+var amsterdamParamKeys = []string{
+	"eip2780TransitionTimestamp",
+	"eip7708TransitionTimestamp",
+	"eip7778TransitionTimestamp",
+	"eip7843TransitionTimestamp", // slotNumber header field
+	"eip7928TransitionTimestamp", // blockAccessListHash header field
+	"eip7954TransitionTimestamp",
+	"eip7976TransitionTimestamp",
+	"eip7981TransitionTimestamp",
+	"eip8024TransitionTimestamp",
+	"eip8037TransitionTimestamp",
+	"eip8038TransitionTimestamp",
+	"eip8246TransitionTimestamp",
+	"eip8282TransitionTimestamp",
+}
+
 // writeChainSpec emits the embedded sa-dev Parity chainspec to
 // <dbPath>/<ChainSpecFileName>. Everything that varies per-run flows from g:
-// chainID/networkID from g.Config.ChainID, the Osaka-only param keys gated
-// by g.Config.OsakaTime, and the genesis block (gasLimit/timestamp/extraData/
+// chainID/networkID from g.Config.ChainID, the Osaka-only and Amsterdam-only
+// param keys gated by g.Config.OsakaTime and g.Config.AmsterdamTime, and the
+// genesis block (gasLimit/timestamp/extraData/
 // nonce/mixHash/difficulty/author/parentHash) materialized from g.* so the
 // chainspec and the on-disk header agree byte-for-byte — otherwise Nethermind
 // rejects the DB at boot with "Supplied genesis block does not match chain
@@ -86,6 +115,15 @@ func writeChainSpec(dbPath string, g *genesis.Genesis, stateRoot common.Hash) (s
 
 	if g.Config.OsakaTime == nil {
 		for _, k := range osakaParamKeys {
+			delete(params, k)
+		}
+	}
+	// Nethermind derives the genesis header's blockAccessListHash and
+	// slotNumber from the eip7928/eip7843 keys (ChainSpecLoader.LoadGenesis).
+	// The keys and internal/genesisheader.Build must agree, or the hashes
+	// differ and Nethermind rejects the DB at boot.
+	if g.Config.AmsterdamTime == nil {
+		for _, k := range amsterdamParamKeys {
 			delete(params, k)
 		}
 	}

@@ -58,10 +58,11 @@ func runImpl(ctx context.Context, cfg generator.Config, opts Options) (*generato
 
 	g := cfg.Genesis
 	if g == nil {
-		// Fork hardcoded to ethrex's MaxForkForClient ("osaka"). Only reached
-		// by tests that omit a genesis; main.go always supplies one.
+		// Only reached by tests that omit a genesis; main.go always supplies
+		// one, built for the requested --fork. Use the fork that an unset
+		// --fork gives for ethrex, so this path follows the CLI policy.
 		var err error
-		g, err = genesis.BuildSynthetic("osaka", nil, 0, 0, nil)
+		g, err = genesis.BuildSynthetic(genesis.DefaultForkForClient("ethrex"), nil, 0, 0, nil)
 		if err != nil {
 			return nil, fmt.Errorf("ethrex: build default genesis: %w", err)
 		}

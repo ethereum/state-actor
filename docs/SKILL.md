@@ -169,7 +169,7 @@ The cross-client genesis-root invariant says: same `--seed`, same spec, same cli
 - **`--binary-trie` is geth-only** (EIP-7864).
 - **When using `--spec` alone, omit `--target-size`** — that way no auto-fill runs on top and random EOAs can't collide with spec-derived addresses. Set both only when you want the auto-fill to pad the headroom.
 - **Nethermind boot needs a JSON `boot.cfg`** pointing at the chainspec + datadir (see `client/nethermind/e2e_test.go`'s `nethermindE2EConfigTemplate`). The other clients accept boot flags directly.
-- **Nimbus boot needs `--debug-rewrite-datadir-id`** (the sidecar ships an empty alloc; the flag skips nimbus's rebuild-genesis-and-compare check, like ethrex's `--skip-genesis-validation`) and the pinned master image `statusim/nimbus-eth1:master-2f0ae87` — the Aristo format changed at that commit and no release reads it. See [`RUNBOOK.md#nimbus`](RUNBOOK.md#nimbus).
+- **Nimbus boot needs `--debug-rewrite-datadir-id`** (the sidecar ships an empty alloc; the flag skips nimbus's rebuild-genesis-and-compare check, like ethrex's `--skip-genesis-validation`) and `--user 0:0` with the pinned release `statusim/nimbus-eth1:v0.4.3` (the first release line that reads the current Aristo format; it runs as an unprivileged user, which cannot read the root-owned JWT file). See [`RUNBOOK.md#nimbus`](RUNBOOK.md#nimbus).
 
 ## Testing
 

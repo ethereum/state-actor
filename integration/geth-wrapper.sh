@@ -13,7 +13,7 @@
 #   PREGENERATED_STATE_PATH - Path to pre-generated chaindata (optional)
 #   GENESIS_PATH - Path to genesis.json (required for devnets without pre-init)
 #   BINARY_TRIE - Set to "true" to enable binary trie mode.
-#     Passes --override.verkle=0 to geth (legacy flag name for EIP-7864 binary trie).
+#     Passes --override.ubt=0 to geth (geth ≥ v1.17.6 flag for EIP-7864 binary trie; older geth named it --override.verkle).
 
 set -e
 
@@ -77,8 +77,8 @@ fi
 # Build extra args for binary trie mode
 EXTRA_ARGS=()
 if [[ "$BINARY_TRIE" == "true" ]]; then
-    EXTRA_ARGS+=("--override.verkle=0")
-    log "Binary trie mode enabled (--override.verkle=0)"
+    EXTRA_ARGS+=("--override.ubt=0")
+    log "Binary trie mode enabled (--override.ubt=0)"
 fi
 
 # Execute the original geth command

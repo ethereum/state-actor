@@ -53,6 +53,15 @@ func writeChainSpec(g *genesis.Genesis, outPath string) error {
 		}
 	}
 
+	// When Amsterdam is active at genesis, reth's make_genesis_header sets
+	// slot_number = genesis.slotNumber, or 0 when absent (EIP-7843). The
+	// shared header builder writes SlotNumber = 0, so write "0x0" to make
+	// the value explicit. config.amsterdamTime comes from g.Config, and
+	// reth derives blockAccessListHash (the empty-list hash) itself.
+	if g.Config != nil && g.Config.IsAmsterdam(big.NewInt(0), uint64(g.Timestamp)) {
+		spec["slotNumber"] = "0x0"
+	}
+
 	out, err := json.MarshalIndent(spec, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshal chainspec: %w", err)

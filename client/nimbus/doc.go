@@ -55,13 +55,23 @@
 //
 // # Pin
 //
-// statusim/nimbus-eth1:master-2f0ae87 (commit 2f0ae87cd, "Storage trie static
-// vids (#4797)"). A master build: that commit changed the on-disk format and
-// no release reads it. internal/nimbus/doc.go and
-// internal/nimbus/testdata/gen/README.md carry the same pin; move them
-// together. Golden tests: TestNimbusGoldenStateRoot (canonical root +
-// internal/nimbus.VerifyState over the written rows) and TestGenesisDumpGolden
-// (byte-exact vs a dump produced by nimbus's own genesis path).
+// The e2e suite boots statusim/nimbus-eth1:v0.4.3. The on-disk format is the
+// one commit 2f0ae87cd ("Storage trie static vids (#4797)") introduced; v0.4.2
+// is the first release that reads it, and v0.4.3 does not change it.
+// internal/nimbus/doc.go and internal/nimbus/testdata/gen/README.md name the
+// format commit; move them together. Golden tests: TestNimbusGoldenStateRoot
+// (canonical root + internal/nimbus.VerifyState over the written rows),
+// TestGenesisDumpGolden (byte-exact vs a dump produced by nimbus's own
+// genesis path) and TestGenesisDumpGoldenAmsterdam (the same state on an
+// Amsterdam genesis).
+//
+// # Amsterdam
+//
+// --fork=amsterdam (Sepolia spec) changes only the genesis rows: the header
+// from internal/genesisheader.Build gets blockAccessListHash and slotNumber,
+// and the sidecar gets amsterdamTime and blobSchedule.amsterdam. nimbus's
+// writeGenesis builds the same header from that sidecar. Boot with v0.4.2 or
+// later and drive it with engineapi.ForkAmsterdam.
 //
 // # Build
 //

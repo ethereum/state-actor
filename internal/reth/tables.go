@@ -18,6 +18,14 @@ var Tables = []TableSpec{
 	{Name: "BlockBodyIndices"},
 	{Name: "BlockOmmers"},
 	{Name: "BlockWithdrawals"},
+	// The two block access list (EIP-7928) tables come from reth v2.7.0
+	// (PinnedRethRelease), not from PinnedRethCommit. state-actor writes
+	// no rows in them. A reth node creates missing tables when it opens
+	// the DB read-write, but read-only tools (`reth db stats`) open every
+	// table in Tables::ALL and fail with "no matching key/data pair found"
+	// if one is missing.
+	{Name: "BlockAccessLists"},
+	{Name: "BlockAccessListBlockNumbers"},
 	{Name: "Transactions"},
 	{Name: "TransactionHashNumbers"},
 	{Name: "TransactionBlocks"},

@@ -6,12 +6,15 @@
 // # Pin
 //
 // Byte layouts mirror status-im/nimbus-eth1 at commit 2f0ae87cd ("Storage
-// trie static vids (#4797)") — the build published as
-// statusim/nimbus-eth1:master-2f0ae87. That commit changed the format (static
+// trie static vids (#4797)"). That commit changed the format (static
 // storage-trie vertex IDs, the AccLeaf stoHint byte, the 0x7e SavedState
-// trailer), so no tagged release reads what this package writes. The golden
-// fixture in testdata/ and client/nimbus/e2e_test.go carry the same pin; move
-// them together. Source files of record (paths under execution_chain/db/):
+// trailer), so only v0.4.2 and later read what this package writes. From
+// 2f0ae87cd to v0.4.3 (the image client/nimbus/e2e_test.go boots) the files
+// of record below keep the same layout: aristo_fetch.nim changed only its
+// in-memory leaf caches, and storage_types.nim only added key kinds. The
+// golden fixture in testdata/ comes from 2f0ae87cd; move it with this pin.
+// Source files of record (paths under
+// execution_chain/db/):
 // aristo/aristo_blobify.nim (records), aristo/aristo_vid.nim +
 // aristo/aristo_constants.nim (vertex IDs), aristo/aristo_fetch.nim
 // (retrieveStatic — what the reader assumes), storage_types.nim + fcu_db.nim

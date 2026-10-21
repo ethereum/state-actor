@@ -152,7 +152,7 @@ cat << GETH
     el_extra_params:
       - "--cache=4096"
       - "--txlookuplimit=0"$(if [[ "$BINARY_TRIE" == "true" ]]; then echo '
-      - "--override.verkle=0"'; fi)
+      - "--override.ubt=0"'; fi)
     el_volume_size: 100000  # 100GB
 GETH
 done)

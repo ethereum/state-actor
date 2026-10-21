@@ -27,11 +27,11 @@ import (
 //
 // Each iteration of DriveLoop produces ONE block:
 //
-//  1. engine_forkchoiceUpdatedV3 with payloadAttributes → payloadId
+//  1. engine_forkchoiceUpdatedV{F} with payloadAttributes → payloadId
 //  2. wait BlockTime/2 (lets the EL assemble the payload)
 //  3. engine_getPayloadV{N} → executionPayload + executionRequests
 //  4. engine_newPayloadV{M} → asserts status="VALID"
-//  5. engine_forkchoiceUpdatedV3 without attributes → advances head
+//  5. engine_forkchoiceUpdatedV{F} without attributes → advances head
 //
 // Method-version dispatch by Fork (verified against besu 25.11.0
 // ForkSupportHelper bounds — see EngineGetPayloadV{4,5}.java +
@@ -43,6 +43,13 @@ import (
 //	        newPayload requires Amsterdam (blockAccessList field), so
 //	        Osaka chains use V4 newPayload which covers [Prague, Amsterdam).
 //	        getPayloadV5 covers [Osaka, Amsterdam) — V4 stops at Osaka.
+//	amsterdam: fcUpdatedV4 + getPayloadV6 + newPayloadV5 — per
+//	        go-ethereum v1.17.6 (eth/catalyst). fcUpdatedV4 requires
+//	        slotNumber (EIP-7843) in payloadAttributes, and ethrex
+//	        v20+ also requires targetGasLimit (execution-apis#796;
+//	        geth reads it as the gas ceiling). The block access
+//	        list (EIP-7928) rides inside executionPayload, so the driver
+//	        passes getPayload's payload to newPayload unchanged.
 //
 // JWT is supported: set JWTSecret to the raw 32-byte HMAC key
 // (parsed from the 64-hex-char file the EL is configured against).
@@ -78,6 +85,10 @@ type EngineDriver struct {
 	// --engine-jwt-disabled (besu, nethermind).
 	JWTSecret []byte
 
+	// TargetGasLimit is the Amsterdam payloadAttributes.targetGasLimit.
+	// Zero makes DriveLoop use the head block's gasLimit.
+	TargetGasLimit uint64
+
 	// httpClient is lazily created with a 30s timeout on first call.
 	httpClient *http.Client
 }
@@ -91,6 +102,8 @@ const (
 	ForkCancun Fork = "cancun"
 	ForkPrague Fork = "prague"
 	ForkOsaka  Fork = "osaka"
+	// ForkAmsterdam is the Sepolia Amsterdam spec (go-ethereum v1.17.6).
+	ForkAmsterdam Fork = "amsterdam"
 )
 
 // engineFeeRecipient is the suggestedFeeRecipient passed to every
@@ -116,6 +129,12 @@ func (d *EngineDriver) DriveLoop(ctx context.Context) error {
 	}
 	headHash := head.Hash
 	blockTS := head.Time
+	slot := head.SlotNumber
+	if d.TargetGasLimit == 0 {
+		// Keep the gas limit at the head's value, as pre-Amsterdam
+		// clients do without a CL target.
+		d.TargetGasLimit = head.GasLimit
+	}
 
 	// Permanent-rejection guard: if Step fails this many times in a row
 	// (no recovery in between), surface the latest error instead of
@@ -129,9 +148,10 @@ func (d *EngineDriver) DriveLoop(ctx context.Context) error {
 			return err
 		}
 		blockTS++
-		newHash, stepErr := d.Step(ctx, headHash, blockTS)
+		newHash, stepErr := d.Step(ctx, headHash, blockTS, slot+1)
 		if stepErr == nil {
 			headHash = newHash
+			slot++
 			consecutiveErrors = 0
 		} else {
 			consecutiveErrors++
@@ -154,12 +174,12 @@ func (d *EngineDriver) DriveLoop(ctx context.Context) error {
 // Step drives one block-production iteration. Returns the new tip's
 // blockHash on success. Caller's responsibility to advance the
 // timestamp monotonically — re-using a parent's ts will cause besu to
-// reject the payload.
-func (d *EngineDriver) Step(ctx context.Context, headHash common.Hash, ts uint64) (common.Hash, error) {
+// reject the payload. slot is the EIP-7843 slotNumber of the new block;
+// only Amsterdam+ sends it (payloadAttributes.slotNumber).
+func (d *EngineDriver) Step(ctx context.Context, headHash common.Hash, ts, slot uint64) (common.Hash, error) {
 	d.ensureHTTPClient()
 
-	const fcVer = "engine_forkchoiceUpdatedV3"
-	getVer, newVer := d.versions()
+	fcVer, getVer, newVer := d.versions()
 
 	// 1. forkchoiceUpdated with payloadAttributes → payloadId.
 	//
@@ -171,19 +191,27 @@ func (d *EngineDriver) Step(ctx context.Context, headHash common.Hash, ts uint64
 	// backoff (execution/engineapi/engineapitester/mock_cl.go:289-321).
 	// We follow the same pattern: retry until VALID or 60 s elapsed
 	// (well past Erigon's first-cycle latency).
+	attrs := map[string]any{
+		"timestamp":             fmt.Sprintf("0x%x", ts),
+		"prevRandao":            zeroHash32,
+		"suggestedFeeRecipient": engineFeeRecipient,
+		"withdrawals":           []any{},
+		"parentBeaconBlockRoot": zeroHash32,
+	}
+	if d.isAmsterdam() {
+		if d.TargetGasLimit == 0 {
+			return common.Hash{}, fmt.Errorf("amsterdam payloadAttributes need TargetGasLimit (DriveLoop sets it from the head)")
+		}
+		attrs["slotNumber"] = fmt.Sprintf("0x%x", slot)
+		attrs["targetGasLimit"] = fmt.Sprintf("0x%x", d.TargetGasLimit)
+	}
 	fcParams := []any{
 		map[string]string{
 			"headBlockHash":      headHash.Hex(),
 			"safeBlockHash":      headHash.Hex(),
 			"finalizedBlockHash": headHash.Hex(),
 		},
-		map[string]any{
-			"timestamp":             fmt.Sprintf("0x%x", ts),
-			"prevRandao":            zeroHash32,
-			"suggestedFeeRecipient": engineFeeRecipient,
-			"withdrawals":           []any{},
-			"parentBeaconBlockRoot": zeroHash32,
-		},
+		attrs,
 	}
 	var fcResp map[string]any
 	var payloadID string
@@ -283,19 +311,30 @@ func fcResponseStatus(resp map[string]any) string {
 	return s
 }
 
-func (d *EngineDriver) versions() (getVer, newVer string) {
-	switch Fork(strings.ToLower(strings.TrimSpace(string(d.Fork)))) {
+func (d *EngineDriver) fork() Fork {
+	return Fork(strings.ToLower(strings.TrimSpace(string(d.Fork))))
+}
+
+func (d *EngineDriver) isAmsterdam() bool { return d.fork() == ForkAmsterdam }
+
+func (d *EngineDriver) versions() (fcVer, getVer, newVer string) {
+	switch d.fork() {
 	case ForkCancun:
-		return "engine_getPayloadV3", "engine_newPayloadV3"
+		return "engine_forkchoiceUpdatedV3", "engine_getPayloadV3", "engine_newPayloadV3"
 	case ForkOsaka:
 		// besu 25.11.0 ForkSupportHelper bounds:
 		//   getPayloadV5: [Osaka, Amsterdam)
 		//   newPayloadV5: [Amsterdam, ...)  ← requires blockAccessList field
 		//   newPayloadV4: [Prague, Amsterdam) ← accepts Osaka payloads
-		return "engine_getPayloadV5", "engine_newPayloadV4"
+		return "engine_forkchoiceUpdatedV3", "engine_getPayloadV5", "engine_newPayloadV4"
+	case ForkAmsterdam:
+		// go-ethereum v1.17.6: fcuV4 is Amsterdam-only and requires
+		// slotNumber; getPayloadV6 and newPayloadV5 carry the
+		// blockAccessList and slotNumber payload fields.
+		return "engine_forkchoiceUpdatedV4", "engine_getPayloadV6", "engine_newPayloadV5"
 	default:
 		// Prague (and unrecognized — matches state-actor's DefaultFork).
-		return "engine_getPayloadV4", "engine_newPayloadV4"
+		return "engine_forkchoiceUpdatedV3", "engine_getPayloadV4", "engine_newPayloadV4"
 	}
 }
 
@@ -402,10 +441,13 @@ func (d *EngineDriver) callEngine(ctx context.Context, method string, params []a
 }
 
 // engineHeadInfo is the subset of eth_getBlockByNumber("latest") that
-// DriveLoop needs to bootstrap.
+// DriveLoop needs to bootstrap. SlotNumber is 0 when the head has no
+// slotNumber field (pre-Amsterdam).
 type engineHeadInfo struct {
-	Hash common.Hash
-	Time uint64
+	Hash       common.Hash
+	Time       uint64
+	SlotNumber uint64
+	GasLimit   uint64
 }
 
 // fetchLatestBlock reads the current head's hash + timestamp from
@@ -431,8 +473,10 @@ func (d *EngineDriver) fetchLatestBlock(ctx context.Context) (engineHeadInfo, er
 
 	var parsed struct {
 		Result struct {
-			Hash      string `json:"hash"`
-			Timestamp string `json:"timestamp"`
+			Hash       string `json:"hash"`
+			Timestamp  string `json:"timestamp"`
+			SlotNumber string `json:"slotNumber"`
+			GasLimit   string `json:"gasLimit"`
 		} `json:"result"`
 	}
 	if err := json.Unmarshal(body, &parsed); err != nil {
@@ -442,18 +486,33 @@ func (d *EngineDriver) fetchLatestBlock(ctx context.Context) (engineHeadInfo, er
 		return engineHeadInfo{}, fmt.Errorf("eth_getBlockByNumber returned no hash (body=%s)", truncate(body, 200))
 	}
 
-	tsStr := strings.TrimPrefix(parsed.Result.Timestamp, "0x")
-	if tsStr == "" {
-		tsStr = "0"
-	}
-	ts, err := strconv.ParseUint(tsStr, 16, 64)
+	ts, err := parseHexUint64(parsed.Result.Timestamp)
 	if err != nil {
 		return engineHeadInfo{}, fmt.Errorf("parse timestamp %q: %w", parsed.Result.Timestamp, err)
 	}
+	slot, err := parseHexUint64(parsed.Result.SlotNumber)
+	if err != nil {
+		return engineHeadInfo{}, fmt.Errorf("parse slotNumber %q: %w", parsed.Result.SlotNumber, err)
+	}
+	gasLimit, err := parseHexUint64(parsed.Result.GasLimit)
+	if err != nil {
+		return engineHeadInfo{}, fmt.Errorf("parse gasLimit %q: %w", parsed.Result.GasLimit, err)
+	}
 	return engineHeadInfo{
-		Hash: common.HexToHash(parsed.Result.Hash),
-		Time: ts,
+		Hash:       common.HexToHash(parsed.Result.Hash),
+		Time:       ts,
+		SlotNumber: slot,
+		GasLimit:   gasLimit,
 	}, nil
+}
+
+// parseHexUint64 parses a 0x-prefixed quantity; "" (field absent) is 0.
+func parseHexUint64(s string) (uint64, error) {
+	s = strings.TrimPrefix(s, "0x")
+	if s == "" {
+		return 0, nil
+	}
+	return strconv.ParseUint(s, 16, 64)
 }
 
 // truncate returns up to n bytes of b for error messages, avoiding
@@ -464,4 +523,3 @@ func truncate(b []byte, n int) string {
 	}
 	return string(b[:n]) + "..."
 }
-

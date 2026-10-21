@@ -12,12 +12,14 @@ storage format changes.
 status-im/nimbus-eth1 @ 2f0ae87cd   (image statusim/nimbus-eth1:master-2f0ae87)
 ```
 
-A master build, not a tagged release: this commit ("Storage trie static vids",
-#4797) changed the on-disk format — static storage-trie vertex IDs, the AccLeaf
-`stoHint` byte, the `0x7e` SavedState trailer — and no release carries it.
+This commit ("Storage trie static vids", #4797) changed the on-disk format —
+static storage-trie vertex IDs, the AccLeaf `stoHint` byte, the `0x7e`
+SavedState trailer. v0.4.2 is the first release that contains it.
 
-The e2e boot image (`client/nimbus/e2e_test.go`), `internal/nimbus/doc.go` and
-this fixture carry the same pin, and all three move together.
+The e2e boot image (`client/nimbus/e2e_test.go`) is `statusim/nimbus-eth1:v0.4.3`.
+The files listed below have the same on-disk layout at v0.4.3 as at
+`2f0ae87cd`, so this fixture stays valid. `internal/nimbus/doc.go` and this
+fixture carry the same format pin, and they move together.
 
 Regenerate when a new pin changes `aristo_blobify.nim` (vertex records, the
 admin record), `aristo_vid.nim` / `aristo_constants.nim` (vertex-ID scheme),

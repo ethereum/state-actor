@@ -3,6 +3,67 @@
 ## Unreleased
 
 ### Added
+- **`--fork=amsterdam` for `--client=geth`** (Sepolia spec, go-ethereum
+  v1.17.6). The genesis header gets `blockAccessListHash` (EIP-7928, the
+  empty-list hash) and `slotNumber = 0` (EIP-7843); the hash is pinned
+  against `geth init` in `internal/genesisheader`. Amsterdam genesis state
+  also carries the EIP-8282 `BuilderDeposit`/`BuilderExit` request
+  contracts and the EIP-7997 deterministic factory
+  (`syscontracts.AddAmsterdamSystemContracts`), which a spec entity at the
+  factory address overrides. `TestE2ESuiteAmsterdam` boots geth v1.17.6 on
+  it and builds blocks with spamoor. The other clients keep their `osaka`
+  ceiling until their writers support Amsterdam.
+- **`--fork=amsterdam` for `--client=ethrex`.** The sidecar and
+  `chain_data` config get `amsterdamTime`; ethrex's header RLP already
+  matches `genesisheader.Build` (pinned in `TestGenesisHeaderMatchesEthrex`).
+  The e2e suites move from the `glamsterdam-devnet-7` pre-release to
+  `ghcr.io/lambdaclass/ethrex:30.0.0` (Sepolia Amsterdam); the on-disk
+  format is unchanged, and the golden dump is regenerated at v30.0.0, so
+  `account_codes` values are compared byte for byte again.
+  `TestE2ESuiteAmsterdam` reports the same genesis root as geth.
+- **`--fork=amsterdam` for `--client=erigon`.** No writer change was
+  needed: `erigon init` builds the Amsterdam header, genesis.json already
+  carries `amsterdamTime`, and the state-root patch keeps both new fields.
+  New tests pin the `erigon init` header against `genesisheader.Build`.
+  `make test-erigon-suite` now uses CI's build tags (it lacked
+  `cgo_erigon_commitment`, so the writer fell back to a failing stub).
+- **`--fork=amsterdam` for `--client=nethermind`.** The chainspec gets the
+  13 Amsterdam `eipNNNNTransitionTimestamp` keys of Nethermind 2.1.0's
+  `sepolia.json` (removed again for pre-Amsterdam forks, so Osaka/Prague
+  chainspecs stay byte-identical). Nethermind derives the genesis header
+  from the eip7928/eip7843 keys and refuses a DB whose stored header
+  disagrees. The header RLP needs no change. `TestE2ESuiteAmsterdam` runs
+  on `nethermind/nethermind:2.1.0`; the Osaka suite stays on 1.39.0.
+- **`--fork=amsterdam` for `--client=besu`.** The chainspec gets
+  `amsterdamTime` and the EIP-8282 `builderDepositRequestContractAddress` /
+  `builderExitRequestContractAddress`; besu rebuilds the genesis header
+  from it. No header or RocksDB change. `TestE2ESuiteAmsterdam` runs on
+  `hyperledger/besu:26.9.0` (override with `BESU_AMSTERDAM_IMAGE`); the
+  Osaka suite stays on 25.11.0. `TestGenesisBlockHashPerFork` pins the
+  stored genesis hash to geth's for Osaka and Amsterdam and joins the CI
+  filter.
+- **`--fork=amsterdam` for `--client=reth`.** The static-files header
+  codec writes all three `HeaderExt` fields (requestsHash,
+  blockAccessListHash, slotNumber), pinned as golden bytes checked against
+  reth-codecs 0.8.1; the chainspec gets `slotNumber: "0x0"`. reth v2.7.0
+  added the `BlockAccessLists` and `BlockAccessListBlockNumbers` MDBX
+  tables; the writer now creates them empty (also for Osaka; no root
+  change), because v2.7.0 refuses to open a DB without them. All reth
+  tests move from the nightly pin to `ghcr.io/paradigmxyz/reth:v2.7.0`
+  (Sepolia Amsterdam); the Osaka root is unchanged.
+- **`--fork=amsterdam` for `--client=nimbus`.** The sidecar gets
+  `amsterdamTime` and an explicit `blobSchedule.amsterdam` entry (the
+  Prague 6/9 values geth inherits); nimbus's header already matches. The
+  e2e suites move from `master-2f0ae87` to the release
+  `statusim/nimbus-eth1:v0.4.3` (Sepolia Amsterdam; on-disk format
+  unchanged, the golden dump still passes byte-exact) and boot with
+  `--user 0:0`, because the release images run as an unprivileged user
+  that cannot read the root-owned JWT file.
+- **Engine driver: Amsterdam blocks** (`engineapi.ForkAmsterdam`):
+  `forkchoiceUpdatedV4` with `slotNumber` and `targetGasLimit` (the head's
+  gas limit; ethrex requires it per execution-apis#796), `getPayloadV6`,
+  `newPayloadV5`. An unset `--fork` still resolves to `osaka`
+  (`genesis.DefaultForkForClient`), the latest mainnet fork.
 - **New `--client=nimbus` target** (nimbus-eth1). Writes nimbus's single
   RocksDB (`<db>/ecdb`: `AriVtx` state-trie vertices in the Aristo format
   with static/dynamic vertex IDs and stored Merkle keys, `KvtGen` genesis
@@ -19,6 +80,20 @@
   `e2e_testing.GoldenGiantRoot`.
 
 ### Changed
+- **geth: L6 now has a bloom filter, as geth v1.17.6 does.** geth leaves
+  its L6 options empty, and pebble v2 makes an empty level inherit the L5
+  bloom filter. `gethLevelOptions` now sets the 10-bit filter on all seven
+  levels. The shipped datadir's bulk state (in L6 after the Close-time
+  compaction) now has bloom filters, like a real geth v1.17.6+ node.
+  Benchmark reads against older geth datadirs had no L6 filter.
+- **go-ethereum v1.17.2-pre → v1.17.6.** The geth writer now opens Pebble
+  at `FormatFlushableIngest`, the minimum format pebble v2 opens. geth
+  v1.17.6 opens new DBs with pebble v2, and an older format makes it fall
+  back to pebble v1 with an upgrade warning. `EnableVerkleAtGenesis` is
+  now `EnableUBTAtGenesis`, and geth's `--override.verkle` flag is now
+  `--override.ubt` (docs and integration scripts updated). The upstream
+  EIP-7864 key encoding changed, so binary-trie state roots change. The
+  e2e suite pins `ethereum/client-go:v1.17.6`.
 - **reth: StoragesTrie is written in addrHash order across contracts.** Rows
   were `Put` in contract generation order, so each contract's main key
   (keccak(address)) landed at a random point in the table's top-level

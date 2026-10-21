@@ -29,13 +29,14 @@ import (
 // pinnedNimbusImage is the upstream nimbus-eth1 image the e2e suite boots.
 // Override with NIMBUS_IMAGE=<ref>.
 //
-// A master build (commit 2f0ae87cd, "Storage trie static vids (#4797)"), not
-// a release: that commit changed the Aristo on-disk format (static
-// storage-trie vertex IDs, the AccLeaf stoHint byte, the 0x7e SavedState
-// trailer) and no release reads it. This pin is also the source of
-// internal/nimbus's codec and of internal/nimbus/testdata/genesis_dump.json;
-// move them together.
-const pinnedNimbusImage = "statusim/nimbus-eth1:master-2f0ae87"
+// v0.4.3 (commit 6e4d83c1) is a release that boots an Amsterdam genesis
+// (Sepolia spec; v0.4.2 scheduled the Sepolia activation). It contains commit
+// 2f0ae87cd ("Storage trie static vids (#4797)"), the last commit that changed
+// the Aristo on-disk format (static storage-trie vertex IDs, the AccLeaf
+// stoHint byte, the 0x7e SavedState trailer). internal/nimbus's codec and
+// internal/nimbus/testdata/genesis_dump.json come from 2f0ae87cd; v0.4.3
+// does not change that format. Move the pin and the fixture together.
+const pinnedNimbusImage = "statusim/nimbus-eth1:v0.4.3"
 
 func nimbusImageRef() string {
 	if v := os.Getenv("NIMBUS_IMAGE"); v != "" {
@@ -75,6 +76,24 @@ func writeJWTSecret(datadir string) (string, error) {
 // only eth/debug/admin; the engine API mandates a JWT; --max-peers=0 /
 // --discv5=false / --nat=none keep the node off the network.
 func TestE2ESuite(t *testing.T) {
+	runE2ESuite(t, "osaka", engineapi.ForkOsaka)
+}
+
+// TestE2ESuiteAmsterdam runs the same suite on an Amsterdam genesis (the
+// Sepolia spec). On top of the Osaka suite it proves that nimbus loads the
+// Amsterdam header fields (blockAccessListHash, slotNumber) and the
+// Amsterdam system contracts, then builds and imports Amsterdam blocks
+// through engine_forkchoiceUpdatedV4 / getPayloadV6 / newPayloadV5.
+func TestE2ESuiteAmsterdam(t *testing.T) {
+	// The cross-client aggregator compares nimbus-result.json with the
+	// Osaka roots of the other clients. The Amsterdam system contracts
+	// change the root, so this run must not write that file (CI's
+	// `-run TestE2ESuite` filter matches both tests).
+	t.Setenv("RESULT_PATH", "")
+	runE2ESuite(t, "amsterdam", engineapi.ForkAmsterdam)
+}
+
+func runE2ESuite(t *testing.T, fork string, engineFork engineapi.Fork) {
 	if testing.Short() {
 		t.Skip("e2e suite skipped in short mode")
 	}
@@ -83,7 +102,7 @@ func TestE2ESuite(t *testing.T) {
 		e2eBudget uint64 = 100 << 20
 	)
 
-	g, err := stategenesis.BuildSynthetic("osaka", big.NewInt(1337), 60_000_000,
+	g, err := stategenesis.BuildSynthetic(fork, big.NewInt(1337), 60_000_000,
 		1_700_000_000, []byte{0xde, 0xad, 0xbe, 0xef})
 	if err != nil {
 		t.Fatalf("BuildSynthetic: %v", err)
@@ -108,6 +127,9 @@ func TestE2ESuite(t *testing.T) {
 	specDoc, preAlloc := e2e.LoadCISpec(t, "../../examples/full-matrix-spec-feature.yaml", "nimbus")
 	cfg.PreAlloc = preAlloc
 	syscontracts.AddCanonicalSystemContracts(&cfg)
+	if stategenesis.ForkAtLeast(fork, "amsterdam") {
+		syscontracts.AddAmsterdamSystemContracts(&cfg)
+	}
 
 	if _, err := clientnimbus.Run(context.Background(), cfg, clientnimbus.Options{}); err != nil {
 		t.Fatalf("nimbus.Run: %v", err)
@@ -118,7 +140,8 @@ func TestE2ESuite(t *testing.T) {
 		t.Fatalf("writeJWTSecret: %v", err)
 	}
 	// nimbus forces the data dir to 0700 at startup; the container runs as
-	// root so that succeeds on a bind mount, but the dir must be traversable.
+	// root (see --user below) so that succeeds on a bind mount, but the dir
+	// must be traversable.
 	if err := os.Chmod(dd.HostPath, 0o777); err != nil {
 		t.Fatalf("chmod datadir: %v", err)
 	}
@@ -130,6 +153,10 @@ func TestE2ESuite(t *testing.T) {
 	runArgs := append([]string{"run", "-d"}, e2e.DockerPlatformArgs("NIMBUS_DOCKER_PLATFORM")...)
 	runArgs = append(runArgs,
 		"--name", containerName,
+		// The release images run as an unprivileged "user". The writer
+		// creates the datadir and jwt.hex as root, so nimbus must run as
+		// root to open them (and to chmod the data dir).
+		"--user", "0:0",
 		"-v", dd.VolMount,
 		imageRef,
 		"executionClient",
@@ -172,7 +199,7 @@ func TestE2ESuite(t *testing.T) {
 		t.Fatalf("nimbus rebuilt Merkle keys at boot — a branch lacks its stored key:\n%s", logs)
 	}
 
-	e2e.StartEngineDriverWithJWT(t, containerIP, rpcURL, engineapi.ForkOsaka, jwtPath)
+	e2e.StartEngineDriverWithJWT(t, containerIP, rpcURL, engineFork, jwtPath)
 
 	e2e.RunSuitePhases(t, e2e.SuitePhasesCfg{
 		ClientName:      "nimbus",

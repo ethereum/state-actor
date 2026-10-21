@@ -44,7 +44,7 @@ docker run -d \
   --user $(id -u):$(id -g) \
   -v /tmp/sa-geth:/data \
   -p 127.0.0.1:8545:8545 \
-  ethereum/client-go:v1.17.2 \
+  ethereum/client-go:v1.17.6 \
   --datadir=/data \
   --db.engine=pebble \
   --networkid=1337 \
@@ -63,7 +63,9 @@ cast chain-id  --rpc-url http://127.0.0.1:8545   # → 0x539 (1337)
 cast block-number --rpc-url http://127.0.0.1:8545 # → 0x0 immediately, ticks up
 ```
 
-**Binary-trie variant.** If you generated with `--binary-trie=true` (EIP-7864, geth-only), boot geth with `--override.verkle=0` in addition to the flags above.
+**Amsterdam variant.** Add `--fork=amsterdam` to the generate command (Sepolia spec). Boot with `ethereum/client-go:v1.17.6` or later, as above. Earlier geth releases do not know the Amsterdam header fields and reject the genesis. Reference: `TestE2ESuiteAmsterdam`.
+
+**Binary-trie variant.** If you generated with `--binary-trie=true` (EIP-7864, geth-only), boot geth with `--override.ubt=0` in addition to the flags above.
 
 ## Reth
 
@@ -71,8 +73,9 @@ Reference: `client/reth/oracle_test.go` (`TestE2ESuite`).
 
 > [!WARNING]
 > Pin the reth image to a digest. `--debug.skip-genesis-validation` only
-> landed in paradigmxyz/reth#23919 (2026-05-06); reth's `:nightly` tag
-> overwrites daily and is not safe. `internal/reth/constants.go`
+> landed in paradigmxyz/reth#23919 (2026-05-06), and the Sepolia Amsterdam
+> spec only in reth v2.7.0. A tag can move, so pin the digest too.
+> `internal/reth/constants.go`
 > (`PinnedRethImage` + `PinnedRethRelease`) is the source of truth — the
 > recipe below mirrors the current pin.
 
@@ -103,7 +106,7 @@ docker run --rm \
 docker run -d \
   --name state-actor-reth \
   -v /tmp/sa-reth:/data \
-  ghcr.io/paradigmxyz/reth:nightly@sha256:e528857e5e9ebc2c6cb99f28436e70ded38ca905629f00afc98d186e27d206e0 \
+  ghcr.io/paradigmxyz/reth:v2.7.0@sha256:a7f059d470878a5a59f3c575f3fc81b536d0d2d56d7a1cbed73e717a4f766336 \
   node --dev --dev.block-time=1s \
   --chain=/data/chainspec.json \
   --datadir=/data \
@@ -113,6 +116,8 @@ docker run -d \
 ```
 
 `--debug.skip-genesis-validation` is required because state-actor writes synthetic state directly into MDBX rather than reconstructing it from `chainspec.alloc`. `--dev --dev.block-time=1s` is reth's self-mining equivalent of geth's `--dev.period=1`.
+
+**Amsterdam variant.** Add `--fork=amsterdam` to the generate command (Sepolia spec). Boot with `ghcr.io/paradigmxyz/reth:v2.7.0` or later, as above. Earlier reth releases do not know the Sepolia Amsterdam spec. At boot, reth logs `Genesis hash mismatch with chainspec`. This warning is expected: the chainspec has an empty `alloc`, so its hash is the empty-state genesis hash, and `--debug.skip-genesis-validation` tells reth to use the DB header. Reference: `TestE2ESuiteAmsterdam` in `client/reth/oracle_test.go`.
 
 **Operational hygiene** (apply at every size — these are MDBX requirements, not scale-conditional advice):
 
@@ -189,6 +194,8 @@ Four besu-specific subtleties:
 - besu accepts `engine_forkchoiceUpdated` on this isolated node only with **p2p enabled** (the default — the boot command above does not disable it). Its synchronizer must run to register the post-merge head as in-sync; with `--p2p-enabled=false` it never does, so besu answers `SYNCING` to every forkchoice update. Keep p2p on (peers stay at zero anyway).
 
 The flags above match `host-allowlist=all` (literal `all`, not `*` — `*` would glob-expand against `/opt/besu/` in the image's entrypoint).
+
+**Amsterdam.** `--fork=amsterdam` follows the Sepolia Amsterdam spec. Boot it on `hyperledger/besu:26.9.0` or later, with the same flags. 26.9.0 is the first besu release with Amsterdam (Sepolia `amsterdamTime` 1791294816). 25.11.0 does not know the fork. The chainspec gets `amsterdamTime` and the EIP-8282 builder request contract addresses. Besu then rebuilds the genesis header with `balHash` and `slotNumber`, so the hash matches the stored genesis. Drive blocks with `engine_forkchoiceUpdatedV4` (with `slotNumber`), `engine_getPayloadV6` and `engine_newPayloadV5` (`engineapi.ForkAmsterdam`). `TestE2ESuiteAmsterdam` covers this path.
 
 **Verify.**
 
@@ -277,6 +284,16 @@ missing flag logs `State backend: patricia (existing patricia state detected).`
 
 Like besu, Nethermind has no native post-Merge dev mode in our setup — `Merge.Enabled=true` + `TerminalTotalDifficulty=0` + the Ethash-from-genesis chainspec hand block production to MergePlugin via the Engine API. Drive blocks from an external CL mock (the state-actor repo's `internal/engineapi/`).
 
+**Amsterdam (`--fork=amsterdam`, Sepolia spec).** Boot an Amsterdam genesis on `nethermind/nethermind:2.1.0` or later. Nethermind 1.39.x has no Amsterdam support. The boot command and `boot.cfg` do not change. The written chainspec sets these keys to `0x0`, as Nethermind's Sepolia chainspec does at the Amsterdam timestamp:
+
+- `eip2780TransitionTimestamp`, `eip7708TransitionTimestamp`, `eip7778TransitionTimestamp`
+- `eip7843TransitionTimestamp` (header `slotNumber`) and `eip7928TransitionTimestamp` (header `blockAccessListHash`)
+- `eip7954TransitionTimestamp`, `eip7976TransitionTimestamp`, `eip7981TransitionTimestamp`
+- `eip8024TransitionTimestamp`, `eip8037TransitionTimestamp`, `eip8038TransitionTimestamp`
+- `eip8246TransitionTimestamp`, `eip8282TransitionTimestamp`
+
+Nethermind builds its own genesis header from these keys and compares its hash with the stored header. Thus the keys and the stored header must agree. Drive Amsterdam blocks with `engineapi.ForkAmsterdam` (`engine_forkchoiceUpdatedV4`, `engine_getPayloadV6`, `engine_newPayloadV5`). `TestE2ESuiteAmsterdam` in `client/nethermind/e2e_test.go` is the reference.
+
 **Verify.**
 
 ```bash
@@ -285,7 +302,7 @@ cast chain-id --rpc-url http://<container-ip>:8545   # → 0x539
 
 ## Ethrex
 
-Reference: `client/ethrex/e2e_test.go` (`TestE2ESuite`).
+Reference: `client/ethrex/e2e_test.go` (`TestE2ESuite`, `TestE2ESuiteAmsterdam`). Run both with `make test-ethrex-suite SPAMOOR=<path>`.
 
 **Generate.** ethrex uses cgo (RocksDB bindings via grocksdb) — build via Docker.
 
@@ -309,6 +326,10 @@ docker run --rm \
 - `/data/ethrex-genesis.json` — full genesis JSON; pass via `--network` when booting
 
 **Boot path.** ethrex's `add_initial_state` short-circuits when `canonical_block_hashes[0]` already resolves to a matching genesis header hash — state-actor writes that row, so ethrex skips state-trie recomputation at boot. Required boot flags (validated by the e2e suite, Phase 4): `--network <ethrex-genesis.json>`, `--datadir <dir>`, `--skip-genesis-validation` (trust the written stateRoot rather than recompute from the empty-alloc sidecar; needs lambdaclass/ethrex#6783, in releases ≥ v16.0.0), and `--syncmode full`. The `--syncmode full` flag is mandatory for engine-driven block production: in the default snap mode ethrex's fork-choice handler returns `SYNCING` with a null `payloadId` for every `engine_forkchoiceUpdated`, so the mock CL can never obtain a payload to build. The pattern follows the besu/nethermind Engine API approach: boot the node, then drive blocks via `engine_forkchoiceUpdated` (ethrex also mandates an authrpc JWT, signed by the driver).
+
+**Amsterdam.** With `--fork=amsterdam` the sidecar and `chain_data` carry `amsterdamTime: 0`, and the genesis header carries `blockAccessListHash` (EIP-7928) and `slotNumber = 0` (EIP-7843). Amsterdam gets no `blobSchedule` entry: ethrex uses the `osaka` entry (6/9), the same values that geth gives Amsterdam. To build blocks, send `engine_forkchoiceUpdatedV4`. Its payload attributes must include `slotNumber` and `targetGasLimit`. ethrex (≥ v20.0.0, execution-apis#796) rejects V4 attributes without `targetGasLimit` with `-38003 Invalid payload attributes`. geth accepts them without it.
+
+**Image pin.** `ghcr.io/lambdaclass/ethrex:30.0.0` (commit `80b774a`), the release that schedules Amsterdam on Sepolia (`1791294816`) and Hoodi. `ETHREX_IMAGE` overrides the pin. The on-disk format is the same as at the previous pin (`ethpandaops/ethrex:glamsterdam-devnet-7`, commit `80bcc71`): `schema_version` 4, the same 22 column families, and the JUMPDEST bitmap in `account_codes`. `internal/ethrex/testdata/gen/README.md` explains how to regenerate the golden fixture when the pin moves.
 
 **Memory at boot.** ethrex's shared RocksDB block cache defaults to 12 GiB and holds index + bloom-filter blocks. The cache fills lazily, but on a large DB a memory-capped container can be OOM-killed as it fills — cap it with `--rocksdb.block-cache-size <bytes>` on memory-constrained hosts. Boot-side knob only; no bearing on the bytes state-actor writes.
 
@@ -351,6 +372,8 @@ docker run --rm \
 cast chain-id --rpc-url http://<container-ip>:8545   # → 0x539
 ```
 
+**Amsterdam variant.** Add `--fork=amsterdam` to the generate command (Sepolia spec). Boot the erigon binary that `Dockerfile.erigon` builds (the pinned commit `546790a6a7`, which ships the Sepolia `amsterdamTime`), with the flags above. The engine driver must use `engine_forkchoiceUpdatedV4` with `slotNumber` and `targetGasLimit` (erigon rejects V4 attributes without either, with -38003), `engine_getPayloadV6` and `engine_newPayloadV5`. `erigon init` writes the Amsterdam header fields (`blockAccessListHash` = the empty-list hash, `slotNumber` = 0); the stateRoot patch keeps them. Reference: `TestE2ESuiteAmsterdam`.
+
 ## Nimbus
 
 Reference: `client/nimbus/e2e_test.go` (`TestE2ESuite`).
@@ -377,9 +400,9 @@ docker run --rm \
 **Boot path.** Nimbus rebuilds genesis from `--network`'s alloc on every start and refuses a datadir whose block-0 hash differs (`preventLoadingDataDirForTheWrongNetwork`). The sidecar's alloc is empty — the state lives in `AriVtx` and the real root is in the stored header — so boot with the hidden `--debug-rewrite-datadir-id` flag, which skips that check: the analogue of ethrex's `--skip-genesis-validation`. With block 0 present nimbus never rewrites genesis, `initializeDb` sees the canonical-head row and skips, and ForkedChain loads base = block 0 (a "Cannot find previous FC state" warning at boot is expected). Every branch ships with its Merkle key, so boot does not walk the state (no `Writing computeKey cache` line). Required boot flags (validated by the e2e suite):
 
 ```bash
-docker run -d --name nimbus \
+docker run -d --name nimbus --user 0:0 \
   -v /tmp/sa-nimbus:/data \
-  statusim/nimbus-eth1:master-2f0ae87 \
+  statusim/nimbus-eth1:v0.4.3 \
   executionClient \
   --data-dir=/data \
   --network=/data/nimbus-genesis.json \
@@ -391,9 +414,11 @@ docker run -d --name nimbus \
   --max-peers=0 --discv5=false --nat=none
 ```
 
-`executionClient` selects the EL inside the combined `nimbus` binary (without it the image runs CL + EL). `--rpc-api` accepts only `eth`, `debug`, `admin` (`web3_*` / `net_*` are always served). Nimbus has no dev / self-mining mode, so the chain is engine-driven like besu / nethermind, and the engine API mandates a JWT: write 32 random bytes as bare hex to `/data/jwt.hex` before booting and sign engine calls with it (`internal/e2e_testing.StartEngineDriverWithJWT`). Nimbus chmods the data dir to 0700 at startup; the container runs as root, so a bind mount works.
+`executionClient` selects the EL inside the combined `nimbus` binary (without it the image runs CL + EL). `--rpc-api` accepts only `eth`, `debug`, `admin` (`web3_*` / `net_*` are always served). Nimbus has no dev / self-mining mode, so the chain is engine-driven like besu / nethermind, and the engine API mandates a JWT: write 32 random bytes as bare hex to `/data/jwt.hex` before booting and sign engine calls with it (`internal/e2e_testing.StartEngineDriverWithJWT`). Nimbus chmods the data dir to 0700 at startup. The release images run as an unprivileged `user`, but state-actor writes the datadir and `jwt.hex` as root, so run nimbus with `--user 0:0`. Without it nimbus stops at boot with `jwt-secret=... File not accessible`.
 
-**Image pin.** `statusim/nimbus-eth1:master-2f0ae87` (commit `2f0ae87cd`, "Storage trie static vids"). A master build, not a release: that commit changed the Aristo on-disk format (static storage-trie vertex IDs, the AccLeaf `stoHint` byte, the `0x7e` SavedState trailer) and no tagged release reads it. `NIMBUS_IMAGE` overrides the pin in `TestE2ESuite` / `make test-nimbus-suite`; `internal/nimbus/testdata/gen/README.md` explains how to regenerate the golden fixture when the pin moves.
+**Image pin.** `statusim/nimbus-eth1:v0.4.3` (commit `6e4d83c1`). Use v0.4.2 or later: commit `2f0ae87cd` ("Storage trie static vids") changed the Aristo on-disk format (static storage-trie vertex IDs, the AccLeaf `stoHint` byte, the `0x7e` SavedState trailer), and v0.4.1 and earlier cannot read it. v0.4.3 has the same format as `2f0ae87cd`, the source of the codec and the golden fixture. `NIMBUS_IMAGE` overrides the pin in `TestE2ESuite` / `TestE2ESuiteAmsterdam` / `make test-nimbus-suite`. `internal/nimbus/testdata/gen/README.md` tells how to regenerate the golden fixture when the format changes.
+
+**Amsterdam variant.** Add `--fork=amsterdam` to the generate command (Sepolia spec). Boot as above with nimbus-eth1 v0.4.2 or later (v0.4.2 scheduled the Sepolia Amsterdam activation). The sidecar then sets `amsterdamTime: 0` and a `blobSchedule.amsterdam` entry with the Prague values. The stored header carries `blockAccessListHash` (the empty-list hash) and `slotNumber = 0`, the same header nimbus builds from the sidecar. The engine driver must use `engine_forkchoiceUpdatedV4` (with `slotNumber`), `engine_getPayloadV6` and `engine_newPayloadV5`. Reference: `TestE2ESuiteAmsterdam`.
 
 **Verify.**
 

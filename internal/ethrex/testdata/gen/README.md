@@ -8,13 +8,18 @@ storage schema changes.
 ## Pinned commit
 
 ```
-lambdaclass/ethrex @ 80bcc71
+lambdaclass/ethrex @ v30.0.0 (80b774a)
 ```
 
-A pre-release commit, the one the ethpandaops `glamsterdam-devnet-7` image was
-built from. `--version` reports `v22.0.0` here: the branch does not descend from
-the v23.0.0 version bump, though its storage code is ahead of it. Don't take the
-version string as a sign the pin is wrong.
+The previous pin was commit 80bcc71 (the ethpandaops `glamsterdam-devnet-7`
+build). The v30.0.0 dump differs from that fixture only in three places, none of
+them a format change on the state-actor side:
+
+- `account_codes` values carry the JUMPDEST bitmap that the writer already
+  emits. The old fixture still had the older RLP list of offsets.
+- `chain_data[0x80]` gains `"lstarTime":null`. The golden test checks only that
+  this value is valid JSON, because ethrex rewrites it from `--network` at boot.
+- The `state_history` CF is listed (empty).
 
 The e2e boot image (`client/ethrex/e2e_test.go`) and `Tables`
 (`internal/ethrex/constants.go`) carry the same pin, and all three move
@@ -33,7 +38,7 @@ family, or changes the key layout of `account_trie_nodes`, `storage_trie_nodes`,
    ```sh
    git clone https://github.com/lambdaclass/ethrex
    cd ethrex
-   git checkout 80bcc71
+   git checkout v30.0.0
    ```
 
 2. Copy the dump harness into ethrex's examples directory:

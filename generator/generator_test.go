@@ -614,6 +614,10 @@ func TestBinaryTrieStateRootValue(t *testing.T) {
 	// Golden value test: pin the binary trie state root for the canonical
 	// auto-fill plan at 256 KiB budget, seed 12345 — matches the writer
 	// configuration in internal/e2e_testing/golden.go.
+	//
+	// go-ethereum v1.17.6 changed the EIP-7864 tree-index encoding in
+	// bintrie.GetBinaryTreeKey (big-endian, shifted one byte), which moved
+	// every stem and so this root.
 	tmpDir := t.TempDir()
 	dbPath := filepath.Join(tmpDir, "testdb")
 
@@ -636,7 +640,7 @@ func TestBinaryTrieStateRootValue(t *testing.T) {
 		t.Fatalf("Failed to generate state: %v", err)
 	}
 
-	expected := common.HexToHash("0x6b71f58a368866a6234cf4eb3cb5e7002a399351bd1943f2fade9d0b57a539fb")
+	expected := common.HexToHash("0xf91a8d8d8dfc0f350f8b62a002db53b255ff28d2352e532f489b3413b1024b53")
 	if stats.StateRoot != expected {
 		t.Errorf("Binary trie state root mismatch:\n  got:  %s\n  want: %s\nThis may indicate an upstream bintrie API change.",
 			stats.StateRoot.Hex(), expected.Hex())
@@ -743,7 +747,7 @@ func TestBinaryTrieCommitIntervalGoldenHash(t *testing.T) {
 	}
 
 	// Must match the same golden hash as TestBinaryTrieStateRootValue.
-	expected := common.HexToHash("0x6b71f58a368866a6234cf4eb3cb5e7002a399351bd1943f2fade9d0b57a539fb")
+	expected := common.HexToHash("0xf91a8d8d8dfc0f350f8b62a002db53b255ff28d2352e532f489b3413b1024b53")
 	if stats.StateRoot != expected {
 		t.Errorf("CommitInterval golden hash mismatch:\n  got:  %s\n  want: %s",
 			stats.StateRoot.Hex(), expected.Hex())

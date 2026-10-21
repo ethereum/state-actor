@@ -147,3 +147,51 @@ func TestChainSpec_MixHashAndCoinbaseFromG(t *testing.T) {
 		t.Errorf("coinbase = %v; want %s", got, g.Coinbase.Hex())
 	}
 }
+
+// TestChainSpec_AmsterdamKeysOnlyWhenSelected pins the Amsterdam keys. The
+// Osaka chainspec must not change, so it must not carry any of them.
+func TestChainSpec_AmsterdamKeysOnlyWhenSelected(t *testing.T) {
+	amsterdamKeys := []string{
+		"amsterdamTime",
+		"builderDepositRequestContractAddress",
+		"builderExitRequestContractAddress",
+	}
+	for _, fork := range []string{"prague", "osaka"} {
+		cfg := readChainSpec(t, fork)["config"].(map[string]any)
+		for _, k := range amsterdamKeys {
+			if _, ok := cfg[k]; ok {
+				t.Errorf("--fork=%s: config[%q] must not be emitted", fork, k)
+			}
+		}
+	}
+
+	cfg := readChainSpec(t, "amsterdam")["config"].(map[string]any)
+	// JSON integer, like the other fork timestamps.
+	if got := cfg["amsterdamTime"]; got != float64(0) {
+		t.Errorf("amsterdamTime = %v (%T), want 0", got, got)
+	}
+	// Amsterdam cascades through Osaka.
+	if got := cfg["osakaTime"]; got != float64(0) {
+		t.Errorf("osakaTime = %v (%T), want 0", got, got)
+	}
+	// The default addresses in besu 26.9.0
+	// (RequestContractAddresses.DEFAULT_BUILDER_*_REQUEST_CONTRACT_ADDRESS).
+	for k, want := range map[string]string{
+		"builderDepositRequestContractAddress": "0x0000bff46984e3725691fa540a8c7589300d8282",
+		"builderExitRequestContractAddress":    "0x000064d678505ad48f8ccb093bc65613800e8282",
+	} {
+		if got := cfg[k]; got != want {
+			t.Errorf("config[%q] = %v, want %s", k, got, want)
+		}
+	}
+	// Besu reads no amsterdam blobSchedule key, so Amsterdam keeps the
+	// Prague entry.
+	bs := cfg["blobSchedule"].(map[string]any)
+	if _, ok := bs["amsterdam"]; ok {
+		t.Error("blobSchedule[amsterdam] should not be emitted")
+	}
+	prague := bs["prague"].(map[string]any)
+	if prague["target"] != float64(6) || prague["max"] != float64(9) {
+		t.Errorf("blobSchedule[prague] = %v, want target=6 max=9", prague)
+	}
+}

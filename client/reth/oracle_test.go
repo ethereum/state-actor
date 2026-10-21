@@ -5,6 +5,7 @@ package reth
 import (
 	"context"
 	"math/big"
+	"os"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -22,8 +23,12 @@ import (
 )
 
 // rethImageRef returns the fully-qualified reth image reference from the
-// pinned constants, falling back to known-good defaults.
+// pinned constants, falling back to known-good defaults. Set RETH_IMAGE
+// (for example ghcr.io/paradigmxyz/reth:vX.Y.Z) to test another release.
 func rethImageRef() string {
+	if v := os.Getenv("RETH_IMAGE"); v != "" {
+		return v
+	}
 	image := iReth.PinnedRethImage
 	if image == "" {
 		image = "ghcr.io/paradigmxyz/reth"
@@ -206,7 +211,7 @@ func TestRethNodeBootEmptyAlloc(t *testing.T) {
 
 // TestE2ESuite — see client/besu/e2e_test.go for the full phase
 // description. reth-specific bits:
-//   - --fork=osaka (reth's MaxForkForClient ceiling, after the writer migration to internal/genesisheader.Build).
+//   - --fork=osaka (the latest mainnet fork; reth's default).
 //   - 60M gas matches mainnet-current.
 //   - DinD via the `oracle` build tag.
 //   - Pinned image: paradigmxyz/reth digest-pinned via
@@ -217,6 +222,26 @@ func TestRethNodeBootEmptyAlloc(t *testing.T) {
 //
 // Build-tagged `cgo_reth && oracle`. Run via `make test-reth-suite`.
 func TestE2ESuite(t *testing.T) {
+	runE2ESuite(t, "osaka")
+}
+
+// TestE2ESuiteAmsterdam runs the same suite on an Amsterdam genesis
+// (Sepolia spec). On top of the Osaka suite it proves that reth reads
+// the Amsterdam HeaderExt fields (blockAccessListHash, slotNumber) from
+// the static-files header, accepts the Amsterdam system contracts, and
+// then builds and imports Amsterdam blocks. reth's --dev local miner
+// sends the Amsterdam payload attributes itself, so this suite does not
+// use internal/engineapi.
+func TestE2ESuiteAmsterdam(t *testing.T) {
+	// The cross-client aggregator compares reth-result.json with the
+	// Osaka roots of the other clients. The Amsterdam system contracts
+	// change the root, so this run must not write that file (CI's
+	// `go test` runs both tests).
+	t.Setenv("RESULT_PATH", "")
+	runE2ESuite(t, "amsterdam")
+}
+
+func runE2ESuite(t *testing.T, fork string) {
 	if testing.Short() {
 		t.Skip("e2e suite skipped in short mode")
 	}
@@ -228,7 +253,7 @@ func TestE2ESuite(t *testing.T) {
 		e2eBudget uint64 = 100 << 20
 	)
 
-	g, err := stategenesis.BuildSynthetic("osaka", big.NewInt(1337), 60_000_000,
+	g, err := stategenesis.BuildSynthetic(fork, big.NewInt(1337), 60_000_000,
 		1_700_000_000, []byte{0xde, 0xad, 0xbe, 0xef})
 	if err != nil {
 		t.Fatalf("BuildSynthetic: %v", err)
@@ -257,6 +282,9 @@ func TestE2ESuite(t *testing.T) {
 	// Deploy EIP-4788/2935/7002/7251 system contracts at their canonical
 	// addresses — required for the cross-client genesis-root invariant.
 	syscontracts.AddCanonicalSystemContracts(&cfg)
+	if stategenesis.ForkAtLeast(fork, "amsterdam") {
+		syscontracts.AddAmsterdamSystemContracts(&cfg)
+	}
 
 	if _, err := RunCgo(context.Background(), cfg, Options{}); err != nil {
 		t.Fatalf("RunCgo: %v", err)

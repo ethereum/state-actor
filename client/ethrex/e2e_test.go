@@ -30,19 +30,18 @@ import (
 // against, digest-pinned for reproducibility. Override with ETHREX_IMAGE=<ref>
 // to test a specific build.
 //
-// ethpandaops glamsterdam-devnet-7, ethrex commit 80bcc71 — a pre-release
-// build, not a tagged release, because no release carries the three things
-// state-actor has to match here: account_codes values carry a JUMPDEST bitmap
-// instead of an RLP list of u32 offsets, STORE_SCHEMA_VERSION is 4 (both
-// lambdaclass/ethrex#7095), and TABLES gained state_history. The branch is not
-// a descendant of v23.0.0 — it diverges by the version-bump commit alone, so it
-// reports v22.0.0 while carrying strictly more storage code. Boot requires
-// --skip-genesis-validation (lambdaclass/ethrex#6783, ≥v16.0.0).
+// ethrex v30.0.0 (commit 80b774a), the latest release. It schedules
+// Amsterdam on Sepolia at 1791294816 (cmd/ethrex/networks/sepolia) and on
+// Hoodi, and boots an amsterdamTime=0 genesis (TestE2ESuiteAmsterdam). The
+// on-disk format that state-actor writes is the same as at the previous pin
+// (ethpandaops glamsterdam-devnet-7, commit 80bcc71): STORE_SCHEMA_VERSION 4,
+// the same 22 TABLES, and account_codes values with a JUMPDEST bitmap
+// (lambdaclass/ethrex#7095). Boot requires --skip-genesis-validation
+// (lambdaclass/ethrex#6783, ≥v16.0.0).
 //
 // This pin is also the source of internal/ethrex's Tables and StoreSchemaVersion
-// and of testdata/genesis_dump.json; move them together. Repin to a release tag
-// once one carries all three.
-const pinnedEthrexImage = "ethpandaops/ethrex:glamsterdam-devnet-7@sha256:edae9e568868f58ed6826bde99480ca22a64b5f7674de7a3e522c83de13487ed"
+// and of testdata/genesis_dump.json; move them together.
+const pinnedEthrexImage = "ghcr.io/lambdaclass/ethrex:30.0.0@sha256:775da9c7c67930bf8a77954d138d019f10cdfa487e58e7ae282ed43470de4d8a"
 
 func ethrexImageRef() string {
 	if v := os.Getenv("ETHREX_IMAGE"); v != "" {
@@ -88,6 +87,25 @@ func writeJWTSecret(datadir string) (string, error) {
 // ethrex. StartEngineDriverWithJWT reads the same file and signs every
 // engine-API call with an HS256 Bearer token.
 func TestE2ESuite(t *testing.T) {
+	runE2ESuite(t, "osaka", engineapi.ForkOsaka)
+}
+
+// TestE2ESuiteAmsterdam runs the same suite on an Amsterdam genesis
+// (Sepolia spec). On top of the Osaka suite it proves that ethrex accepts
+// the stored Amsterdam header (blockAccessListHash, slotNumber), the
+// amsterdamTime in the sidecar and the Amsterdam system contracts. The
+// engine driver then builds Amsterdam blocks on top (forkchoiceUpdatedV4,
+// getPayloadV6, newPayloadV5).
+func TestE2ESuiteAmsterdam(t *testing.T) {
+	// The cross-client aggregator compares ethrex-result.json with the
+	// Osaka roots of the other clients. The Amsterdam system contracts
+	// change the root, so this run must not write that file (CI's
+	// `-run TestE2ESuite` filter matches both tests).
+	t.Setenv("RESULT_PATH", "")
+	runE2ESuite(t, "amsterdam", engineapi.ForkAmsterdam)
+}
+
+func runE2ESuite(t *testing.T, fork string, engineFork engineapi.Fork) {
 	if testing.Short() {
 		t.Skip("e2e suite skipped in short mode")
 	}
@@ -99,7 +117,7 @@ func TestE2ESuite(t *testing.T) {
 		e2eBudget uint64 = 100 << 20
 	)
 
-	g, err := stategenesis.BuildSynthetic("osaka", big.NewInt(1337), 60_000_000,
+	g, err := stategenesis.BuildSynthetic(fork, big.NewInt(1337), 60_000_000,
 		1_700_000_000, []byte{0xde, 0xad, 0xbe, 0xef})
 	if err != nil {
 		t.Fatalf("BuildSynthetic: %v", err)
@@ -125,6 +143,9 @@ func TestE2ESuite(t *testing.T) {
 	specDoc, preAlloc := e2e.LoadCISpec(t, "../../examples/full-matrix-spec-feature.yaml", "ethrex")
 	cfg.PreAlloc = preAlloc
 	syscontracts.AddCanonicalSystemContracts(&cfg)
+	if stategenesis.ForkAtLeast(fork, "amsterdam") {
+		syscontracts.AddAmsterdamSystemContracts(&cfg)
+	}
 
 	if _, err := ethrex.Run(context.Background(), cfg, ethrex.Options{}); err != nil {
 		t.Fatalf("ethrex.Run: %v", err)
@@ -146,7 +167,7 @@ func TestE2ESuite(t *testing.T) {
 	})
 
 	imageRef := ethrexImageRef()
-	containerName := "state-actor-ethrex-boot-" + e2e.RandSuffix(8)
+	containerName := "state-actor-ethrex-boot-" + fork + "-" + e2e.RandSuffix(8)
 	// ethrex reads --network to build genesis; --datadir for the RocksDB;
 	// authrpc.jwtsecret for the engine-API JWT.
 	networkPath := dd.ContainerDatadir + "/" + ethrex.GenesisFileName
@@ -205,7 +226,7 @@ func TestE2ESuite(t *testing.T) {
 	// authrpc endpoint; StartEngineDriverWithJWT reads the secret from
 	// jwtPath and signs every engine_forkchoiceUpdated / engine_newPayload
 	// call with an HS256 Bearer token.
-	e2e.StartEngineDriverWithJWT(t, containerIP, rpcURL, engineapi.ForkOsaka, jwtPath)
+	e2e.StartEngineDriverWithJWT(t, containerIP, rpcURL, engineFork, jwtPath)
 
 	e2e.RunSuitePhases(t, e2e.SuitePhasesCfg{
 		ClientName:      "ethrex",

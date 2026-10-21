@@ -98,23 +98,21 @@ func NewWriter(dbPath string) (*Writer, error) {
 // see TestPebbleLevelOptionsMatchGeth, which locks this against geth's
 // actual code):
 //
-//   - 10-bit bloom filters on L0–L5, deliberately NONE on the last
-//     level (geth: "Pebble doesn't use the Bloom filter at level6 for
-//     read efficiency").
+//   - 10-bit bloom filters on every level, L0–L6. geth sets them on
+//     L0–L5 and leaves L6 empty, with the comment "Pebble doesn't use
+//     the Bloom filter at level6 for read efficiency". Since geth
+//     v1.17.6 moved to pebble v2, an empty level inherits the filter of
+//     the level above (LevelOptions.EnsureL1PlusDefaults), so geth's L6
+//     gets the L5 bloom filter too.
 //   - TargetFileSize ladder 2 MiB → 128 MiB doubling per level (same
 //     ladder pebble's defaults extrapolate; the filters are the real
 //     delta).
 //
-// Honest scope note: the shipped datadir does NOT end up with bloom
-// filters. Close()'s full-keyspace compaction sends all bulk data
-// straight to L6 (pebble picks baseLevel=6 when L1–L6 are empty), and
-// L6 has no filter — exactly like a real long-synced geth node, whose
-// bulk state also sits filter-less in L6. The filters here cover only
-// the transient L0 tables that exist during generation, and geth's own
-// runtime writes get filters from geth's own options regardless. The
-// value of this mirror is parity + the drift-guard test, not filters
-// in the final artifact — do NOT "fix" this by adding an L6 filter;
-// that would make bench reads faster than a real node's.
+// Close()'s full-keyspace compaction sends all bulk data straight to L6
+// (pebble picks baseLevel=6 when L1–L6 are empty). With the L6 filter,
+// the shipped datadir has bloom filters on its bulk state, like a real
+// geth v1.17.6+ node, whose compactions write L6 tables with the
+// inherited filter. Older geth wrote L6 without a filter.
 //
 // Runtime knobs (memtables, compaction triggers) are NOT mirrored —
 // those only shape behaviour while a process has the DB open, and our
@@ -122,13 +120,12 @@ func NewWriter(dbPath string) (*Writer, error) {
 // prodPebbleOptions.
 func gethLevelOptions() []pebble.LevelOptions {
 	levels := make([]pebble.LevelOptions, 7)
-	for i := 0; i < 6; i++ {
+	for i := range levels {
 		levels[i] = pebble.LevelOptions{
 			TargetFileSize: (2 * 1024 * 1024) << i,
 			FilterPolicy:   bloom.FilterPolicy(10),
 		}
 	}
-	levels[6] = pebble.LevelOptions{TargetFileSize: 128 * 1024 * 1024}
 	return levels
 }
 
@@ -152,8 +149,13 @@ func gethLevelOptions() []pebble.LevelOptions {
 //     per-compactor RAM blowup NumCPU caused on the 96-core bench box.
 //   - WAL stays on for the post-import metadata writes (PathDB markers,
 //     genesis block) — those are tiny, no point disabling.
+//   - FormatMajorVersion = FormatFlushableIngest → the minimum format
+//     pebble v2 opens. geth v1.17.6+ opens new DBs with pebble v2; an
+//     older format makes geth fall back to pebble v1 and log an upgrade
+//     warning. Pebble v1 also reads this format, so older geth still works.
 func prodPebbleOptions() *pebble.Options {
 	return &pebble.Options{
+		FormatMajorVersion:          pebble.FormatFlushableIngest,
 		Levels:                      gethLevelOptions(),
 		MemTableSize:                256 * 1024 * 1024,
 		MemTableStopWritesThreshold: 2,

@@ -28,7 +28,19 @@ import (
 // the same release.
 const pinnedBesuImage = "hyperledger/besu:25.11.0"
 
-func besuImageRef() string {
+// pinnedBesuAmsterdamImage is the besu tag for TestE2ESuiteAmsterdam.
+// 26.9.0 is the first release with the Sepolia Amsterdam spec (its
+// sepolia.json sets amsterdamTime 1791294816). 25.11.0 has no Amsterdam
+// fork. Override with BESU_AMSTERDAM_IMAGE.
+const pinnedBesuAmsterdamImage = "hyperledger/besu:26.9.0"
+
+func besuImageRef(fork string) string {
+	if stategenesis.ForkAtLeast(fork, "amsterdam") {
+		if v := os.Getenv("BESU_AMSTERDAM_IMAGE"); v != "" {
+			return v
+		}
+		return pinnedBesuAmsterdamImage
+	}
 	if v := os.Getenv("BESU_IMAGE"); v != "" {
 		return v
 	}
@@ -44,6 +56,25 @@ func besuImageRef() string {
 // not in plain `go test ./...`. Spamoor binary must be on PATH or
 // $SPAMOOR set; absent → t.Skip (or t.Fatal in CI when REQUIRE_SPAMOOR=1).
 func TestE2ESuite(t *testing.T) {
+	runE2ESuite(t, "osaka", engineapi.ForkOsaka)
+}
+
+// TestE2ESuiteAmsterdam runs the same suite on an Amsterdam genesis
+// (Sepolia spec) against besu 26.9.0. On top of the Osaka suite it proves
+// that besu rebuilds the same genesis hash from the Amsterdam chainspec
+// (balHash, slotNumber), accepts the Amsterdam system contracts, and
+// builds Amsterdam blocks through engine_forkchoiceUpdatedV4 /
+// getPayloadV6 / newPayloadV5.
+func TestE2ESuiteAmsterdam(t *testing.T) {
+	// The cross-client aggregator compares besu-result.json with the
+	// Osaka roots of the other clients. The Amsterdam system contracts
+	// change the root, so this run must not write that file (CI's
+	// `-run TestE2ESuite` filter matches both tests).
+	t.Setenv("RESULT_PATH", "")
+	runE2ESuite(t, "amsterdam", engineapi.ForkAmsterdam)
+}
+
+func runE2ESuite(t *testing.T, fork string, engineFork engineapi.Fork) {
 	if testing.Short() {
 		t.Skip("e2e suite skipped in short mode")
 	}
@@ -55,10 +86,9 @@ func TestE2ESuite(t *testing.T) {
 		e2eBudget uint64 = 100 << 20
 	)
 
-	// All 4 clients pin --fork=osaka after the writer migration to internal/genesisheader.Build. state-actor's
-	// MaxForkForClient(c)=="osaka" for every client; pre-Prague forks
-	// are EOL and rejected at parse. 60M gas tracks current mainnet.
-	g, err := stategenesis.BuildSynthetic("osaka", big.NewInt(1337), 60_000_000,
+	// Pre-Prague forks are EOL and rejected at parse. 60M gas tracks
+	// current mainnet.
+	g, err := stategenesis.BuildSynthetic(fork, big.NewInt(1337), 60_000_000,
 		1_700_000_000, []byte{0xde, 0xad, 0xbe, 0xef})
 	if err != nil {
 		t.Fatalf("BuildSynthetic: %v", err)
@@ -91,6 +121,11 @@ func TestE2ESuite(t *testing.T) {
 	// them ("Withdrawal Request Contract Address not found"), and on
 	// each block "Invalid system call address" if their code is missing.
 	syscontracts.AddCanonicalSystemContracts(&cfg)
+	// Amsterdam adds the EIP-8282 builder request contracts (besu calls
+	// them at the end of each block) and the EIP-7997 factory.
+	if stategenesis.ForkAtLeast(fork, "amsterdam") {
+		syscontracts.AddAmsterdamSystemContracts(&cfg)
+	}
 	if _, err := Run(context.Background(), cfg, Options{}); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -112,7 +147,7 @@ func TestE2ESuite(t *testing.T) {
 	// getPayload / newPayload — besu has no native post-Merge dev mode
 	// (clique broken post-Shanghai per hyperledger/besu#8532, removed
 	// in 26.4.0). JWT is disabled for tests.
-	imageRef := besuImageRef()
+	imageRef := besuImageRef(fork)
 	containerName := "state-actor-besu-boot-" + e2e.RandSuffix(8)
 	chainspecPath := dd.ContainerDatadir + "/" + ChainSpecFileName
 	runArgs := append([]string{"run", "-d"}, e2e.DockerPlatformArgs("BESU_DOCKER_PLATFORM")...)
@@ -148,7 +183,7 @@ func TestE2ESuite(t *testing.T) {
 	t.Cleanup(func() {
 		logs, _ := exec.Command("docker", "logs", containerName).CombinedOutput()
 		t.Logf("besu container logs:\n%s", logs)
-		exec.Command("docker", "stop", containerName).Run()    //nolint:errcheck
+		exec.Command("docker", "stop", containerName).Run()     //nolint:errcheck
 		exec.Command("docker", "rm", "-f", containerName).Run() //nolint:errcheck
 	})
 
@@ -168,7 +203,7 @@ func TestE2ESuite(t *testing.T) {
 	// Mock CL: drive block production via engine API. Modeled after besu's
 	// own PragueAcceptanceTestHelper.java. The goroutine runs for the
 	// rest of the test so spamoor's txs (Phase 5) get included in blocks.
-	e2e.StartEngineDriver(t, containerIP, rpcURL, engineapi.ForkOsaka)
+	e2e.StartEngineDriver(t, containerIP, rpcURL, engineFork)
 
 	// Phases 3-7: shared via internal/e2e.RunSuitePhases.
 	e2e.RunSuitePhases(t, e2e.SuitePhasesCfg{

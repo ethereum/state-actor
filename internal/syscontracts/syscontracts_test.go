@@ -8,8 +8,10 @@ import (
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/params"
+	"github.com/holiman/uint256"
 
 	"github.com/ethereum/state-actor/generator"
+	"github.com/ethereum/state-actor/internal/templates"
 )
 
 // expectedSysContracts enumerates the 5 canonical mainnet system contracts
@@ -150,4 +152,61 @@ func safePrefix(b []byte, n int) []byte {
 		return b
 	}
 	return b[:n]
+}
+
+func TestAddAmsterdamSystemContracts_DeploysAll3(t *testing.T) {
+	cfg := &generator.Config{}
+	AddCanonicalSystemContracts(cfg)
+	AddAmsterdamSystemContracts(cfg)
+
+	want := []struct {
+		name string
+		addr string
+		code []byte
+	}{
+		{"BuilderDeposit (EIP-8282)", "0x0000BFF46984E3725691FA540A8C7589300D8282", params.BuilderDepositCode},
+		{"BuilderExit (EIP-8282)", "0x000064D678505AD48F8CCB093BC65613800E8282", params.BuilderExitCode},
+		{"DeterministicFactory (EIP-7997)", "0x4e59b44847b379578588920cA78FbF26c0B4956C", params.DeterministicFactoryCode},
+	}
+	for _, sc := range want {
+		addr := common.HexToAddress(sc.addr)
+		acc, ok := cfg.GenesisAccounts[addr]
+		if !ok {
+			t.Errorf("%s: GenesisAccounts[%s] missing", sc.name, sc.addr)
+			continue
+		}
+		if acc.Nonce != 1 || acc.Balance.Sign() != 0 || acc.Root != types.EmptyRootHash {
+			t.Errorf("%s: got nonce=%d balance=%v root=%s, want 1/0/EmptyRootHash",
+				sc.name, acc.Nonce, acc.Balance, acc.Root.Hex())
+		}
+		if !bytes.Equal(acc.CodeHash, crypto.Keccak256(sc.code)) {
+			t.Errorf("%s: CodeHash does not match the bytecode", sc.name)
+		}
+		if !bytes.Equal(cfg.GenesisCode[addr], sc.code) {
+			t.Errorf("%s: GenesisCode mismatch", sc.name)
+		}
+	}
+	if len(cfg.GenesisAccounts) != 8 {
+		t.Errorf("GenesisAccounts has %d entries, want 5 canonical + 3 Amsterdam", len(cfg.GenesisAccounts))
+	}
+}
+
+// TestAddAmsterdamSystemContracts_SpecFactoryWins pins that a spec entity
+// at the EIP-7997 factory address (the create2_factory template) is not
+// duplicated: generator.Config.Validate rejects two accounts at one address.
+func TestAddAmsterdamSystemContracts_SpecFactoryWins(t *testing.T) {
+	cfg := &generator.Config{
+		PreAlloc: []templates.PreAllocEntity{{
+			Address: params.DeterministicFactoryAddress,
+			Account: &types.StateAccount{Nonce: 1, Balance: uint256.NewInt(0)},
+			Code:    params.DeterministicFactoryCode,
+		}},
+	}
+	AddAmsterdamSystemContracts(cfg)
+	if _, ok := cfg.GenesisAccounts[params.DeterministicFactoryAddress]; ok {
+		t.Error("factory added to GenesisAccounts although PreAlloc declares it")
+	}
+	if _, ok := cfg.GenesisAccounts[params.BuilderDepositAddress]; !ok {
+		t.Error("BuilderDeposit missing")
+	}
 }

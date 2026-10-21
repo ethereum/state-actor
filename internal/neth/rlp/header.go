@@ -17,13 +17,10 @@ import (
 // is non-nil, all earlier optionals are emitted (with zero defaults if
 // they were nil), so the wire layout stays in lockstep across clients.
 //
-// Limitations of this wrapper:
-//
-//   - Post-Electra fields Nethermind-master adds beyond go-ethereum
-//     (BlockAccessListHash, SlotNumber) are not currently representable.
-//     state-actor's genesis writer does not activate those forks at
-//     block 0; if that changes, this encoder grows a Nethermind-
-//     specific extended Header type.
+// Amsterdam: go-ethereum v1.17.6 adds BlockAccessListHash (EIP-7928) and
+// SlotNumber (EIP-7843) after RequestsHash, in that order. Nethermind 2.1.0's
+// HeaderDecoder reads the same two fields in the same order (requiredItems
+// [6] and [7]), so the wrapper needs no Nethermind-specific type.
 //
 // Pinned bytes are caught by the differential oracle further down the
 // pipeline, not here — this encoder's correctness is equivalent to the

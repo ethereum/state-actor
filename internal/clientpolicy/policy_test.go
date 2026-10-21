@@ -99,8 +99,8 @@ func TestValidateForClient_TargetSizeAllowed(t *testing.T) {
 func TestValidateForClient_ForkCeiling(t *testing.T) {
 	// Pre-Prague forks are EOL and rejected globally by
 	// genesis.BuildChainConfigForFork, so clientpolicy never sees them
-	// in practice. The per-client ceiling check still matters for
-	// future forks past osaka.
+	// in practice. The per-client ceiling check matters for forks past
+	// osaka: every client writes amsterdam.
 	cases := []struct {
 		client   string
 		fork     string
@@ -108,21 +108,28 @@ func TestValidateForClient_ForkCeiling(t *testing.T) {
 	}{
 		{"geth", "prague", true},
 		{"geth", "osaka", true},
+		{"geth", "amsterdam", true},
 		{"reth", "prague", true},
 		{"reth", "osaka", true},
+		{"reth", "amsterdam", true},
 		{"besu", "prague", true},
 		{"besu", "osaka", true},
+		{"besu", "amsterdam", true},
 		{"nethermind", "prague", true},
 		{"nethermind", "osaka", true},
+		{"nethermind", "amsterdam", true},
 		// Erigon's writer ceiling is osaka — verified empirically on the
 		// bloatnet bench host that `erigon init` accepts a genesis.json
 		// with OsakaTime active. Matches the other clients.
 		{"erigon", "prague", true},
 		{"erigon", "osaka", true},
+		{"erigon", "amsterdam", true},
 		{"ethrex", "prague", true},
 		{"ethrex", "osaka", true},
+		{"ethrex", "amsterdam", true},
 		{"nimbus", "prague", true},
 		{"nimbus", "osaka", true},
+		{"nimbus", "amsterdam", true},
 	}
 	for _, tc := range cases {
 		err := ValidateForClient(tc.client, FlagValues{Fork: tc.fork})

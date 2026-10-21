@@ -3,9 +3,14 @@ package nimbus
 import (
 	"encoding/json"
 	"math/big"
+	"reflect"
 	"testing"
 
+	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/core/types"
+
 	"github.com/ethereum/state-actor/genesis"
+	"github.com/ethereum/state-actor/internal/genesisheader"
 )
 
 func decodeSidecar(t *testing.T, fork string) map[string]any {
@@ -74,6 +79,72 @@ func TestGenesisSidecarPragueOmitsOsaka(t *testing.T) {
 	}
 	if _, ok := cfg["pragueTime"].(float64); !ok {
 		t.Fatal("pragueTime missing")
+	}
+}
+
+// An Amsterdam sidecar schedules amsterdamTime as a JSON number and gives
+// amsterdam the Prague blob schedule, as go-ethereum v1.17.6 does. An Osaka
+// sidecar must not carry either key.
+func TestGenesisSidecarAmsterdam(t *testing.T) {
+	doc := decodeSidecar(t, "amsterdam")
+	cfg := doc["config"].(map[string]any)
+	if v, ok := cfg["amsterdamTime"].(float64); !ok || v != 0 {
+		t.Fatalf("amsterdamTime must be the JSON number 0, got %#v", cfg["amsterdamTime"])
+	}
+	if _, ok := cfg["osakaTime"].(float64); !ok {
+		t.Fatal("osakaTime missing from an amsterdam sidecar")
+	}
+	bs := cfg["blobSchedule"].(map[string]any)
+	want := map[string]any{"target": 6.0, "max": 9.0, "baseFeeUpdateFraction": 5007716.0}
+	for _, k := range []string{"prague", "osaka", "amsterdam"} {
+		if !reflect.DeepEqual(bs[k], want) {
+			t.Fatalf("blobSchedule.%s = %#v, want %#v", k, bs[k], want)
+		}
+	}
+
+	osaka := decodeSidecar(t, "osaka")["config"].(map[string]any)
+	if _, ok := osaka["amsterdamTime"]; ok {
+		t.Fatal("amsterdamTime emitted for an osaka genesis")
+	}
+	if _, ok := osaka["blobSchedule"].(map[string]any)["amsterdam"]; ok {
+		t.Fatal("blobSchedule.amsterdam emitted for an osaka genesis")
+	}
+}
+
+// The writer stores the header from internal/genesisheader.Build, and nimbus
+// rebuilds block 0 from the sidecar. Both must give the same hash. The
+// pinned hashes come from nimbus-eth1 v0.4.3 ("Writing genesis to DB"),
+// booted on a fresh datadir with each sidecar (empty alloc, so the state root
+// is the empty root). go-ethereum v1.17.6 gives the same hashes.
+func TestGenesisHeaderMatchesNimbusRebuild(t *testing.T) {
+	cases := []struct {
+		fork string
+		hash common.Hash
+	}{
+		{"osaka", common.HexToHash("0xcb47a1d8b28059a38b6a6d1bc93fa9e53e3f3534571339fe6c63205a1d97cf7f")},
+		{"amsterdam", common.HexToHash("0xf2ca3be956811381db0b48028135ddde3053f592125d041acd67d19f832b9645")},
+	}
+	for _, tc := range cases {
+		t.Run(tc.fork, func(t *testing.T) {
+			g, err := genesis.BuildSynthetic(tc.fork, big.NewInt(1337), 60_000_000,
+				1_700_000_000, []byte{0xde, 0xad, 0xbe, 0xef})
+			if err != nil {
+				t.Fatalf("BuildSynthetic: %v", err)
+			}
+			h := genesisheader.Build(g, 0, common.Hash{}, types.EmptyRootHash)
+			if got := h.Hash(); got != tc.hash {
+				t.Fatalf("genesis hash %s, nimbus rebuilds %s", got.Hex(), tc.hash.Hex())
+			}
+			isAmsterdam := tc.fork == "amsterdam"
+			if (h.BlockAccessListHash != nil) != isAmsterdam || (h.SlotNumber != nil) != isAmsterdam {
+				t.Fatalf("blockAccessListHash/slotNumber presence wrong for %s: %v / %v",
+					tc.fork, h.BlockAccessListHash, h.SlotNumber)
+			}
+			if isAmsterdam && (*h.BlockAccessListHash != types.EmptyBlockAccessListHash || *h.SlotNumber != 0) {
+				t.Fatalf("amsterdam fields: blockAccessListHash %s slotNumber %d",
+					h.BlockAccessListHash.Hex(), *h.SlotNumber)
+			}
+		})
 	}
 }
 

@@ -51,7 +51,14 @@ const defaultDepositContractAddress = "0x00000000219ab540356cbb839cbe05303d7705f
 //   - the genesis timestamp is a JSON STRING (hex or decimal);
 //   - mixHash must be spelled in camelCase (a lowercase key is dropped);
 //   - blobSchedule entries are inherited by later forks that lack one, so
-//     cancun and prague are always present and osaka follows osakaTime.
+//     cancun and prague are always present, osaka follows osakaTime and
+//     amsterdam follows amsterdamTime. osaka and amsterdam carry the Prague
+//     values, as go-ethereum's params.DefaultBlobSchedule gives them.
+//
+// Amsterdam (the Sepolia spec, nimbus-eth1 v0.4.2+) needs only amsterdamTime
+// here. At Amsterdam, nimbus's writeGenesis adds blockAccessListHash (the
+// empty-list hash) and slotNumber (the genesis slotNumber, 0 when absent) to
+// the header, as internal/genesisheader.Build does.
 //
 // alloc is intentionally empty: the account and storage tries are written
 // directly into AriVtx and the real state root is in the stored genesis
@@ -88,7 +95,7 @@ func BuildGenesisJSON(g *genesis.Genesis) ([]byte, error) {
 	}
 	blobSchedule := map[string]any{
 		"cancun": map[string]any{"target": 3, "max": 6, "baseFeeUpdateFraction": 3338477},
-		"prague": map[string]any{"target": 6, "max": 9, "baseFeeUpdateFraction": 5007716},
+		"prague": pragueBlobConfig(),
 	}
 	if g.Config.ShanghaiTime != nil {
 		cfg["shanghaiTime"] = *g.Config.ShanghaiTime
@@ -101,7 +108,11 @@ func BuildGenesisJSON(g *genesis.Genesis) ([]byte, error) {
 	}
 	if g.Config.OsakaTime != nil {
 		cfg["osakaTime"] = *g.Config.OsakaTime
-		blobSchedule["osaka"] = map[string]any{"target": 6, "max": 9, "baseFeeUpdateFraction": 5007716}
+		blobSchedule["osaka"] = pragueBlobConfig()
+	}
+	if g.Config.AmsterdamTime != nil {
+		cfg["amsterdamTime"] = *g.Config.AmsterdamTime
+		blobSchedule["amsterdam"] = pragueBlobConfig()
 	}
 	cfg["blobSchedule"] = blobSchedule
 
@@ -131,4 +142,10 @@ func BuildGenesisJSON(g *genesis.Genesis) ([]byte, error) {
 		return nil, fmt.Errorf("BuildGenesisJSON marshal: %w", err)
 	}
 	return append(out, '\n'), nil
+}
+
+// pragueBlobConfig is the Prague blobSchedule entry (EIP-7691). Since
+// go-ethereum v1.17.6, the named forks after Prague inherit it.
+func pragueBlobConfig() map[string]any {
+	return map[string]any{"target": 6, "max": 9, "baseFeeUpdateFraction": 5007716}
 }

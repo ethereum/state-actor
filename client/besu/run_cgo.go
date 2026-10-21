@@ -38,7 +38,7 @@ func runImpl(ctx context.Context, cfg generator.Config, opts Options) (*generato
 	// (besu's writer ceiling after the writer migration to internal/genesisheader.Build — see
 	// genesis.MaxForkForClient("besu")). Header construction goes
 	// through internal/genesisheader.Build, which handles every fork
-	// up through Osaka uniformly across all 4 clients.
+	// up through Amsterdam uniformly across all clients.
 	g := cfg.Genesis
 	if g == nil {
 		g, _ = genesis.BuildSynthetic("osaka", nil, 0, 0, nil)

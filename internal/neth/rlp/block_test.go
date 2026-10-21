@@ -7,6 +7,7 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
+	gethrlp "github.com/ethereum/go-ethereum/rlp"
 )
 
 // TestEncodeReceipts_Empty: the genesis-row receipts entry. Empty list →
@@ -107,5 +108,79 @@ func TestEncodeBlock_GenesisShape(t *testing.T) {
 	}
 	if len(got.Transactions()) != 0 || len(got.Uncles()) != 0 {
 		t.Errorf("expected empty body, got %d txs / %d uncles", len(got.Transactions()), len(got.Uncles()))
+	}
+}
+
+// TestEncodeHeader_AmsterdamTrailingFields pins the Amsterdam header tail.
+// Nethermind's HeaderDecoder reads requestsHash, then blockAccessListHash
+// (EIP-7928), then slotNumber (EIP-7843). The encoder must emit the same
+// order, and a genesis slotNumber of 0 must encode as the empty string 0x80.
+func TestEncodeHeader_AmsterdamTrailingFields(t *testing.T) {
+	zero := uint64(0)
+	zeroHash := common.Hash{}
+	requestsHash := types.EmptyRequestsHash
+	balHash := types.EmptyBlockAccessListHash
+	h := &types.Header{
+		UncleHash:           types.EmptyUncleHash,
+		Root:                types.EmptyRootHash,
+		TxHash:              types.EmptyTxsHash,
+		ReceiptHash:         types.EmptyReceiptsHash,
+		Difficulty:          big.NewInt(0),
+		Number:              big.NewInt(0),
+		GasLimit:            60_000_000,
+		BaseFee:             big.NewInt(1_000_000_000),
+		WithdrawalsHash:     &types.EmptyWithdrawalsHash,
+		BlobGasUsed:         &zero,
+		ExcessBlobGas:       &zero,
+		ParentBeaconRoot:    &zeroHash,
+		RequestsHash:        &requestsHash,
+		BlockAccessListHash: &balHash,
+		SlotNumber:          &zero,
+	}
+
+	encoded, err := EncodeHeader(h)
+	if err != nil {
+		t.Fatalf("EncodeHeader: %v", err)
+	}
+
+	content, _, err := gethrlp.SplitList(encoded)
+	if err != nil {
+		t.Fatalf("SplitList: %v", err)
+	}
+	var items [][]byte
+	for len(content) > 0 {
+		_, _, rest, err := gethrlp.Split(content)
+		if err != nil {
+			t.Fatalf("Split: %v", err)
+		}
+		items = append(items, content[:len(content)-len(rest)])
+		content = rest
+	}
+	// 15 legacy fields + baseFee, withdrawalsRoot, blobGasUsed,
+	// excessBlobGas, parentBeaconRoot, requestsHash, blockAccessListHash,
+	// slotNumber.
+	if len(items) != 23 {
+		t.Fatalf("header has %d RLP items; want 23", len(items))
+	}
+	wantBAL := append([]byte{0xa0}, balHash[:]...)
+	if !bytes.Equal(items[21], wantBAL) {
+		t.Errorf("item 21 = %x; want blockAccessListHash %x", items[21], wantBAL)
+	}
+	if !bytes.Equal(items[22], []byte{0x80}) {
+		t.Errorf("item 22 = %x; want slotNumber 0 as 0x80", items[22])
+	}
+
+	var got types.Header
+	if err := decodeHeaderForTest(encoded, &got); err != nil {
+		t.Fatalf("round-trip decode: %v", err)
+	}
+	if got.Hash() != h.Hash() {
+		t.Errorf("header hash mismatch: got %s, want %s", got.Hash().Hex(), h.Hash().Hex())
+	}
+	if got.BlockAccessListHash == nil || *got.BlockAccessListHash != balHash {
+		t.Errorf("BlockAccessListHash = %v; want %s", got.BlockAccessListHash, balHash.Hex())
+	}
+	if got.SlotNumber == nil || *got.SlotNumber != 0 {
+		t.Errorf("SlotNumber = %v; want 0", got.SlotNumber)
 	}
 }

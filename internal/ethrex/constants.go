@@ -1,7 +1,7 @@
 package ethrex
 
 // Column-family names for ethrex's single RocksDB instance.
-// Sourced from ethrex crates/storage/api/tables.rs at commit 80bcc71.
+// Sourced from ethrex crates/storage/api/tables.rs at v30.0.0 (commit 80b774a).
 const (
 	CFChainData            = "chain_data"
 	CFAccountCodes         = "account_codes"
