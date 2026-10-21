@@ -7,8 +7,10 @@
 #                                   regressions early.
 #   cgo-suite (matrix: besu,
 #     nethermind, reth, ethrex,
-#     erigon, nimbus)             — per-client e2e suite for the 6 cgo
-#                                   clients. Each leg runs db-gen → boot
+#     erigon, nimbus,             — per-client e2e suite for the 6 cgo
+#     nimbus-amsterdam)             clients. nimbus-amsterdam runs the
+#                                   nimbus Amsterdam suite in its own
+#                                   leg, for time. Each leg runs db-gen → boot
 #                                   → genesis-root capture → oracle
 #                                   re-query @ "0x0" → spamoor (~100
 #                                   blocks) → oracle re-query @ "latest"
@@ -182,7 +184,20 @@ jobs:
             # TestGenesisDumpGolden diffs the written DB byte-for-byte against a
             # dump produced by nimbus's own genesis path; TestNimbusGoldenStateRoot
             # re-derives every Merkle key + vertex placement from the written rows.
-            test-run-filter: 'TestNimbusGoldenStateRoot|TestGenesisDumpGolden|TestE2ESuite'
+            # The `$` keeps TestE2ESuiteAmsterdam out of this leg: each nimbus
+            # suite takes about 32 min, so both do not fit in the 45m timeout.
+            test-run-filter: 'TestNimbusGoldenStateRoot|TestGenesisDumpGolden|TestE2ESuite$'
+          # The nimbus Amsterdam suite runs in its own leg, in parallel with
+          # the leg above. It clears RESULT_PATH, so it uploads no result and
+          # the cross-client check is not affected.
+          - client: nimbus-amsterdam
+            dockerfile: Dockerfile.nimbus
+            image-tag: state-actor-nimbus-builder:latest
+            cache-scope: nimbus-builder
+            env-prefix: NIMBUS
+            test-tags: 'cgo_nimbus oracle'
+            test-pkg: ./client/nimbus/
+            test-run-filter: 'TestE2ESuiteAmsterdam'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: ./.github/actions/cgo-suite
