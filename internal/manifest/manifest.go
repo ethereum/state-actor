@@ -87,6 +87,9 @@ type Flags struct {
 	StorageModel string `json:"storage_model,omitempty"`
 	// AccountModel is --account-model ("normal" when empty, i.e. before the flag existed).
 	AccountModel string `json:"account_model,omitempty"`
+	// AutofillProfile is --autofill-profile ("mainnet" when empty, i.e. in
+	// manifests written before it was recorded).
+	AutofillProfile string `json:"autofill_profile,omitempty"`
 }
 
 // SpecFile references the --spec config used for the run. The raw spec is

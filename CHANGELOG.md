@@ -240,6 +240,12 @@
   duration and memory — the phases a SIGKILL would otherwise leave unrecorded.
 
 ### Fixed
+- **`reproduce` restores `--autofill-profile`.** The flag was not recorded
+  in the run manifest, so reproducing an `--autofill-profile=accounts` run
+  regenerated with the default `mainnet` split and reported a state-root
+  MISMATCH. The manifest now carries `autofill_profile`; manifests written
+  before this change reproduce as `mainnet`, which is correct only if the
+  original run used the default.
 - **Erigon datadirs survive `FCU(head=genesis)` on erigon ≥ 2e41aa8308
   (PR erigontech/erigon#22344; on `main` only, no release tag as of
   v3.5.4).** That change rebuilds `MaxTxNum[0]` from the genesis body's

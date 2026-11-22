@@ -103,6 +103,27 @@ func TestReproduceWallClockSeedRoundTrip(t *testing.T) {
 	}
 }
 
+// TestReproduceAutofillProfileRoundTrip pins that a non-default
+// --autofill-profile is recorded in the manifest and restored by reproduce;
+// otherwise reproduce regenerates with the default "mainnet" split and lands
+// on a different state root.
+func TestReproduceAutofillProfileRoundTrip(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping --autofill-profile reproduce e2e in short mode")
+	}
+	bin := buildStateActor(t)
+	manifestPath, _ := generateGeth(t, bin, filepath.Join(t.TempDir(), "orig", "chaindata"), "--autofill-profile", "accounts")
+
+	reproDB := filepath.Join(t.TempDir(), "repro", "chaindata")
+	out, err := exec.Command(bin, "reproduce", "--manifest", manifestPath, "--db", reproDB).CombinedOutput()
+	if err != nil {
+		t.Fatalf("reproduce of --autofill-profile=accounts run exited non-zero: %v\n%s", err, out)
+	}
+	if !strings.Contains(string(out), "Reproduction: PASS") {
+		t.Errorf("expected PASS reproducing an --autofill-profile=accounts run; got:\n%s", out)
+	}
+}
+
 // TestReproduceMismatchExitsNonZero verifies the safety contract: when the
 // regenerated root differs from the recorded one, reproduce exits non-zero.
 func TestReproduceMismatchExitsNonZero(t *testing.T) {
