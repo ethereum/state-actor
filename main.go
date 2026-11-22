@@ -502,6 +502,7 @@ func generate(reproducedFrom string) *generator.Stats {
 			MdbxFill:        *mdbxFill,
 			StorageModel:    *storageModel,
 			AccountModel:    *accountModel,
+			AutofillProfile: *autofillProfile,
 		},
 		Spec: specFileEntry,
 		Result: &manifest.Result{
@@ -653,6 +654,12 @@ func reproduce(args []string) {
 	*accountModel = m.Flags.AccountModel
 	if *accountModel == "" {
 		*accountModel = "normal"
+	}
+	// Empty in manifests written before --autofill-profile was recorded;
+	// "mainnet" is the flag's default.
+	*autofillProfile = m.Flags.AutofillProfile
+	if *autofillProfile == "" {
+		*autofillProfile = "mainnet"
 	}
 	*dbPath = *outDB
 
